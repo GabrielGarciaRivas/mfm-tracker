@@ -154,8 +154,8 @@ DEFAULT_CONFIG = {
     "outlier_floor_pct": 75,     # more than this % BELOW the median is an outlier (75 = 1/4)
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
-    "channel_prompt": False,   # ask for the channel at launch and after a channel change
-    "channel_count": 100,      # channels shown in the channel picker (1-100)
+    "channel_prompt": True,    # ask for the channel at launch and after a channel change
+    "channel_count": 20,       # channels shown in the channel picker (1-100)
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,

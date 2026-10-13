@@ -891,7 +891,7 @@ class App:
                 return
             win.destroy()                         # an open drop-down gives way to the prompt
         cur = self.channel()
-        count = max(1, min(100, int(self.cfg.get("channel_count", 100) or 100)))
+        count = max(1, min(100, int(self.cfg.get("channel_count", 20) or 20)))
         win = tk.Toplevel(self.root)
         self.chan_popup = win
         win.mode = "dropdown" if dropdown else "prompt"
@@ -2781,7 +2781,7 @@ class App:
         tip("Keeps a picture of every screen read in the data folder, to check what the app saw. "
             "Uses disk space; leave off normally.", cb)
         # ---- channel picker (under data retention)
-        chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", False))
+        chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", True))
         cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
                              variable=chan_prompt)
         cb.grid(row=5, column=2, sticky="w", padx=(0, 12), pady=4)
@@ -2790,7 +2790,7 @@ class App:
             "saved with the listings you see.", cb)
         rc = ttk.Frame(win)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
-        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 100)))
+        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
         lc = ttk.Label(rc, text="Channels in the channel picker")
         lc.pack(side="left")
         sc = ttk.Spinbox(rc, from_=1, to=100, increment=1, width=6, textvariable=chan_count)

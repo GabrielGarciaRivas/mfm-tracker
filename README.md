@@ -134,12 +134,12 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
 3. Pick your channel in **Channel**: its arrow (or the Down key) opens the **channel
    picker**, a grid of channel buttons 8 wide, or type the number in the box (1–100;
    nothing else can be entered). **Settings → Channels in the channel picker** sets how
-   many buttons it shows (1–100, e.g. your world's channel count); any channel up to 100
+   many buttons it shows (1–100, default 20); any channel up to 100
    can still be typed. It stays set for every shop you open until you change it, and is saved
    with each listing, since the channel isn't shown anywhere the tool can read.
 
-   To be asked instead, tick **Settings → Ask for the channel at launch and after a
-   channel change**. A channel picker (1–100, or type it) then opens when the app starts,
+   By default you're also asked: **Settings → Ask for the channel at launch and after a
+   channel change** (on unless you untick it). The channel picker opens when the app starts,
    and again each time you change channel in the game: the app watches for the game's
    **CHANGE CHANNEL** and **CANCEL** buttons side by side, and once that window has
    closed (about 2 seconds without it) asks which channel you're on. **Keep chN** closes

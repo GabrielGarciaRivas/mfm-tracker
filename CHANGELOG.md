@@ -6,7 +6,7 @@ Versions are `YYMM.minor.hotfix`.
 
 ### New
 - **Channel change prompt** (Settings → *Ask for the channel at launch and after a
-  channel change*, off by default). When it's on, a channel picker opens:
+  channel change*, on by default). When it's on, a channel picker opens:
   - when the app starts;
   - each time you change channel in the game. The app spots the game's
     **CHANGE CHANNEL** and **CANCEL** buttons side by side, and asks once that window
@@ -18,7 +18,7 @@ Versions are `YYMM.minor.hotfix`.
 - **Channel picker on the main screen**: the Channel box's arrow opens the same picker
   as a drop-down instead of a long list. It's 8 channels wide with wider buttons;
   click a channel, type one, or **Clear**. Settings → **Channels in the channel picker**
-  sets how many it shows (1–100, default 100).
+  sets how many it shows (1–100, default 20).
 - **Exports are timestamped**: every export's file name gets your local date and time,
   `YYYY-MM-DD HH-MM-SS`. That covers prices, the item and map lists, and the command
   line's `export`, `export-items`, `export-maps` and `report`. For example,
