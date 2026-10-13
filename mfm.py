@@ -2163,7 +2163,7 @@ def _meow_record(it: dict) -> dict:
 
 def update_items_meowdb(progress=None, full: bool = False, force: bool = False) -> SyncResult:
     """Bring the local copy of NiaMeowDB's item list up to date with as few
-    requests as possible (used with permission).
+    requests as possible.
 
     meowdb's item API returns items in id order and new items get new ids, so a
     normal update re-checks only the page holding our last known item (with a

@@ -351,7 +351,7 @@ Settings if the OCR time looks high.
 ## Item data from NiaMeowDB
 
 Item names, ids and icons come from [NiaMeowDB](https://meowdb.com/msclassic/item-db)
-(meowdb.com), used with permission. Thanks to the meowdb team.
+(meowdb.com). Thanks to the meowdb team.
 
 **Backup source:** [OSMS Data Explorer](https://osmsdataexplorer.com/), game
 data mined from MapleStory Classic World. It's used only where NiaMeowDB has nothing:
