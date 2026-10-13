@@ -29,8 +29,7 @@ for f in sorted((FIX / "shop_icons").glob("*.png")):
     item = f.stem
     if not mfm.is_known_item(item):
         continue
-    sig = mfm.slot_signature(Image.open(f))
-    top = matcher.match(sig, top=200)
+    top = matcher.match_slot(Image.open(f), top=200)
     rank = next((i for i, (n, _) in enumerate(top) if n == item), None)
     d_true = next((d for n, d in top if n == item), None)
     d_wrong = next((d for n, d in top if n != item), None)
@@ -48,8 +47,7 @@ if true_d:
 inv = Image.open(FIX / "inventory.png").convert("RGB")
 cfg = mfm.load_config()
 for r in mfm.scan_inventory(inv, matcher, cfg):
-    sig = mfm.slot_signature(r["icon"])
-    lines.append(f"slot {r['slot']}: " + ", ".join(f"{n} {d:.3f}" for n, d in matcher.match(sig, top=5))
+    lines.append(f"slot {r['slot']}: " + ", ".join(f"{n} {d:.3f}" for n, d in matcher.match_slot(r["icon"], top=5))
                  + f" | qty {r['qty']}")
 out = "\n".join(lines)
 print(out)

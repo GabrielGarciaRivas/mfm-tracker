@@ -248,6 +248,9 @@ def db() -> sqlite3.Connection:
     # official meowdb icons, one per icon key (several item names can share one)
     con.execute("""CREATE TABLE IF NOT EXISTS cache.meowdb_icons (
             icon_key TEXT PRIMARY KEY, png BLOB NOT NULL, fetched TEXT)""")
+    # inventory icons you matched by hand: recognised automatically next time
+    con.execute("""CREATE TABLE IF NOT EXISTS cache.learned_icons (
+            id INTEGER PRIMARY KEY, item TEXT NOT NULL, png BLOB NOT NULL, added TEXT)""")
     # icons meowdb doesn't have (404): not asked for again for a month
     con.execute("""CREATE TABLE IF NOT EXISTS cache.meowdb_icons_missing (
             icon_key TEXT PRIMARY KEY, checked TEXT)""")
@@ -362,7 +365,8 @@ def grab_full_screen() -> Image.Image:
             return img
 
     # Wayland: X11 grabbers only see black, so shell out to a native tool.
-    tmp = Path(tempfile.gettempdir()) / "mfm-tracker-grab.png"
+    import threading
+    tmp = Path(tempfile.gettempdir()) / f"mfm-tracker-grab-{threading.get_ident()}.png"
     candidates = [
         ["grim", str(tmp)],                                   # Hyprland, Sway, river...
         ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],      # KDE Plasma
@@ -415,6 +419,7 @@ CALIBRATE_HINTS = {
               "the bottom of the item list. Esc cancels.",
     "map_region": "Drag a box around the minimap's street and map name "
                   "(e.g. 'Hidden Street / Free Market <2>'). Esc cancels.",
+    "inventory_region": "Drag a box around your whole ITEM INVENTORY window. Esc cancels.",
 }
 
 
@@ -1995,7 +2000,7 @@ def inventory_slots(win: Image.Image) -> list[tuple]:
 
 def _is_shadow(p, bg) -> bool:
     ratios = [p[i] / max(1, bg[i]) for i in range(3)]
-    return max(ratios) - min(ratios) < 0.1 and 0.5 < sum(ratios) / 3 < 0.97
+    return max(ratios) - min(ratios) < 0.1 and 0.3 < sum(ratios) / 3 < 0.97
 
 
 def _icon_mask(img: Image.Image, bg=None, skip_count=False):
@@ -2016,145 +2021,321 @@ def _icon_mask(img: Image.Image, bg=None, skip_count=False):
             if has_alpha:
                 on = p[3] >= 128
             else:
-                on = sum(abs(p[i] - bg[i]) for i in range(3)) > 45 and not _is_shadow(p, bg)
-            if on and skip_count and x < W * 0.42 and y > H * 0.55:
-                # count digits: white with a dark outline
-                if min(p[:3]) >= 225 or max(p[:3]) <= 70:
-                    on = False
+                # the drop shadow is a grey patch of the background under the icon
+                on = sum(abs(p[i] - bg[i]) for i in range(3)) > 45 and not (
+                    y >= H * 0.68 and _is_shadow(p, bg))
             mask[y][x] = on
+    if skip_count:
+        # the stack count at the bottom left: white digits with a dark outline. Their
+        # white cores are found, and everything within the outline's width of them is
+        # left out (the outline and its soft edge too).
+        r = max(1, W // 22)
+        zx, zy = int(W * 0.45), int(H * 0.5)
+        core = [(x, y) for y in range(zy, H) for x in range(zx) if min(px[x, y][:3]) >= 225]
+        for x, y in core:
+            for yy in range(max(0, y - r), min(H, y + r + 1)):
+                for xx in range(max(0, x - r), min(W, x + r + 1)):
+                    mask[yy][xx] = False
     return rgba, mask
 
 
-ICON_GRID = 12
+TM_GRID = 16
 
 
-def icon_signature(img: Image.Image, bg=None, skip_count=False):
-    """A small description of an icon for matching: its shape on a 12x12 grid, the
-    average colour of each cell, its aspect ratio and overall colour. None if blank."""
-    rgba, mask = _icon_mask(img, bg, skip_count)
+def _slot_info(img: Image.Image, bg=INV_SLOT_BG):
+    """An item slot (inventory, or a thumbnail captured from a shop row): its icon
+    mask and where the icon is. The stack count sits in the bottom-left corner,
+    so the icon's top and right edges are found without that corner."""
+    rgba, mask = _icon_mask(img, bg)
     W, H = rgba.size
-    ys = [y for y in range(H) if any(mask[y])]
-    xs = [x for x in range(W) if any(mask[y][x] for y in range(H))]
-    if len(xs) < 3 or len(ys) < 3:
+    zx, zy = int(W * 0.42), int(H * 0.58)
+    # border lines left at the edges of the crop (a slot's frame) aren't the icon
+    for _ in range(max(2, W // 12)):
+        cleared = False
+        for x in (0, W - 1):
+            col = [mask[y][x] for y in range(H)]
+            if sum(col) > 0.6 * H:
+                for y in range(H):
+                    mask[y][x] = False
+                cleared = True
+        for y in (0, H - 1):
+            if sum(mask[y]) > 0.6 * W:
+                mask[y] = [False] * W
+                cleared = True
+        # the next line in, if the outer one was a line
+        if not cleared:
+            break
+        rgba = rgba.crop((1, 1, W - 1, H - 1))
+        mask = [row[1:W - 1] for row in mask[1:H - 1]]
+        W, H = W - 2, H - 2
+        zx, zy = int(W * 0.42), int(H * 0.58)
+
+    def bbox(skip_zone):
+        xs, ys = [], []
+        for y in range(H):
+            row = mask[y]
+            for x in range(W):
+                if row[x] and not (skip_zone and x < zx and y >= zy):
+                    xs.append(x)
+                    ys.append(y)
+        return (min(xs), min(ys), max(xs) + 1, max(ys) + 1) if xs else None
+    out = bbox(True)
+    full = bbox(False)
+    if not out or not full:
         return None
-    x0, x1, y0, y1 = xs[0], xs[-1] + 1, ys[0], ys[-1] + 1
+    return {"rgba": rgba, "mask": mask, "W": W, "H": H, "zone": (zx, zy), "top": out[1],
+            "right": out[2], "left": full[0], "bottom": full[3], "out_bottom": out[3], "out_left": out[0]}
+
+
+def ref_grid(img: Image.Image):
+    """An official icon (with transparency) as a 16x16 grid over its outline:
+    (True, colour) where the icon is, (False, None) where it isn't."""
+    rgba = img.convert("RGBA")
+    a = rgba.split()[3].point(lambda v: 255 if v >= 128 else 0)
+    box = a.getbbox()
+    if not box:
+        return None
+    x0, y0, x1, y1 = box
     px = rgba.load()
-    n = ICON_GRID
+    n = TM_GRID
     cells = []
     tot = [0, 0, 0]
-    cnt = 0
-    for cy in range(n):
-        for cx in range(n):
-            ax, bx = x0 + (x1 - x0) * cx // n, x0 + max((x1 - x0) * (cx + 1) // n, (x1 - x0) * cx // n + 1)
-            ay, by = y0 + (y1 - y0) * cy // n, y0 + max((y1 - y0) * (cy + 1) // n, (y1 - y0) * cy // n + 1)
-            s = [0, 0, 0]
-            k = a = 0
-            for y in range(ay, min(by, y1)):
-                for x in range(ax, min(bx, x1)):
-                    a += 1
-                    if mask[y][x]:
-                        p = px[x, y]
-                        s[0] += p[0]; s[1] += p[1]; s[2] += p[2]
-                        k += 1
-            if k * 2 >= max(1, a):
-                c = (s[0] // k, s[1] // k, s[2] // k)
-                cells.append(c)
-                tot[0] += c[0]; tot[1] += c[1]; tot[2] += c[2]
-                cnt += 1
+    k = 0
+    for j in range(n):
+        for i in range(n):
+            x = min(x1 - 1, x0 + int((i + 0.5) * (x1 - x0) / n))
+            y = min(y1 - 1, y0 + int((j + 0.5) * (y1 - y0) / n))
+            p = px[x, y]
+            if p[3] >= 128:
+                cells.append((True, p[:3]))
+                tot[0] += p[0]; tot[1] += p[1]; tot[2] += p[2]
+                k += 1
             else:
-                cells.append(None)
-    if not cnt:
+                cells.append((False, None))
+    if not k:
         return None
-    return {"cells": cells, "aspect": (x1 - x0) / (y1 - y0),
-            "mean": (tot[0] / cnt, tot[1] / cnt, tot[2] / cnt), "fill": cnt / (n * n)}
+    return {"cells": cells, "aspect": (x1 - x0) / (y1 - y0), "mean": (tot[0] / k, tot[1] / k, tot[2] / k)}
 
 
-def signature_distance(a, b) -> float:
-    """0 = the same picture; higher = less alike."""
-    shape = color = 0.0
-    both = 0
-    for p, q in zip(a["cells"], b["cells"]):
-        if (p is None) != (q is None):
-            shape += 1
-        elif p is not None:
-            both += 1
-            color += (abs(p[0] - q[0]) + abs(p[1] - q[1]) + abs(p[2] - q[2])) / 765
-    n = len(a["cells"])
-    aspect = abs(a["aspect"] - b["aspect"]) / max(a["aspect"], b["aspect"])
-    return shape / n * 1.0 + (color / both if both else 1.0) * 1.5 + aspect * 0.5
+def slot_ref_grid(img: Image.Image):
+    """A slot picture (a shop thumbnail, or an icon you matched by hand) as a grid,
+    with the stack-count corner marked unknown."""
+    info = _slot_info(_slot_inner(img))
+    if not info:
+        return None
+    x0, y0, x1, y1 = info["left"], info["top"], info["right"], info["bottom"]
+    zx, zy = info["zone"]
+    px = info["rgba"].load()
+    n = TM_GRID
+    cells = []
+    tot = [0, 0, 0]
+    k = 0
+    for j in range(n):
+        for i in range(n):
+            x = min(x1 - 1, x0 + int((i + 0.5) * (x1 - x0) / n))
+            y = min(y1 - 1, y0 + int((j + 0.5) * (y1 - y0) / n))
+            if x < zx and y >= zy:
+                cells.append((None, None))
+            elif info["mask"][y][x]:
+                p = px[x, y]
+                cells.append((True, p[:3]))
+                tot[0] += p[0]; tot[1] += p[1]; tot[2] += p[2]
+                k += 1
+            else:
+                cells.append((False, None))
+    if not k:
+        return None
+    return {"cells": cells, "aspect": (x1 - x0) / max(1, y1 - y0), "mean": (tot[0] / k, tot[1] / k, tot[2] / k)}
 
 
-def slot_signature(img: Image.Image):
-    """Signature of an item drawn in a beige item slot (inventory slots, and the
-    thumbnails captured from shop rows, which use the same slot): the slot's border
-    is cut off, and its background, the icon's shadow and the count digits ignored."""
+def _slot_inner(img: Image.Image) -> Image.Image:
+    """The inside of an item slot: its beige area without the border."""
     rgb = img.convert("RGB")
     W, H = rgb.size
     beige = _rgb_mask(rgb, tuple(v - 12 for v in INV_SLOT_BG), tuple(v + 12 for v in INV_SLOT_BG))
     box = beige.getbbox()
-    if box and (box[2] - box[0]) >= W * 0.5 and (box[3] - box[1]) >= H * 0.5:
-        x0, y0, x1, y1 = box
-    else:
-        x0, y0, x1, y1 = 0, 0, W, H
-    m = max(1, int(round((x1 - x0) * 0.05)))
-    inner = rgb.crop((x0 + m, y0 + m, x1 - m, y1 - m))
-    if box is None:
-        return icon_signature(inner, skip_count=True)
-    return icon_signature(inner, bg=INV_SLOT_BG, skip_count=True)
+    if not box or (box[2] - box[0]) < W * 0.5 or (box[3] - box[1]) < H * 0.5:
+        box = (0, 0, W, H)
+    x0, y0, x1, y1 = box
+    m = max(1, int(round((x1 - x0) * 0.04)))
+    return rgb.crop((x0 + m, y0 + m, x1 - m, y1 - m))
+
+
+def slot_query(img: Image.Image):
+    """What's needed to compare an item slot with icons: its mask, where the icon
+    is, and its overall colour (outside the stack-count corner)."""
+    info = _slot_info(_slot_inner(img))
+    if not info:
+        return None
+    zx, zy = info["zone"]
+    px = info["rgba"].load()
+    tot = [0, 0, 0]
+    k = 0
+    for y in range(info["H"]):
+        for x in range(info["W"]):
+            if info["mask"][y][x] and not (x < zx and y >= zy):
+                p = px[x, y]
+                tot[0] += p[0]; tot[1] += p[1]; tot[2] += p[2]
+                k += 1
+    if k < max(6, info["W"] * info["H"] // 60):
+        return None
+    info["mean"] = (tot[0] / k, tot[1] / k, tot[2] / k)
+    info["aspect"] = (info["right"] - info["left"]) / max(1, info["bottom"] - info["top"])
+    return info
+
+
+def grid_distance(q, ref) -> float:
+    """How unlike a slot and an icon are (0 = the same), lined up by the icon's top
+    and right edges and tried at a few sizes; the stack-count corner is skipped."""
+    zx, zy = q["zone"]
+    W, H = q["W"], q["H"]
+    mask, px = q["mask"], q["rgba"].load()
+    asp = ref["aspect"]
+    top, right = q["top"], q["right"]
+    heights = {q["bottom"] - top, q["out_bottom"] - top, int((right - q["left"]) / asp),
+               int((right - q["out_left"]) / asp)}
+    best = 9.9
+    n = TM_GRID
+    for h in heights:
+        if h < 4:
+            continue
+        w = h * asp
+        x0 = right - w
+        if x0 < -W * 0.15 or top + h > H * 1.15:
+            continue
+        cost = 0.0
+        used = 0
+        for j in range(n):
+            y = int(top + (j + 0.5) * h / n)
+            for i in range(n):
+                on, col = ref["cells"][j * n + i]
+                if on is None:
+                    continue
+                x = int(x0 + (i + 0.5) * w / n)
+                if not (0 <= x < W and 0 <= y < H):
+                    if on:
+                        cost += 1.0
+                        used += 1
+                    continue
+                if x < zx and y >= zy:
+                    continue
+                used += 1
+                if on:
+                    if mask[y][x]:
+                        p = px[x, y]
+                        cost += (abs(p[0] - col[0]) + abs(p[1] - col[1]) + abs(p[2] - col[2])) / 765 * 2.5
+                    else:
+                        cost += 1.0
+                elif mask[y][x]:
+                    cost += 1.0
+        if used:
+            best = min(best, cost / used)
+    return best
+
+
+ICON_SIGS_PATH = CACHE_DIR / "icon_signatures.pickle"
+ICON_SIG_VERSION = 2
 
 
 class IconMatcher:
-    """Matches icons cut from the screen against every icon the app has: the
-    official ones (downloaded with Update) and the ones captured from shops."""
+    """Matches item slots from the screen against every icon the app has: the
+    official ones (downloaded with Update), icons you matched by hand, and the
+    ones captured from shops."""
 
     def __init__(self, con):
         import io
+        import pickle
 
         keys = {}
         for item, key in _icon_keys().items():
             keys.setdefault(str(key), []).append(item)
         known = _dict().names if has_item_list() else None
-        self.refs = []          # (item, signature, official)
+        self.refs = []          # (item, grid, official)
         seen = set()
+        # grids of the official icons are kept, so only new icons are worked out
+        try:
+            cache = pickle.loads(ICON_SIGS_PATH.read_bytes())
+            if cache.get("version") != ICON_SIG_VERSION:
+                cache = {}
+        except Exception:
+            cache = {}
+        grids = cache.get("grids", {})
+        changed = False
         for key, png in con.execute("SELECT icon_key, png FROM cache.meowdb_icons"):
             items = keys.get(str(key))
             if not items:
                 continue
-            try:
-                sig = icon_signature(Image.open(io.BytesIO(png)))
-            except Exception:
-                sig = None
-            if sig:
+            if key in grids:
+                g = grids[key]
+            else:
+                try:
+                    g = ref_grid(Image.open(io.BytesIO(png)))
+                except Exception:
+                    g = None
+                grids[key] = g
+                changed = True
+            if g:
                 for item in items:
                     if known is None or item in known or len(items) == 1:
-                        self.refs.append((item, sig, True))
+                        self.refs.append((item, g, True))
                         seen.add(item)
+        if changed:
+            try:
+                ICON_SIGS_PATH.write_bytes(pickle.dumps({"version": ICON_SIG_VERSION, "grids": grids}))
+            except OSError:
+                pass
+        for item, png in con.execute("SELECT item, png FROM cache.learned_icons"):
+            try:
+                g = slot_ref_grid(Image.open(io.BytesIO(png)))
+            except Exception:
+                g = None
+            if g:
+                self.refs.append((item, g, True))
         for item, png, faded in con.execute("SELECT item, png, faded FROM cache.icons"):
             if item in seen or faded:
                 continue
             try:
-                sig = slot_signature(Image.open(io.BytesIO(png)))
+                g = slot_ref_grid(Image.open(io.BytesIO(png)))
             except Exception:
-                sig = None
-            if sig:
-                self.refs.append((item, sig, False))
+                g = None
+            if g:
+                self.refs.append((item, g, False))
 
-    def match(self, sig, top: int = 3) -> list[tuple[str, float]]:
-        """The closest items to a signature, best first: [(item, distance)]."""
-        if sig is None or not self.refs:
+    def add(self, item: str, slot: Image.Image) -> None:
+        """Use this slot's picture for this item from now on (an icon matched by hand)."""
+        g = slot_ref_grid(slot)
+        if g:
+            self.refs.append((item, g, True))
+
+    def match_slot(self, slot: Image.Image, top: int = 3) -> list[tuple[str, float]]:
+        """The closest items to an item slot, best first: [(item, distance)]; [] if
+        the slot is empty."""
+        q = slot_query(slot)
+        if q is None or not self.refs:
             return []
-        m = sig["mean"]
+        m, a = q["mean"], q["aspect"]
         coarse = sorted(self.refs, key=lambda r: abs(r[1]["mean"][0] - m[0]) + abs(r[1]["mean"][1] - m[1])
-                        + abs(r[1]["mean"][2] - m[2]) + 120 * abs(r[1]["aspect"] - sig["aspect"]))[:250]
+                        + abs(r[1]["mean"][2] - m[2]) + 60 * abs(r[1]["aspect"] - a))[:350]
         scored = {}
-        for item, ref, official in coarse:
-            d = signature_distance(sig, ref) - (0.02 if official else 0)
+        for item, g, official in coarse:
+            d = grid_distance(q, g) - (0.01 if official else 0)
             if item not in scored or d < scored[item]:
                 scored[item] = d
         return sorted(scored.items(), key=lambda t: t[1])[:top]
 
 
 INV_MATCH_OK = 0.55       # a match closer than this is shown as found
+
+
+def learn_icon(con, item: str, icon: Image.Image) -> None:
+    """Remember an inventory icon you matched by hand, so it's recognised next time."""
+    import io
+
+    buf = io.BytesIO()
+    icon.convert("RGB").save(buf, format="PNG")
+    con.execute("INSERT INTO cache.learned_icons (item, png, added) VALUES (?,?,?)",
+                (item, buf.getvalue(), utc_now()))
+    con.commit()
 
 
 def read_slot_count(slot: Image.Image, cfg: dict) -> int:
@@ -2179,13 +2360,12 @@ def scan_inventory(win: Image.Image, matcher: IconMatcher, cfg: dict, read_count
     out = []
     for i, (x0, y0, x1, y1) in enumerate(inventory_slots(win)):
         slot = win.crop((x0, y0, x1, y1))
-        sig = slot_signature(slot)
-        if sig is None or sig["fill"] < 0.04:
+        best = matcher.match_slot(slot)
+        if not best:
             continue
-        best = matcher.match(sig)
-        item, dist = (best[0] if best else (None, 9.9))
+        item, dist = best[0]
         out.append({"slot": i, "item": item if dist <= INV_MATCH_OK else None, "guess": item,
-                    "score": max(0.0, 1 - dist), "qty": read_slot_count(slot, cfg) if read_counts else 1,
+                    "score": max(0.0, min(1.0, 1 - dist)), "qty": read_slot_count(slot, cfg) if read_counts else 1,
                     "icon": slot})
     return out
 
@@ -5571,7 +5751,7 @@ def main() -> None:
         return
 
     if a.cmd == "calibrate" and a.auto:
-        cfg["region"] = cfg["map_region"] = None
+        cfg["region"] = cfg["map_region"] = cfg["inventory_region"] = None
         save_config(cfg)
         print("Shop and map areas will be found automatically.")
     elif a.cmd == "calibrate":
