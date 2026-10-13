@@ -2881,7 +2881,8 @@ def import_items(path: str) -> int:
     if full:
         recs = {}
         for r in rows:
-            lvl = str(r.get("levelreq") or r.get("level") or "").strip()
+            lvl = r.get("levelreq", r.get("level"))
+            lvl = "" if lvl is None else str(lvl).strip()
             src = r.get("sources") or []
             if isinstance(src, str):
                 src = [x for x in re.split(r"[|;,]\s*", src) if x]
