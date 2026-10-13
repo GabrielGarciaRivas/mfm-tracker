@@ -1,4 +1,4 @@
-# mfm — MapleStory Classic Free Market price tracker
+# Maplestory Free Market Tracker — MapleStory Classic price tracker
 
 Screenshots the shop window, reads item names and prices with OCR, logs them to a
 local database, and tells you whether each listing is a **DEAL**, **fair**, or **HIGH**
