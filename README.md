@@ -172,7 +172,9 @@ sales. **Net worth** at the bottom adds them up:
 - **Possible range:** the lowest and highest prices of all your items.
 - **Estimated value (market prices)** and **(last 3 sales)**.
 
-Right-click an item to see its history, change the quantity or remove it. Matching works
+To change how many you have, double-click its **Qty** or use **Quantity…** (in the Add
+items window too, before adding). Right-click an item to see its history, change the
+quantity or remove it. Matching works
 best with all item icons downloaded (Settings → Game data → Update).
 
 ## Market price

@@ -1566,12 +1566,17 @@ class App:
         b = ttk.Button(top, text="Add items…", command=self.open_inventory_scan)
         b.pack(side="left")
         tip("Opens a window that reads your Item Inventory in the game.", b)
+        b = ttk.Button(top, text="Quantity…", command=self.change_inventory_qty)
+        b.pack(side="left", padx=(6, 0))
+        tip("Change how many of the selected items you have (or double-click a Qty).", b)
         ttk.Button(top, text="Remove selected", command=self.remove_inventory).pack(side="left", padx=6)
         ttk.Label(top, foreground="#555", text="Items you own and what they're worth, from the "
                   "prices you've seen.").pack(side="left", padx=(10, 0))
         self.inv_tree = make_tree(tab, ("item", "qty", "market", "range", "points", "sold24", "last3"))
         self.inv_tree.frame.pack(fill="both", expand=True)
-        self.inv_tree.bind("<Double-1>", lambda e: self.open_history(self.inv_tree))
+        self.inv_tree.bind("<Double-1>", lambda e: (
+            self.change_inventory_qty() if self._clicked_column(self.inv_tree, e) == "qty"
+            else self.open_history(self.inv_tree)))
         self._list_menu(self.inv_tree, [
             ("Show history", self.open_history, True),
             ("Change quantity…", lambda t: self.change_inventory_qty(), False),
@@ -1775,7 +1780,7 @@ class App:
                                ("Change quantity…", lambda t: set_qty(), False),
                                None,
                                ("Remove  (Delete)", lambda t: remove(), False)])
-        tree.bind("<Double-1>", lambda e: pick_item())
+        tree.bind("<Double-1>", lambda e: set_qty() if self._clicked_column(tree, e) == "qty" else pick_item())
         tree.bind("<Return>", lambda e: accept())
         tree.bind("<KeyPress-m>", lambda e: pick_item())
         tree.bind("<KeyPress-M>", lambda e: pick_item())
@@ -1828,6 +1833,9 @@ class App:
                    ).pack(side="left")
         b = ttk.Button(bottom, text="Add by name…", command=add_by_name)
         b.pack(side="left", padx=6)
+        bq = ttk.Button(bottom, text="Quantity…", command=set_qty)
+        bq.pack(side="left")
+        tip("Change how many of the selected items to add (or double-click a Qty).", bq)
         tip("Put an item in the list by typing its name, e.g. one that isn't in your inventory "
             "window right now.", b)
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
@@ -1835,6 +1843,17 @@ class App:
         win.stop = threading.Event()
         win.bind("<Destroy>", lambda e: e.widget is win and win.stop.set())
         threading.Thread(target=self._inventory_scan_loop, args=(win.stop, win.state), daemon=True).start()
+
+    @staticmethod
+    def _clicked_column(tree, e) -> str | None:
+        """The name of the column a mouse event is in."""
+        col = tree.identify_column(e.x)
+        if not col or col == "#0":
+            return None
+        try:
+            return tree["columns"][int(col[1:]) - 1]
+        except (ValueError, IndexError):
+            return None
 
     def _choose_item(self, parent, title, cur=""):
         """A small dialog to pick an item by name (with suggestions). Returns the name or None."""
