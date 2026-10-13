@@ -85,7 +85,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.11.002"
+VERSION = "2610.11.003"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -1794,6 +1794,74 @@ def _blank_minimap_icon(img: Image.Image) -> Image.Image:
     return out
 
 
+def _trim_to_panel(img: Image.Image) -> Image.Image:
+    """Cut a map capture down to the minimap's name panel. The minimap is as wide
+    as its map's name, so an area measured on one map can be too wide (or tall)
+    on the next: the Free Market's minimap is narrower than Victoria Road's, and
+    the shop signs beside it were read into the name ("Hidden Steet $_L—z").
+    The panel is one flat steel-blue colour; its rows are the ones mostly that
+    colour, and it ends at the first columns, going right, without any of it."""
+    rgb = img.convert("RGB")
+    W, H = rgb.size
+    if W < 40 or H < 20:
+        return rgb
+    px = rgb.load()
+
+    def blue(p):
+        return p[2] - p[0] >= 25 and p[1] >= 100
+    cols = range(0, W, 2)
+    counts = {}
+    for y in range(H):
+        for x in cols:
+            p = px[x, y]
+            if blue(p):
+                k = (p[0] // 8, p[1] // 8, p[2] // 8)
+                counts[k] = counts.get(k, 0) + 1
+    if not counts:
+        return rgb
+    k = max(counts, key=counts.get)
+    ref = (k[0] * 8 + 4, k[1] * 8 + 4, k[2] * 8 + 4)
+
+    def panel(p):
+        return abs(p[0] - ref[0]) <= 14 and abs(p[1] - ref[1]) <= 14 and abs(p[2] - ref[2]) <= 14
+    def panel_rows(w):
+        cs = range(0, w, 2)
+        rows = [y for y in range(H) if sum(panel(px[x, y]) for x in cs) >= 0.2 * len(cs)]
+        if len(rows) < 8:
+            return None
+        # the panel's rows: the longest run (gaps allowed between text lines)
+        runs, start, prev = [], rows[0], rows[0]
+        for y in rows[1:]:
+            if y - prev > 4:
+                runs.append((start, prev))
+                start = y
+            prev = y
+        runs.append((start, prev))
+        top, bot = max(runs, key=lambda r: r[1] - r[0])
+        return (top, bot) if bot - top >= 8 else None
+
+    span = panel_rows(W)
+    if not span:
+        return rgb
+    ys = range(span[0], span[1] + 1)
+    frac = [sum(panel(px[x, y]) for y in ys) / len(ys) for x in range(W)]
+    # walk right from the most panel-like column to where the panel stops
+    x = max(range(W), key=lambda x: frac[x])
+    gap, right = 0, x
+    while x < W and gap < 4:
+        if frac[x] >= 0.05:
+            right, gap = x, 0
+        else:
+            gap += 1
+        x += 1
+    right = min(W, right + 3)
+    span = panel_rows(right) or span            # measured again without the scenery
+    top, bot = span
+    # the title strip (MINI MAP) above the panel stays; it's skipped when read
+    out_top = 0 if top < H * 0.5 else max(0, top - 2)
+    return rgb.crop((0, out_top, right, min(H, bot + 3)))
+
+
 def _clean_map_line(ln: str) -> str:
     ln = re.sub(r"^[\W_]+", "", ln)                  # crumbs on the left
     ln = re.sub(r"[^\w<>)\]]+$", "", ln).strip()
@@ -1823,6 +1891,7 @@ def read_map(img: Image.Image, cfg: dict, known_maps: list[str] = ()) -> str:
     if img.height > img.width * 0.6:
         # a manual area that includes the minimap picture: the names are at the top
         img = img.crop((0, 0, img.width, int(img.width * 0.42)))
+    img = _trim_to_panel(img)
     img = _blank_minimap_icon(img)
     text = pytesseract.image_to_string(white_text_mask(img), config="--psm 6")
     good = []
@@ -4161,6 +4230,8 @@ class Monitor:
         self.last_listings: list[Listing] = []
         self.map_img = None
         self.layout: Layout | None = None
+        self.map_fresh = False   # minimap measured since the last visit ended
+        self.map_tried = 0.0
         self.geom: dict | None = None
         self.geom_misses = 0
         self.votes: dict[str, dict[str, int]] = {"title": {}, "seller": {}}
@@ -4209,6 +4280,8 @@ class Monitor:
                 setattr(self, field, max(self.votes[field], key=self.votes[field].get))
 
     def end_session(self):
+        self.map_fresh = False           # you may change maps before the next shop
+        self.map_tried = 0.0
         if self.session_id and self.con is not None:
             # unmatched names that went out of view before their extra reads: if
             # read at least the usual number of times and not an OCR variant of
@@ -4413,11 +4486,24 @@ class Monitor:
                     if not self.layout or found.store != self.layout.store:
                         self.geom = None
                     self.layout = found
+                    self.map_fresh = True
                     self.on_event("layout", found)
             if not self.layout:
                 return None, None
             shop_r = self.layout.store
             if is_auto(map_r, full.size):
+                if not self.map_fresh and not self.session_id and time.monotonic() - self.map_tried >= 3:
+                    self.map_tried = time.monotonic()
+                    # the minimap is as wide as the map's name, so it's measured
+                    # again before each visit: shops open in the same spot on
+                    # every map, and an area measured on the last map can take
+                    # in the scenery beside this one's
+                    mp = find_minimap(full, self.layout.store)
+                    if mp:
+                        self.map_fresh = True
+                        if mp != self.layout.map:
+                            self.layout.map = mp
+                            self.on_event("layout", self.layout)
                 map_r = self.layout.map
         return shop_r, map_r
 

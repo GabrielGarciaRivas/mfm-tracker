@@ -2,6 +2,20 @@
 
 Versions are `YYMM.minor.hotfix`.
 
+## 2610.11.003 — 2026-10-13
+
+### Fixed
+- **Free Market map names read as junk** ("Hidden Streat Lz: Rem aihlea ned…",
+  "Hidden Steet: ltl Ud*Cl U"). The minimap is as wide as the map's name, but its
+  area was measured once and kept for as long as shops opened in the same spot, which
+  they do on every map. Coming from a map with a longer name (Victoria Road), the area
+  was too wide for the Free Market's minimap and took in the shop signs beside it.
+  - The minimap is now measured again before every shop visit.
+  - The map reader cuts its capture down to the minimap's name panel, so scenery
+    beside or below it is never read.
+- Listings already saved with a garbled map keep it; the right Free Market number
+  can't be recovered from the junk.
+
 ## 2610.11.002 — 2026-10-13
 
 ### Fixed
