@@ -56,3 +56,15 @@ print(out)
 Path(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null")).write_text(out)
 with open("result.txt", "w") as fh:
     fh.write(out)
+
+# a few official icons, base64, for looking at them elsewhere (DUMP_ICONS="Name,Name")
+dump = [n.strip() for n in os.environ.get("DUMP_ICONS", "").split(",") if n.strip()]
+if dump:
+    import base64
+    keys = mfm._icon_keys()
+    with open("dump.txt", "w") as fh:
+        for name in dump:
+            key = keys.get(name)
+            row = con.execute("SELECT png FROM cache.meowdb_icons WHERE icon_key = ?", (str(key),)).fetchone() if key else None
+            if row:
+                fh.write(f"{name}\t{base64.b64encode(row[0]).decode()}\n")

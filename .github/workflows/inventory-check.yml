@@ -5,6 +5,11 @@ name: Inventory icon check
 # the Actions tab; the result is shown as an annotation on the run.
 on:
   workflow_dispatch:
+    inputs:
+      dump_icons:
+        description: "Item names whose official icons to include in the result (comma-separated)"
+        required: false
+        default: ""
 
 jobs:
   check:
@@ -22,8 +27,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          python tests/inventory_check.py
+          DUMP_ICONS="${{ inputs.dump_icons }}" python tests/inventory_check.py
           rc=$?
+          if [ -s dump.txt ]; then
+            d="$(sed -e 's/%/%25/g' dump.txt | awk '{printf "%s%%0A", $0}')"
+            echo "::notice title=Icons::$d"
+          fi
           msg="$(tail -60 result.txt 2>/dev/null | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
           echo "::notice title=Inventory icon check::$msg"
           exit $rc
