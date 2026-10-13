@@ -2114,7 +2114,20 @@ def ref_grid(img: Image.Image):
                 cells.append((False, None))
     if not k:
         return None
-    return {"cells": cells, "aspect": (x1 - x0) / (y1 - y0), "mean": (tot[0] / k, tot[1] / k, tot[2] / k)}
+    # the overall colour from inside the icon (its dark outline left out), as for slots
+    al = rgba.split()[3].load()
+    it = [0, 0, 0]
+    m = 0
+    for y in range(y0 + 1, y1 - 1):
+        for x in range(x0 + 1, x1 - 1):
+            if al[x, y] >= 128 and al[x - 1, y] >= 128 and al[x + 1, y] >= 128 \
+                    and al[x, y - 1] >= 128 and al[x, y + 1] >= 128:
+                p = px[x, y]
+                if max(p[:3]) > 60:            # not the outline
+                    it[0] += p[0]; it[1] += p[1]; it[2] += p[2]
+                    m += 1
+    mean = (it[0] / m, it[1] / m, it[2] / m) if m else (tot[0] / k, tot[1] / k, tot[2] / k)
+    return {"cells": cells, "aspect": (x1 - x0) / (y1 - y0), "mean": mean}
 
 
 def slot_ref_grid(img: Image.Image):
@@ -2169,15 +2182,22 @@ def slot_query(img: Image.Image):
         return None
     zx, zy = info["zone"]
     px = info["rgba"].load()
+    mask, W, H = info["mask"], info["W"], info["H"]
     tot = [0, 0, 0]
-    k = 0
-    for y in range(info["H"]):
-        for x in range(info["W"]):
-            if info["mask"][y][x] and not (x < zx and y >= zy):
+    k = n_on = 0
+    for y in range(H):
+        for x in range(W):
+            if not mask[y][x] or (x < zx and y >= zy):
+                continue
+            n_on += 1
+            # the colour inside the icon: its edges blend into the background
+            if 0 < x < W - 1 and 0 < y < H - 1 and mask[y][x - 1] and mask[y][x + 1] \
+                    and mask[y - 1][x] and mask[y + 1][x]:
                 p = px[x, y]
-                tot[0] += p[0]; tot[1] += p[1]; tot[2] += p[2]
-                k += 1
-    if k < max(6, info["W"] * info["H"] // 60):
+                if max(p[:3]) > 60:            # not the outline
+                    tot[0] += p[0]; tot[1] += p[1]; tot[2] += p[2]
+                    k += 1
+    if n_on < max(6, W * H // 60) or not k:
         return None
     info["mean"] = (tot[0] / k, tot[1] / k, tot[2] / k)
     info["aspect"] = (info["right"] - info["left"]) / max(1, info["bottom"] - info["top"])
@@ -2235,6 +2255,12 @@ def grid_distance(q, ref) -> float:
 
 ICON_SIGS_PATH = CACHE_DIR / "icon_signatures.pickle"
 ICON_SIG_VERSION = 2
+
+
+def _color_key(c):
+    """(colour balance, brightness) of an average colour."""
+    t = max(1.0, c[0] + c[1] + c[2])
+    return (c[0] / t, c[1] / t, c[2] / t), t / 3
 
 
 class IconMatcher:
@@ -2313,9 +2339,16 @@ class IconMatcher:
         q = slot_query(slot)
         if q is None or not self.refs:
             return []
-        m, a = q["mean"], q["aspect"]
-        coarse = sorted(self.refs, key=lambda r: abs(r[1]["mean"][0] - m[0]) + abs(r[1]["mean"][1] - m[1])
-                        + abs(r[1]["mean"][2] - m[2]) + 60 * abs(r[1]["aspect"] - a))[:350]
+        a = q["aspect"]
+        hue, light = _color_key(q["mean"])
+
+        def near(r):
+            # colour balance first (on-screen icons come out lighter or darker than the
+            # official ones, but keep their colours), then brightness and shape
+            h, l = _color_key(r[1]["mean"])
+            return (300 * (abs(h[0] - hue[0]) + abs(h[1] - hue[1]) + abs(h[2] - hue[2]))
+                    + 0.2 * abs(l - light) + 20 * abs(r[1]["aspect"] - a))
+        coarse = sorted(self.refs, key=near)[:800]
         scored = {}
         for item, g, official in coarse:
             d = grid_distance(q, g) - (0.01 if official else 0)
