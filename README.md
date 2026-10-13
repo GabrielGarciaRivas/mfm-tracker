@@ -170,8 +170,9 @@ e.g. `111 (liormm) · Free Market <2> · ch2`.
 - **NPC buy** and **NPC sell** (Items tab, after Market): what an NPC shop charges for
   the item (the cheapest shop, from NiaMeowDB's NPC Shop Database) and what an NPC pays
   you for it (the item's value in NiaMeowDB's item data). "-" when there's none. Handy
-  to spot listings above the NPC price or below what an NPC would pay. Both arrive with
-  **Update** (the shop prices are checked weekly, like the map list); lists downloaded
+  to spot listings above the NPC price or below what an NPC would pay. Both are part of
+  the item data and are downloaded with it on every **Update** (the shop page with a
+  conditional request, so an unchanged page costs almost nothing); lists downloaded
   before this version get one full re-download for them. Wide tables scroll sideways.
 - **Filter the Items tab** with the bar above it, modelled on NiaMeowDB's item database:
   - **Filter**: name contains the text you type.
@@ -483,7 +484,7 @@ aren't your prices), how many entries each has and where it came from:
 
 | list | used for | files (in the data folder's `cache/`) |
 |---|---|---|
-| **Item list** | spelling correction of item names; the item search in Alerts, Ignored, Match and Review; meowdb links and icons; item categories | `items.txt` (names), `meowdb_items.json` (meowdb copy: id, name, category, icon), `item_ids.json`, `item_types.json`, `item_icons.json` |
+| **Item list** | spelling correction of item names; the item search in Alerts, Ignored, Match and Review; meowdb links and icons; category, level, class and NPC buy / sell prices (Items tab) | `items.txt` (names), `meowdb_items.json` (meowdb copy: id, name, category, level, class, NPC sell price, icon), `item_ids.json`, `item_types.json`, `item_icons.json`, `npc_shops.json` (NPC shop prices) |
 | **Map list** | correcting misread minimap names (`Free Marker <8>` → `Free Market <8>`) | `maps.json` (id, name, street) |
 | **Backup source** | items, maps and icons meowdb doesn't have (OSMS Data Explorer) | `osms_items.json`, `osms_maps.json` (included in an item .zip export) |
 

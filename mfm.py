@@ -85,7 +85,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.11.000"
+VERSION = "2610.11.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -1978,6 +1978,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
     if not need_full and not force and last_check is not None and last_check < ITEM_CHECK_EVERY:
         res.message = f"Item list checked {_fmt_ago(last_check)} ago; no request made."
         _sync_maps(sync, res, False)
+        _sync_npc_shops(sync, res, False)    # only if they've never been downloaded
         return res
 
     def fetch(page, conditional):
@@ -2051,7 +2052,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
         MEOWDB_ITEMS_PATH.write_text(json.dumps(recs), encoding="utf-8")
         _write_item_files(recs)
     _sync_maps(sync, res, res.full)     # the map list keeps its weekly limit except on full refreshes
-    _sync_npc_shops(sync, res, res.full)
+    _sync_npc_shops(sync, res, True)    # NPC prices are part of the item data: fetched with it
     MEOWDB_SYNC_PATH.write_text(json.dumps(sync, indent=1), encoding="utf-8")
     if not res.message:
         what = "full download" if res.full else ("new items" if res.items_new else "no new items")
@@ -2192,10 +2193,11 @@ def parse_meowdb_npc_shops(html_text: str) -> dict[str, int]:
 
 
 def _sync_npc_shops(sync: dict, res, force: bool) -> None:
-    """NPC shop prices, checked weekly like the map list (conditional request)."""
+    """NPC shop prices: downloaded together with the item list, every time it's
+    checked (a conditional request, so an unchanged page costs almost nothing).
+    Without force, only if they've never been downloaded."""
     st = sync.setdefault("npc_shops", {})
-    last = _ago(st.get("last_check"))
-    if not force and NPC_SHOPS_PATH.exists() and last is not None and last < MAP_CHECK_EVERY:
+    if not force and NPC_SHOPS_PATH.exists():
         return
     try:
         if res.requests:

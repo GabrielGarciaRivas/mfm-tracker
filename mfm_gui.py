@@ -2023,10 +2023,10 @@ class App:
             ("items", "Item list", status_items,
              "Corrects the OCR's spelling of item names, lists the items you can pick in "
              "Alerts, Ignored, Match and the Review tab, links each item to its NiaMeowDB page, shows icons, "
-             "and gives each item's category.",
+             "and gives each item's category, level, class and NPC buy / sell prices.",
              "Files: cache/items.txt (names), meowdb_items.json (database copy: id, name, "
-             "category, icon), item_ids.json, item_types.json, item_icons.json; "
-             "icons in cache/icons.db"),
+             "category, icon), item_ids.json, item_types.json, item_icons.json, npc_shops.json "
+             "(NPC shop prices); icons in cache/icons.db"),
             ("maps", "Map list", status_maps,
              "Corrects misread map names from the minimap, e.g. 'Free Marker <8>' → "
              "'Free Market <8>'.",
