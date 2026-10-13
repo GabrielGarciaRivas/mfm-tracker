@@ -1,5 +1,17 @@
 # Changelog
 
+## 2610.13.001 — 2026-10-13
+
+### New
+- **Notes on listings:** right-click a listing → **Add note…** for things like +5 ATK. Notes
+  show in a new **Notes** column in Live, Deals and item history.
+- **Watched listings:** right-click a listing → **Watch this listing…** to get an alert when
+  that player's listing is for sale again.
+
+### Changed
+- The **Alerts** tab is now **Watched**, with watched items on top and watched listings
+  below. Watched items and listings get alerts.
+
 ## 2610.12.002 — 2026-10-13
 
 ### Fixed

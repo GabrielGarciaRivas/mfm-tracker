@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.12.002"
+VERSION = "2610.13.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -108,7 +108,7 @@ ICONS_DB_PATH = CACHE_DIR / "icons.db"
 CONFIG_PATH = SETTINGS_DIR / "config.json"
 SETTINGS_FILES = {   # what "reset personal settings" can clear
     "settings": ("Settings and capture areas", ["config.json"]),
-    "alerts": ("Alerts (watchlist)", ["watchlist.json"]),
+    "alerts": ("Watched items and listings", ["watchlist.json", "watched_listings.json"]),
     "ignored": ("Ignore list", ["ignorelist.json"]),
     "matches": ("Manual matches (remembered corrections)", ["aliases.json"]),
     "kept": ("Names kept as they are (Review tab)", ["kept_names.json"]),
@@ -303,7 +303,8 @@ def db() -> sqlite3.Connection:
         con.commit()
         cols = {r[1] for r in con.execute("PRAGMA table_info(listings)")}
     for col, typ in (("session", "TEXT"), ("seller", "TEXT"), ("map", "TEXT"), ("channel", "TEXT"),
-                     ("sold", "INTEGER DEFAULT 0"), ("last_seen", "TEXT"), ("sold_ts", "TEXT")):
+                     ("sold", "INTEGER DEFAULT 0"), ("last_seen", "TEXT"), ("sold_ts", "TEXT"),
+                     ("notes", "TEXT")):
         if col not in cols:  # upgrade older databases in place
             con.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
     if con.execute("SELECT 1 FROM listings WHERE qty != 1 LIMIT 1").fetchone():
@@ -3794,6 +3795,40 @@ def watch_match(watch: list[dict], item: str, each: float) -> dict | None:
     return None
 
 
+# Watched listings: one player's listing of an item, e.g. a Korean Fan with +5 ATK.
+# [{"item", "price", "shop", "seller", "map", "channel", "notes", "added" (UTC),
+#   "last": {"price", "shop", "seller", "map", "channel", "time" (UTC), "sold"} or null}]
+WATCHED_LISTINGS_PATH = SETTINGS_DIR / "watched_listings.json"
+
+
+def load_watched_listings() -> list[dict]:
+    return _load_json(WATCHED_LISTINGS_PATH, [])
+
+
+def save_watched_listings(entries: list[dict]) -> None:
+    WATCHED_LISTINGS_PATH.write_text(json.dumps(entries, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def watched_listing_match(entries: list[dict], item: str, title: str, seller: str,
+                          price: int | None = None) -> dict | None:
+    """The watched listing this sighting is: same item from the same player (or, when
+    no player name was read, the same shop name). With several watched listings of
+    the item from that player, the one at this price."""
+    found = []
+    for e in entries:
+        if e.get("item") != item:
+            continue
+        if seller and e.get("seller"):
+            same = _same_name(e["seller"], seller)
+        else:
+            same = bool(title and e.get("shop")) and _same_name(e["shop"], title)
+        if same:
+            found.append(e)
+    if not found:
+        return None
+    return next((e for e in found if (e.get("last") or {}).get("price", e.get("price")) == price), found[0])
+
+
 IGNORE_PATH = SETTINGS_DIR / "ignorelist.json"   # item names that never count as deals
 
 
@@ -4045,7 +4080,8 @@ def _same_shop(row_title, row_seller, row_map, title, seller, mp) -> bool:
     return not (row_map and mp) or row_map == mp
 
 
-def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, session, ts: str) -> str:
+def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, session, ts: str,
+                info: dict | None = None) -> str:
     """Save a sighting, unless it's already in the database. Returns "new", "seen"
     (already logged: same item, price, shop name, player name and map
     within the last 24 hours, whatever the channel; only its last-seen time is
@@ -4066,11 +4102,18 @@ def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, sess
         return None
 
     # 1. the same listing, in the same state, logged in the last 24 hours
+    def done(status, rid):
+        if info is not None:
+            info["id"] = rid
+            info["notes"] = (con.execute("SELECT notes FROM listings WHERE id = ?", (rid,)).fetchone()
+                             or [None])[0] or ""
+        return status
+
     rid = match(DUPLICATE_HOURS, int(l.sold))
     if rid:
         con.execute("UPDATE listings SET last_seen = ?, session = ? WHERE id = ?", (ts, session, rid))
         con.commit()
-        return "seen"
+        return done("seen", rid)
     # 2. now faded, but it was logged for sale recently: it sold
     if l.sold:
         rid = match(SOLD_LINK_DAYS * 24, 0)
@@ -4078,14 +4121,44 @@ def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, sess
             con.execute("UPDATE listings SET sold = 1, sold_ts = ?, last_seen = ?, session = ? "
                         "WHERE id = ?", (ts, ts, session, rid))
             con.commit()
-            return "sold"
-    con.execute(
+            return done("sold", rid)
+    cur = con.execute(
         "INSERT INTO listings (ts, item, price, qty, shop, seller, map, channel, raw, session, "
-        "sold, last_seen, sold_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "sold, last_seen, sold_ts, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (ts, l.item, l.price, l.qty, title, seller, mp, channel, l.raw, session,
-         int(l.sold), ts, ts if l.sold else None))
+         int(l.sold), ts, ts if l.sold else None, carried_notes(con, l.item, title, seller, l.price)))
     con.commit()
-    return "new"
+    return done("new", cur.lastrowid)
+
+
+def carried_notes(con, item: str, title: str, seller: str, price: int) -> str | None:
+    """The note a new sighting starts with: the note of the watched listing it is, or
+    else of an earlier sighting of the same item, price and player (or shop name)."""
+    w = watched_listing_match(load_watched_listings(), item, title, seller, price)
+    if w and w.get("notes"):
+        return w["notes"]
+    who, val = ("seller", seller) if seller else ("shop", title)
+    if not val:
+        return None
+    row = con.execute(f"SELECT notes FROM listings WHERE item = ? AND price = ? AND {who} = ? "
+                      "AND COALESCE(notes, '') != '' ORDER BY id DESC LIMIT 1", (item, price, val)).fetchone()
+    return row[0] if row else None
+
+
+def set_listing_notes(con, item: str, notes: str, scope: dict | None = None, ids=None) -> int:
+    """Set the note of listings: the ones with these ids, or the listing of `item`
+    that `scope` points at (Live / Deals rows). An empty note removes it."""
+    notes = (notes or "").strip() or None
+    if ids is not None:
+        marks, ids = _ids_sql(ids)
+        if not ids:
+            return 0
+        n = con.execute(f"UPDATE listings SET notes = ? WHERE id IN ({marks})", [notes] + ids).rowcount
+    else:
+        extra, args = _scope_sql(scope)
+        n = con.execute(f"UPDATE listings SET notes = ? WHERE item = ?{extra}", [notes, item] + args).rowcount
+    con.commit()
+    return n
 
 
 def parse_channel(value) -> str | None:
@@ -4301,6 +4374,8 @@ class SeenListing:
     channel: str | None = None
     title: str = ""         # the shop's own name
     seller: str = ""        # the player selling
+    id: int | None = None   # its row in the price database
+    notes: str = ""         # your note on this listing (e.g. "+5 ATK")
 
 
 class Monitor:
@@ -4472,12 +4547,14 @@ class Monitor:
         v, pct = verdict(each, mkt, self.cfg["deal_threshold_pct"],
                          outlier_bounds(self.con, listing.item, self.cfg))
         ts = utc_now()
+        info: dict = {}
         status = log_listing(self.con, listing, self.title, self.seller, self.map, self.channel,
-                             self.session_id, ts)
+                             self.session_id, ts, info)
         save_icon(self.con, listing.item, listing.icon, listing.sold)
         s = SeenListing(listing.item, listing.price, listing.qty, each, mkt,
                         "SOLD" if listing.sold else v, pct, ts, self.shop_name(), self.map,
-                        listing.sold, status, self.channel, self.title or "", self.seller or "")
+                        listing.sold, status, self.channel, self.title or "", self.seller or "",
+                        info.get("id"), info.get("notes") or "")
         self.seen[key] = s
         self.on_event("new", s)
 
@@ -4790,13 +4867,13 @@ def export_prices(con, path, cfg: dict, kind: str = "market") -> int:
         if kind == "listings":
             # times in UTC (ISO 8601, "Z"), so the file means the same in any time zone
             w.writerow(["first_seen_utc", "last_seen_utc", "item", "price", "status",
-                        "sold_at_utc", "shop", "seller", "map", "channel"])
-            for ts, last, item, qty, price, sold, sold_ts, shop, seller, mp, channel in con.execute(
+                        "sold_at_utc", "shop", "seller", "map", "channel", "notes"])
+            for ts, last, item, qty, price, sold, sold_ts, shop, seller, mp, channel, notes in con.execute(
                     "SELECT ts, COALESCE(last_seen, ts), item, qty, price, COALESCE(sold, 0), sold_ts, "
-                    "shop, seller, map, channel FROM listings ORDER BY ts"):
+                    "shop, seller, map, channel, notes FROM listings ORDER BY ts"):
                 w.writerow([ts, last, item, price,
                             "sold" if sold else "for sale", sold_ts or "", shop or "", seller or "",
-                            mp or "", channel or ""])
+                            mp or "", channel or "", notes or ""])
                 rows += 1
             return rows
         w.writerow(["item", "price", "source", "listed_median", "listed_count", "sold_median",
@@ -5218,7 +5295,7 @@ def main() -> None:
         print(f"Exported {export_maps(out):,} maps to {out}")
     elif a.cmd == "where":
         print(f"data folder: {DATA}\n  prices:   {PRICES_DIR}  (listings + reference prices)\n"
-              f"  settings: {SETTINGS_DIR}  (settings, capture areas, alerts, ignore list, matches)\n"
+              f"  settings: {SETTINGS_DIR}  (settings, capture areas, watched items and listings, ignore list, matches)\n"
               f"  cache:    {CACHE_DIR}  (item and map database, item icons)\n  backups:  {BACKUP_DIR}")
     if not CONFIG_PATH.exists():
         save_config(cfg)

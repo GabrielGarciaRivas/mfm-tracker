@@ -129,7 +129,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "status": "Status", "listed_med": "Listed med.", "sold_med": "Sold med.",
         "listed_n": "Listed", "sold_n": "Sold", "total": "Bundle price",
         "max_each": "Max price", "last_price": "Last price", "npc_buy": "NPC buy", "npc_sell": "NPC sell",
-        "saved": "Saved",
+        "saved": "Saved", "notes": "Notes",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -137,7 +137,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "time": 126, "low": 95, "high": 95, "seen": 50, "source": 110,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
-         "saved": 110, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "saved": 110, "notes": 170, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell"}
@@ -614,6 +614,7 @@ class App:
         self._icon_asked: set[str] = set()
         self._icon_worker = None
         self.watch = mfm.load_watchlist()
+        self.watched_listings = mfm.load_watched_listings()
         self._error_times: dict = {}
         root.report_callback_exception = self._tk_error
         self.ignored = set(mfm.load_ignorelist())
@@ -702,7 +703,7 @@ class App:
         left.pack(side="left", fill="both", expand=True)
         self.shop_title = ttk.Label(left, text="Waiting for a shop…", style="Big.TLabel")
         self.shop_title.pack(anchor="w", pady=(0, 6))
-        self.live = make_tree(left, COLS + ("saved",))
+        self.live = make_tree(left, COLS + ("notes", "saved"))
         self.live.tag_configure("dupe", foreground="#7a7a7a")
         self.live.frame.pack(fill="both", expand=True)
         self.live.bind("<Double-1>", lambda e: self.open_history(self.live))
@@ -741,7 +742,7 @@ class App:
         self.show_outliers = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Show outliers", variable=self.show_outliers,
                         command=self.refresh_tables).pack(side="right", padx=10)
-        self.deals = make_tree(deals, COLS + ("status", "shop", "player", "map", "channel", "time"))
+        self.deals = make_tree(deals, COLS + ("status", "notes", "shop", "player", "map", "channel", "time"))
         self.deals.frame.pack(fill="both", expand=True)
         self.deals.bind("<Double-1>", lambda e: self.open_history(self.deals))
 
@@ -775,7 +776,7 @@ class App:
             self._add_menu(tree)
 
         self._build_review_tab()
-        self._build_alerts_tab()
+        self._build_watched_tab()
         self._build_ignore_tab()
 
         self.status = ttk.Label(self.root, style="Status.TLabel", padding=(10, 4))
@@ -1006,17 +1007,23 @@ class App:
         hit = None if s.sold else mfm.watch_match(self.watch, s.item, s.each)
         if hit:
             self.alert(s, hit)
+        wl = mfm.watched_listing_match(self.watched_listings, s.item, s.title, s.seller, s.price)
+        if wl:
+            self.listing_seen(s, wl)
         self._forget_icon(s.item)  # an icon may have just been saved/upgraded
         ign = s.item in self.ignored
-        iid = self.live.insert("", "end", image=self.icon_for(s.item, found=bool(hit)),
+        found = bool(hit) or (bool(wl) and not s.sold)
+        iid = self.live.insert("", "end", image=self.icon_for(s.item, found=found),
                          tags=(("ignored",) if ign and verdict != "SOLD" else (tag_for(verdict),))
-                         + (("watch",) if hit else ()), values=(
+                         + (("watch",) if found else ()), values=(
             s.item, mfm.fmt(s.each), mfm.fmt(s.market),
-            diff_text(s.pct), verdict,
+            diff_text(s.pct), verdict, s.notes,
             {"seen": "already logged", "sold": "marked sold"}.get(s.status, "new")))
         if s.status == "seen":   # same shop, same price, logged in the last 24 h: not added again
             self.live.item(iid, tags=tuple(self.live.item(iid, "tags")) + ("dupe",))
-        self.scopes[(str(self.live), iid)] = {"price": s.price, "qty": s.qty, "label": s.shop}
+        self.scopes[(str(self.live), iid)] = {"price": s.price, "qty": s.qty, "label": s.shop,
+                                              "title": s.title, "seller": s.seller, "map": s.map,
+                                              "channel": s.channel}
         self.live.yview_moveto(1.0)
         if s.status != "seen":
             self.logged_today += 1
@@ -1025,26 +1032,46 @@ class App:
         if verdict == "DEAL" and not hit and not ign and any(w["item"] == s.item for w in self.watch):
             self.root.bell()
 
-    def alert(self, s, w):
-        """A watched item is for sale here: ping, say where, remember it."""
+    def _ping(self):
+        """The alert: a sound (once per burst of matches) and this window to the front."""
         import time as _t
         if self.cfg.get("alert_sound_on", True) and _t.monotonic() - getattr(self, "_last_ping", 0) > 2:
-            self._last_ping = _t.monotonic()   # one ping per burst of matches
+            self._last_ping = _t.monotonic()
             if not mfm.play_sound(self.cfg.get("alert_sound") or None):
                 self.root.bell()
-        where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
-        self._set_status(f"Alert: {s.item} for {mfm.fmt(s.each)} each at {where}")
-        title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
-        w["last_found"] = {"each": s.each, "shop": title, "player": player, "map": s.map,
-                           "channel": s.channel, "time": s.first_seen}
-        mfm.save_watchlist(self.watch)
-        self.refresh_alerts()
         if self.cfg.get("alert_raise", True):
             try:
                 self.root.deiconify()
                 self.root.lift()
             except tk.TclError:
                 pass
+
+    def alert(self, s, w):
+        """A watched item is for sale here: alert, say where, remember it."""
+        where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
+        self._set_status(f"Alert: {s.item} for {mfm.fmt(s.each)} at {where}")
+        title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
+        w["last_found"] = {"each": s.each, "shop": title, "player": player, "map": s.map,
+                           "channel": s.channel, "time": s.first_seen}
+        mfm.save_watchlist(self.watch)
+        self.refresh_alerts()
+        self._ping()
+
+    def listing_seen(self, s, w):
+        """A watched listing was seen again: alert if it's still for sale, and keep
+        its latest price, place and time."""
+        title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
+        w["last"] = {"price": s.price, "shop": title, "seller": player, "map": s.map,
+                     "channel": s.channel, "time": s.first_seen, "sold": bool(s.sold)}
+        mfm.save_watched_listings(self.watched_listings)
+        self.refresh_watched_listings()
+        name = s.item + (f" ({w['notes']})" if w.get("notes") else "")
+        if s.sold:
+            self._set_status(f"Watched listing sold: {name}")
+            return
+        where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
+        self._set_status(f"Alert: watched listing {name} for {mfm.fmt(s.price)} at {where}")
+        self._ping()
 
     def on_closed(self, p):
         n = p["count"]
@@ -1265,12 +1292,13 @@ class App:
         sold_filter = "" if self.show_sold.get() else "AND COALESCE(sold, 0) = 0"
         rows = con.execute(
             "SELECT item, price, qty, shop, seller, map, channel, COALESCE(sold, 0), "
-            "MAX(COALESCE(last_seen, ts)) FROM listings WHERE COALESCE(last_seen, ts) >= ? "
+            "MAX(COALESCE(last_seen, ts)), MAX(COALESCE(notes, '')) FROM listings "
+            "WHERE COALESCE(last_seen, ts) >= ? "
             f"{sold_filter} GROUP BY item, price, qty, shop, seller, map, sold",
             (since,)).fetchall()
         scored = []
         bounds: dict[str, object] = {}
-        for item, price, qty, shop, seller, mp, channel, sold, ts in rows:
+        for item, price, qty, shop, seller, mp, channel, sold, ts, notes in rows:
             each = price
             mkt, _ = mfm.market_rate(con, item, cfg)
             if item not in bounds:
@@ -1283,19 +1311,23 @@ class App:
             if item in self.ignored and not self.show_ignored.get():
                 continue
             scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
-                           (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller))
+                           (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller,
+                           notes))
         scored.sort()
         self.deals.delete(*self.deals.get_children())
         self.scopes = {k: v for k, v in self.scopes.items() if k[0] != str(self.deals)}
-        for sold, pct, item, qty, each, mkt, v, where, ts, price, shop, seller in scored:
-            found = not sold and bool(mfm.watch_match(self.watch, item, each))
+        for sold, pct, item, qty, each, mkt, v, where, ts, price, shop, seller, notes in scored:
+            found = not sold and (bool(mfm.watch_match(self.watch, item, each)) or bool(
+                mfm.watched_listing_match(self.watched_listings, item, shop or "", seller or "", price)))
             tag = "sold" if sold else ("ignored" if item in self.ignored else tag_for(v))
             iid = self.deals.insert("", "end", image=self.icon_for(item, found=found),
                               tags=(tag,) + (("watch",) if found else ()), values=(
                 item, mfm.fmt(each), mfm.fmt(mkt),
                 diff_text(None if pct == 999 else pct),
-                v, "sold" if sold else "for sale", *where, mfm.local_time(ts)))
-            self.scopes[(str(self.deals), iid)] = {"price": price, "qty": qty, "shop": shop, "seller": seller}
+                v, "sold" if sold else "for sale", notes, *where, mfm.local_time(ts)))
+            self.scopes[(str(self.deals), iid)] = {"price": price, "qty": qty, "shop": shop, "seller": seller,
+                                                   "title": shop or "", "map": where[2],
+                                                   "channel": where[3]}
 
         best = mfm.cheapest(con, 24, cfg)
         self.items.delete(*self.items.get_children())
@@ -1438,13 +1470,26 @@ class App:
         self.f_allclass.set(True)
         self.f_npc.set(False)
 
-    def _build_alerts_tab(self):
+    def _build_watched_tab(self):
         tab = ttk.Frame(self.nb, padding=6)
-        self.nb.add(tab, text="  Alerts  ")
-        ttk.Label(tab, text="Get a ping when one of these items is for sale. Leave the max price "
-                            "empty for any price."
-                  ).pack(anchor="w", pady=(0, 6))
-        add = ttk.Frame(tab)
+        self.nb.add(tab, text="  Watched  ")
+        # sound options for every alert, under both halves
+        bottom = ttk.Frame(tab)
+        bottom.pack(side="bottom", fill="x", pady=(6, 0))
+        panes = ttk.PanedWindow(tab, orient="vertical")
+        panes.pack(fill="both", expand=True)
+        top_half = ttk.Frame(panes)
+        low_half = ttk.Frame(panes, padding=(0, 8, 0, 0))
+        panes.add(top_half, weight=1)
+        panes.add(low_half, weight=1)
+
+        # ---- top: watched items
+        head = ttk.Frame(top_half)
+        head.pack(fill="x", pady=(0, 4))
+        ttk.Label(head, text="Watched items", style="Bold.TLabel").pack(side="left")
+        ttk.Label(head, foreground="#555", text="  Get an alert when one of these items is for sale. "
+                  "Leave the max price empty for any price.").pack(side="left")
+        add = ttk.Frame(top_half)
         add.pack(fill="x")
         ttk.Label(add, text="Item:").pack(side="left")
         self.alert_entry = ItemSearch(add, self, width=42, on_return=lambda: self.alert_max_entry.focus_set())
@@ -1455,10 +1500,12 @@ class App:
         self.alert_max_entry = ttk.Entry(add, textvariable=self.alert_max, width=12)
         self.alert_max_entry.pack(side="left", padx=4)
         self.alert_max_entry.bind("<Return>", lambda e: self.add_alert_from_form())
-        ttk.Button(add, text="Add alert", command=self.add_alert_from_form).pack(side="left", padx=4)
+        ttk.Button(add, text="Watch", command=self.add_alert_from_form).pack(side="left", padx=4)
+        ttk.Button(add, text="Remove selected", command=self.remove_alert).pack(side="right")
 
-        self.alerts = make_tree(tab, ("item", "max_each", "last_price", "shop", "player", "map", "channel", "time"))
-        self.alerts.frame.pack(fill="both", expand=True, pady=6)
+        self.alerts = make_tree(top_half, ("item", "max_each", "last_price", "shop", "player", "map",
+                                           "channel", "time"))
+        self.alerts.frame.pack(fill="both", expand=True, pady=(6, 0))
         self.alerts.bind("<Double-1>", lambda e: self.open_history(self.alerts))
         self._list_menu(self.alerts, [
             ("Show history", self.open_history, True),
@@ -1468,12 +1515,30 @@ class App:
         self.alerts.bind("<Delete>", lambda e: self.remove_alert())
         self.alerts.bind("<BackSpace>", lambda e: self.remove_alert())
 
-        bottom = ttk.Frame(tab)
-        bottom.pack(fill="x")
-        ttk.Button(bottom, text="Remove selected", command=self.remove_alert).pack(side="left")
+        # ---- bottom: watched listings
+        head = ttk.Frame(low_half)
+        head.pack(fill="x", pady=(0, 4))
+        ttk.Label(head, text="Watched listings", style="Bold.TLabel").pack(side="left")
+        ttk.Label(head, foreground="#555", text="  Get an alert when one of these listings is for "
+                  "sale again. Right-click a listing and choose Watch this listing.").pack(side="left")
+        ttk.Button(head, text="Remove selected", command=self.remove_watched_listing).pack(side="right")
+        self.wlist = make_tree(low_half, ("item", "notes", "each", "status", "shop", "player", "map",
+                                          "channel", "time"))
+        self.wlist.column("status", width=110)
+        self.wlist.frame.pack(fill="both", expand=True)
+        self.wlist.bind("<Double-1>", lambda e: self.open_history(self.wlist))
+        self._list_menu(self.wlist, [
+            ("Show history", self.open_history, True),
+            ("Edit note…", lambda t: self.edit_watched_note(), True),
+            None,
+            ("Remove listing", lambda t: self.remove_watched_listing(), False)])
+        self.wlist.bind("<Delete>", lambda e: self.remove_watched_listing())
+        self.wlist.bind("<BackSpace>", lambda e: self.remove_watched_listing())
+
+        ttk.Label(bottom, text="Alerts:").pack(side="left")
         self.sound_on = tk.BooleanVar(value=self.cfg.get("alert_sound_on", True))
         ttk.Checkbutton(bottom, text="Play sound", variable=self.sound_on,
-                        command=self._save_sound_prefs).pack(side="left", padx=(16, 0))
+                        command=self._save_sound_prefs).pack(side="left", padx=(8, 0))
         self.raise_on = tk.BooleanVar(value=self.cfg.get("alert_raise", True))
         ttk.Checkbutton(bottom, text="Bring this window to front", variable=self.raise_on,
                         command=self._save_sound_prefs).pack(side="left", padx=(10, 0))
@@ -1482,6 +1547,125 @@ class App:
         self.sound_lbl = ttk.Label(bottom, foreground="#666")
         self.sound_lbl.pack(side="left", padx=6)
         self.refresh_alerts()
+        self.refresh_watched_listings()
+
+    # ------------------------------------------------------------------ watched listings
+    def refresh_watched_listings(self):
+        if not hasattr(self, "wlist"):
+            return
+        restore = self._keep_selection(self.wlist, lambda t, k: k)
+        self.wlist.delete(*self.wlist.get_children())
+        for i, w in enumerate(self.watched_listings):
+            last = w.get("last") or {}
+            now = {**w, **{k: v for k, v in last.items() if v not in (None, "")}}
+            status = ("sold" if last.get("sold") else "for sale") if last else "not seen yet"
+            self.wlist.insert("", "end", iid=str(i), image=self.icon_for(w["item"], found=bool(last) and not
+                                                                          last.get("sold")),
+                              tags=(("sold",) if last.get("sold") else ()), values=(
+                w["item"], w.get("notes") or "", mfm.fmt(now.get("price")), status,
+                now.get("shop") or "", now.get("seller") or "", now.get("map") or "",
+                now.get("channel") or "", mfm.local_time(last["time"]) if last.get("time") else ""))
+        restore()
+
+    def _listing_from_table(self, tree):
+        """(item, details, scope) of the one selected Live / Deals row."""
+        sel = tree.selection()
+        if len(sel) != 1:
+            return None
+        scope = self.scopes.get((str(tree), sel[0]))
+        if not scope:
+            return None
+        item = tree.set(sel[0], "item")
+        title, seller = scope.get("title"), scope.get("seller")
+        if title is None and seller is None:
+            title, seller = split_shop(scope.get("label") or "")
+        details = {"price": scope["price"], "shop": title or "", "seller": seller or "",
+                   "map": scope.get("map") or "", "channel": scope.get("channel"),
+                   "notes": tree.set(sel[0], "notes")}
+        return item, details, scope
+
+    def _ask_note(self, parent, title, item, cur):
+        return ask_value(parent, title, f"Note for this listing of '{item}' (e.g. +5 ATK, 7 slots):", cur)
+
+    def note_from_table(self, tree):
+        got = self._listing_from_table(tree)
+        if not got:
+            return
+        item, d, scope = got
+        note = self._ask_note(self.root, "Note", item, d["notes"])
+        if note is None:
+            return
+        mfm.set_listing_notes(self.con, item, note, scope=scope)
+        if tree is self.live:
+            tree.set(tree.selection()[0], "notes", note.strip())
+        self._note_to_watched(item, d["shop"], d["seller"], d["price"], note)
+        self.refresh_tables()
+        self._set_status(f"Note saved for '{item}'." if note.strip() else f"Note removed for '{item}'.")
+
+    def _note_to_watched(self, item, shop, seller, price, note):
+        """A note set on a listing also goes on its watched listing, if it's watched."""
+        w = mfm.watched_listing_match(self.watched_listings, item, shop, seller, price)
+        if w:
+            w["notes"] = note.strip()
+            mfm.save_watched_listings(self.watched_listings)
+            self.refresh_watched_listings()
+
+    def watch_listing_from_table(self, tree):
+        got = self._listing_from_table(tree)
+        if got:
+            item, d, scope = got
+            self.watch_listing(item, d, scope=scope)
+
+    def watch_listing(self, item, d, scope=None, ids=None, parent=None):
+        """Add one listing to the watched listings, after asking for its note."""
+        note = self._ask_note(parent or self.root, "Watch this listing", item, d.get("notes") or "")
+        if note is None:
+            return
+        note = note.strip()
+        mfm.set_listing_notes(self.con, item, note, scope=scope, ids=ids)
+        w = mfm.watched_listing_match(self.watched_listings, item, d["shop"], d["seller"], d["price"])
+        if w is None:
+            w = {"item": item, "added": mfm.utc_now(), "last": None}
+            self.watched_listings.append(w)
+        w.update({"price": d["price"], "shop": d["shop"], "seller": d["seller"], "map": d["map"],
+                  "channel": d.get("channel"), "notes": note})
+        mfm.save_watched_listings(self.watched_listings)
+        self.refresh_watched_listings()
+        self.refresh_tables()
+        for k in self.live.get_children():        # the same listing in the Live tab
+            sc = self.scopes.get((str(self.live), k))
+            if sc and self.live.set(k, "item") == item and sc["price"] == d["price"] \
+                    and (sc.get("seller") or "") == d["seller"]:
+                self.live.set(k, "notes", note)
+        self._set_status(f"Watching this listing: {item}" + (f" ({note})" if note else "") + ".")
+
+    def edit_watched_note(self):
+        sel = self.wlist.selection()
+        if len(sel) != 1:
+            return
+        w = self.watched_listings[int(sel[0])]
+        note = self._ask_note(self.root, "Note", w["item"], w.get("notes") or "")
+        if note is None:
+            return
+        w["notes"] = note.strip()
+        mfm.save_watched_listings(self.watched_listings)
+        # the same note on its logged sightings
+        who, val = ("seller", w.get("seller")) if w.get("seller") else ("shop", w.get("shop"))
+        if val:
+            ids = [r[0] for r in self.con.execute(
+                f"SELECT id FROM listings WHERE item = ? AND {who} = ?", (w["item"], val))]
+            mfm.set_listing_notes(self.con, w["item"], note, ids=ids)
+        self.refresh_watched_listings()
+        self.refresh_tables()
+
+    def remove_watched_listing(self):
+        sel = {int(k) for k in self.wlist.selection()}
+        if not sel:
+            return
+        self.watched_listings = [w for i, w in enumerate(self.watched_listings) if i not in sel]
+        mfm.save_watched_listings(self.watched_listings)
+        self.refresh_watched_listings()
+        self.refresh_tables()
 
     def refresh_alerts(self):
         if not hasattr(self, "alerts"):
@@ -1515,7 +1699,7 @@ class App:
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         self.refresh_tables()
-        self._set_status(f"Alert added: {item}" + (f" at {mfm.fmt(max_each)} or less" if max_each else ""))
+        self._set_status(f"Watching {item}" + (f" at {mfm.fmt(max_each)} or less" if max_each else "") + ".")
 
     def add_alert_from_form(self):
         raw = self.alert_max.get().strip()
@@ -1570,8 +1754,8 @@ class App:
             w = next((w for w in self.watch if w["item"] == items[0]), None)
             cur = mfm.fmt(w["max_each"]) if w and w.get("max_each") not in (None, "") else ""
         raw = ask_value(self.root, "Max price",
-                        (f"Alert me when '{items[0]}' is for sale at or below:" if len(items) == 1 else
-                         f"Max price for these {len(items)} alerts:")
+                        (f"Alert when '{items[0]}' is for sale at or below:" if len(items) == 1 else
+                         f"Max price for these {len(items)} items:")
                         + "\n(e.g. 45000, 45,000 or 45k; empty = any price)", cur,
                         check=lambda t: not t.strip() or (mfm.parse_price(t) or 0) > 0)
         if raw is None:
@@ -1584,7 +1768,7 @@ class App:
         self.refresh_alerts()
         self.refresh_tables()
         self._set_status(f"Max price {'set to ' + mfm.fmt(cap) if cap else 'removed (any price)'} for "
-                         + (f"'{items[0]}'." if len(items) == 1 else f"{len(items)} alerts."))
+                         + (f"'{items[0]}'." if len(items) == 1 else f"{len(items)} items."))
 
     def remove_alert(self):
         sel = self.alerts.selection()
@@ -1602,7 +1786,7 @@ class App:
             return
         from tkinter import simpledialog
         what = f"'{items[0]}'" if len(items) == 1 else f"any of these {len(items)} items"
-        raw = simpledialog.askstring("Alert", f"Alert me when {what} is for sale.\n\n"
+        raw = simpledialog.askstring("Watch item", f"Get an alert when {what} is for sale.\n\n"
                                      "Max price (leave empty for any price"
                                      + (", applies to each" if len(items) > 1 else "") + "):",
                                      parent=self.root)
@@ -1612,7 +1796,7 @@ class App:
         for item in items:
             self.add_alert(item, cap)
         if len(items) > 1:
-            self._set_status(f"Alerts added for {len(items)} items"
+            self._set_status(f"Watching {len(items)} items"
                              + (f" at {mfm.fmt(cap)} or less each" if cap else "") + ".")
 
     # ------------------------------------------------------------------ review unmatched
@@ -1795,7 +1979,7 @@ class App:
         tab = ttk.Frame(self.nb, padding=6)
         self.nb.add(tab, text="  Ignored  ")
         ttk.Label(tab, text="Items here are never shown as deals. Their prices are still logged, "
-                            "and alerts on them still work."
+                            "and watched items still get alerts."
                   , wraplength=1000, justify="left").pack(anchor="w", pady=(0, 6))
         add = ttk.Frame(tab)
         add.pack(fill="x")
@@ -1904,8 +2088,14 @@ class App:
             menu.add_command(label="Show history", state=single, command=lambda: self.open_history(tree))
             menu.add_command(label="Look up on meowdb", state=single, command=lambda: self.open_meowdb(tree))
             menu.add_separator()
-            menu.add_command(label=f"Alert me when {n_items} {'is' if len(items) == 1 else 'are'} listed…",
+            menu.add_command(label="Watch this item…" if len(items) == 1 else f"Watch these {len(items)} items…",
                              command=lambda: self.alert_from_table(tree))
+            if tree is not self.items:
+                has_note = one and bool(tree.set(rows[0], "notes"))
+                menu.add_command(label="Edit note…" if has_note else "Add note…", state=single,
+                                 command=lambda: self.note_from_table(tree))
+                menu.add_command(label="Watch this listing…", state=single,
+                                 command=lambda: self.watch_listing_from_table(tree))
             if all(i in self.ignored for i in items):
                 menu.add_command(label=f"Stop ignoring {n_items}",
                                  command=lambda: self.set_ignored(items, False))
@@ -2554,7 +2744,7 @@ class App:
         if not self._confirm_twice(
                 parent, "Clear pricing data",
                 f"Delete all pricing data?\n\n• {n:,} listings\n• {r:,} imported prices\n\n"
-                "Settings, alerts and icons are kept.",
+                "Settings, watched items and icons are kept.",
                 f"Are you sure? All {n + r:,} prices will be deleted.\n\n"
                 "A backup is saved in the data folder's backups folder."):
             return
@@ -2593,6 +2783,8 @@ class App:
             backup = mfm.reset_settings(parts)
             self.cfg = mfm.load_config()
             self.watch = mfm.load_watchlist()
+            self.watched_listings = mfm.load_watched_listings()
+            self.refresh_watched_listings()
             self.ignored = set(mfm.load_ignorelist())
             self.sound_on.set(self.cfg.get("alert_sound_on", True))
             self.raise_on.set(self.cfg.get("alert_raise", True))
@@ -2819,7 +3011,7 @@ class App:
         b3 = ttk.Button(danger, text="Open data folder", command=self.open_data_folder)
         b3.pack(side="left")
         tip("Deletes all your prices (a backup is kept).", b1)
-        tip("Choose settings, alerts or other lists to reset. Prices are kept.", b2)
+        tip("Choose settings, watched items or other lists to reset. Prices are kept.", b2)
         tip("Opens the folder with your prices and settings.", b3)
         b6 = ttk.Button(bottom, text="About", command=lambda: self.about(win))
         tip("Version and credits.", b6)
@@ -2916,7 +3108,7 @@ class App:
             return
         win = tk.Toplevel(self.root)
         win.title(item)
-        win.geometry("1000x660")
+        win.geometry("1160x660")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
         head.pack(fill="x")
         ttk.Label(head, text="  " + item, image=self.icon_for(item, 48), compound="left",
@@ -2933,11 +3125,11 @@ class App:
         c = tk.Canvas(win, background="white", highlightthickness=0, height=260)
         c.pack(fill="both", expand=True, padx=12, pady=10)
         hint = ttk.Label(win, padding=(12, 0), justify="left", text=(
-            "Right-click a sighting to change its price or channel, or delete it. "
+            "Right-click a sighting to change its price or channel, add a note, watch it, or delete it. "
             + ("Option+click" if MAC else "Alt+click") + " selects several."))
         hint.pack(anchor="w", fill="x")
         hint.bind("<Configure>", lambda e: hint.config(wraplength=max(e.width - 24, 200)))
-        table = make_tree(win, ("each", "status", "shop", "player", "map", "channel", "time"))
+        table = make_tree(win, ("each", "status", "notes", "shop", "player", "map", "channel", "time"))
         table.column("#0", width=0, minwidth=0)   # one item: no per-row icon needed
         table.column("status", width=130)
         table.frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
@@ -2947,7 +3139,7 @@ class App:
             """(Re)read the item's listings and refresh every part of the window."""
             rows = self.con.execute(
                 "SELECT COALESCE(sold_ts, ts), price, shop, seller, map, channel, qty, "
-                "COALESCE(sold, 0), id FROM listings WHERE item = ? ORDER BY COALESCE(sold_ts, ts)",
+                "COALESCE(sold, 0), id, notes FROM listings WHERE item = ? ORDER BY COALESCE(sold_ts, ts)",
                 (item,)).fetchall()
             if not rows:
                 win.destroy()
@@ -2966,13 +3158,13 @@ class App:
                              "prices outside it are left out of the market price" if bounds else ""))
             keep = set(table.selection())
             table.delete(*table.get_children())
-            for ts, each, shop, seller, mp, channel, qty, sold, lid in sorted(rows, key=lambda r: (r[7], r[1])):
+            for ts, each, shop, seller, mp, channel, qty, sold, lid, notes in sorted(rows, key=lambda r: (r[7], r[1])):
                 v, _ = mfm.verdict(each, mkt, self.cfg["deal_threshold_pct"], bounds)
                 tag = "outlier" if v == "OUTLIER" else "sold" if sold else (tag_for(v) if v != "?" else "")
                 low = mfm.is_outlier(each, bounds) and bounds and each < bounds[0]
                 table.insert("", "end", iid=str(lid), tags=(tag,), values=(
                     mfm.fmt(each), "outlier" if v == "OUTLIER" else ("sold" if sold else "for sale")
-                    + (" (very low)" if low else ""),
+                    + (" (very low)" if low else ""), notes or "",
                     shop or "", seller or "", mp or "", channel or "", mfm.local_time(ts)))
             table.selection_set([k for k in keep if table.exists(k)])
             draw()
@@ -3017,6 +3209,34 @@ class App:
             changed(f"Set channel of {n} listing{'s' if n != 1 else ''} to "
                     + (mfm.channel_label(raw.strip()) if raw.strip() else "unknown") + ".")
 
+        def edit_note():
+            ids = picked()
+            if not ids:
+                return
+            cur = table.set(str(ids[0]), "notes") if len(ids) == 1 else ""
+            note = ask_value(win, "Note", ("Note for this listing" if len(ids) == 1 else
+                                           f"Note for these {len(ids)} listings")
+                             + " (e.g. +5 ATK, 7 slots):", cur)
+            if note is None:
+                return
+            mfm.set_listing_notes(self.con, item, note, ids=ids)
+            for lid in ids:
+                r = table.set(str(lid))
+                self._note_to_watched(item, r["shop"], r["player"], mfm.parse_price(r["each"]), note)
+            changed(f"Note saved for {len(ids)} listing{'s' if len(ids) != 1 else ''} of '{item}'."
+                    if note.strip() else "Note removed.")
+
+        def watch_this():
+            ids = picked()
+            if len(ids) != 1:
+                return
+            r = table.set(str(ids[0]))
+            self.watch_listing(item, {"price": mfm.parse_price(r["each"]), "shop": r["shop"],
+                                      "seller": r["player"], "map": r["map"],
+                                      "channel": r["channel"] or None, "notes": r["notes"]},
+                               ids=ids, parent=win)
+            load()
+
         def delete():
             ids = picked()
             if not ids:
@@ -3045,6 +3265,12 @@ class App:
                              command=change_price)
             menu.add_command(label="Change channel…" if n == 1 else f"Change channel of {n} listings…",
                              command=change_channel)
+            has_note = n == 1 and bool(table.set(table.selection()[0], "notes"))
+            menu.add_command(label="Edit note…" if has_note else ("Add note…" if n == 1 else
+                                                                   f"Note for {n} listings…"),
+                             command=edit_note)
+            menu.add_command(label="Watch this listing…", command=watch_this,
+                             state="normal" if n == 1 else "disabled")
             menu.add_separator()
             menu.add_command(label="Delete listing" if n == 1 else f"Delete {n} listings", command=delete)
             menu.tk_popup(e.x_root, e.y_root)

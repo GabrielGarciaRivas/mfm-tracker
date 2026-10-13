@@ -106,13 +106,20 @@ channels the picker shows, in **Settings**.
 - **Review:** names that didn't match an item in the database. Press **Enter** to accept
   the suggested item, **M** to pick one yourself, **K** to keep the name, **Delete** to
   remove it.
-- **Alerts** and **Ignored:** see below.
+- **Watched** and **Ignored:** see below.
 
 Double-click any item for its **price history**: a chart and every sighting. Right-click a
-sighting to change its price or channel, or delete it.
+sighting to change its price or channel, add a note, watch it, or delete it.
 
-Right-click items in any table for more options: alerts, ignore, match to the right item,
-delete a bad read, or look the item up on meowdb.
+Right-click items in any table for more options: watch the item, add a note, watch the
+listing, ignore, match to the right item, delete a bad read, or look the item up on meowdb.
+
+## Notes
+
+Add a note to a listing for anything the item name doesn't say, like **+5 ATK** or **7
+slots**: right-click it in Live, Deals or an item's history → **Add note…**. Notes show in
+the **Notes** column. The next time you see the same item from the same player at the same
+price, it gets the note too.
 
 ### Selecting several rows
 - **Alt + click** adds or removes a row; **Ctrl + Alt + drag** selects every row you pass
@@ -120,20 +127,29 @@ delete a bad read, or look the item up on meowdb.
 - On a Mac, use **Option** instead of Alt and **Cmd** instead of Ctrl.
 - Right-click the selection to act on all of it, or press Delete.
 
-## Alerts
+## Watched
 
-Get a sound and a green outline when an item you want is for sale.
+Watched items and listings get an **alert**: a sound, a green outline, and the app comes to
+the front. The **Watched** tab has two lists.
 
-1. In the **Alerts** tab, type the item, optionally a **max price**, and click **Add
-   alert**. Or right-click any item → **Alert me when this is listed…**
-2. When it shows up in a shop you open, the app pings, brings its window to the front and
-   records the price, shop, player, map, channel and time.
+**Watched items** (top): any listing of an item.
+1. Type the item, optionally a **max price**, and click **Watch**. Or right-click any item →
+   **Watch this item…**
+2. When it's for sale in a shop you open, you get an alert, and the price, shop, player,
+   map, channel and time are shown.
 
-Pick your own sound with **Choose sound…**. Sound and "bring to front" can each be turned
-off. Right-click an alert to see its history, change the max price or remove it.
+**Watched listings** (bottom): one player's listing, e.g. a Korean Fan with +5 ATK.
+1. Right-click a listing in Live, Deals or an item's history → **Watch this listing…**, and
+   enter a note for it.
+2. When that listing is for sale again, you get an alert. Its latest price, place and time
+   are shown, and it's marked sold once it sells.
 
-**Ignored:** items you don't care about. They never count as deals or ring the bell, but
-their prices are still logged. Right-click any item → **Ignore deals on…**
+Right-click a watched item or listing to see its history, change the max price or note, or
+remove it. Pick your own alert sound with **Choose sound…**. Sound and "bring to front" can
+each be turned off.
+
+**Ignored:** items you don't care about. They never count as deals, but their prices are
+still logged and watched items still get alerts. Right-click any item → **Ignore deals on…**
 
 ## Market price
 
@@ -196,7 +212,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 | Folder | Contents |
 |---|---|
 | `prices/` | your prices (`prices.db`) |
-| `settings/` | settings, alerts, ignore list, manual matches |
+| `settings/` | settings, watched items and listings, ignore list, manual matches |
 | `cache/` | downloaded item and map lists, icons |
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |
