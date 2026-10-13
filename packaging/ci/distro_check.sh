@@ -64,8 +64,8 @@ case "$FAMILY" in
   xbps)       # Void Linux (glibc)
     xbps-install -Syu xbps >/dev/null 2>&1
     xbps-install -Syu >/dev/null 2>&1
-    xbps-install -y python3 python3-tkinter tesseract-ocr tesseract-ocr-eng \
-      xorg-server-xvfb >/dev/null || exit 1
+    xbps-install -y python3 python3-tkinter tesseract-ocr xorg-server-xvfb || exit 1
+    xbps-query -f tesseract-ocr | grep -E "bin/|eng" 
     for t in grim spectacle gnome-screenshot; do
       xbps-query -R "$t" >/dev/null 2>&1 && WAYLAND_TOOLS="$WAYLAND_TOOLS $t"
     done ;;
@@ -89,7 +89,8 @@ gui_check() {   # $@ = command; it must still be running after 15 s
   DISPLAY=:91 timeout 15 "$@" >/tmp/gui.log 2>&1
   rc=$?
   kill $XP 2>/dev/null
-  if [ $rc -eq 124 ]; then echo "GUI: ran 15 s without errors"; return 0; fi
+  # stopped by timeout = still running after 15 s (GNU timeout: 124, BusyBox: 143)
+  if [ $rc -eq 124 ] || [ $rc -eq 143 ]; then echo "GUI: ran 15 s without errors"; return 0; fi
   echo "GUI: exited with $rc"; tail -15 /tmp/gui.log; return 1
 }
 
