@@ -22,7 +22,7 @@ Versions are `YYMM.minor.hotfix`.
 - **Exports are timestamped**: every export's file name gets your local date and time,
   `YYYY-MM-DD HH-MM-SS`. That covers prices, the item and map lists, and the command
   line's `export`, `export-items`, `export-maps` and `report`. For example,
-  `mfm market prices 2026-10-13 08-11-00.csv`.
+  `mfm-tracker market prices 2026-10-13 08-11-00.csv`.
 
 - **Linux distributions** documented: install commands for Ubuntu/Debian/Mint and other
   apt distros, Fedora, RHEL/Rocky/AlmaLinux, openSUSE, Arch/Manjaro, Void and Alpine,
@@ -31,6 +31,19 @@ Versions are `YYMM.minor.hotfix`.
   tests all of it in each distro's official container.
 
 ### Changed
+- **Name:** the app is **Free Market Tracker**, "Free Market price tracker for MapleStory
+  Classic World". Its technical name, `mfm-tracker`, is used for the command line, export
+  file names, the data folder and the repository. "mfm" is gone:
+  - exports are named `mfm-tracker market prices …`, `mfm-tracker item list …`;
+  - from source, run `python mfm-tracker gui` (a new launcher in the repository; every
+    command in the README uses it). `python mfm.py …` still works.
+- **Capture every** now defaults to **0.15 seconds** (was 0.75). If you never changed it,
+  you get the new default.
+- **Required sightings before judging** (Settings; was "Outliers: judge after this many
+  sightings") now also applies to **DEAL / HIGH**. Your own sightings only give an item a
+  market price once it has that many (default 5) in the market window, so a listing isn't
+  called a deal against one or two prices. Imported reference prices still count straight
+  away. **Flag DEAL / HIGH at ± %** moved right under it. Your saved value carries over.
 - From source on Linux, `pynput` is no longer installed by `requirements.txt`: it has to
   be compiled (C compiler and kernel headers), which made `pip install` fail on a fresh
   system. Only `hotkey` uses it; that command now says how to add it.

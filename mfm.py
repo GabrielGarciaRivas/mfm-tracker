@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
 """
-mfm - MapleStory Classic Free Market price tracker.
+mfm-tracker - Free Market Tracker: Free Market price tracker for MapleStory Classic World.
 
 Captures a region of your screen (the shop window), OCRs item names and prices,
 logs them to a local SQLite database, and flags listings that are above or
 below market rate.
 
-Works on Windows and Linux (X11 and Wayland).
+Works on Windows, macOS and Linux (X11 and Wayland).
 
 Commands:
-  mfm calibrate [--map]      drag a box around the store window (or the minimap name)
-  mfm capture [--channel N]  grab the store window once, OCR it, log prices
-  mfm gui                    live window: monitors while you play and scroll shops
-  mfm watch   [--channel N]  same continuous monitoring, in the terminal
-  mfm hotkey                 press F8 in-game to capture (Windows / X11 only)
-  mfm scan IMAGE...          OCR existing screenshots instead of the live screen
-  mfm deals                  listings from the last day vs. market rate
-  mfm item NAME              price history for one item
-  mfm report                 write an HTML report ("report YYYY-MM-DD HH-MM-SS.html")
-  mfm import-ref FILE.csv    load reference prices (item,price) e.g. from meso.watch
-  mfm forget NAME            delete all logged listings of one item (bad OCR reads)
-  mfm purge-old              delete everything logged by the first (buggy) parser version
-  mfm meowdb                 download Classic item names/ids from NiaMeowDB (meowdb.com)
-  mfm fetch-icons            official meowdb icons for every item you've logged
-  mfm osms [--force]         update the backup item + map lists (OSMS Data Explorer)
-  mfm prune [--days N] [--delete | --archive DIR]   archive/delete old listings
-  mfm import-items FILE      use your own item list (txt / csv / json)
-  mfm export-items FILE      save the item list in use (json / csv keep ids, categories, icons)
-  mfm import-maps FILE       use a map list for correcting map names
-  mfm export-maps FILE       save the map list in use
-  mfm review [--accept]      names not in the item database, with suggested matches
-  mfm export FILE.csv [--all]  market prices per item (re-importable), or every sighting
+  mfm-tracker calibrate [--map]         drag a box around the store window (or the minimap name)
+  mfm-tracker capture [--channel N]     grab the store window once, OCR it, log prices
+  mfm-tracker gui                       live window: monitors while you play and scroll shops
+  mfm-tracker watch [--channel N]       same continuous monitoring, in the terminal
+  mfm-tracker hotkey                    press F8 in-game to capture (Windows / X11 only)
+  mfm-tracker scan IMAGE...             OCR existing screenshots instead of the live screen
+  mfm-tracker deals                     listings from the last day vs. market rate
+  mfm-tracker item NAME                 price history for one item
+  mfm-tracker report                    write an HTML report ("report YYYY-MM-DD HH-MM-SS.html")
+  mfm-tracker import-ref FILE.csv       load reference prices (item,price) e.g. from meso.watch
+  mfm-tracker forget NAME               delete all logged listings of one item (bad OCR reads)
+  mfm-tracker purge-old                 delete everything logged by the first (buggy) parser version
+  mfm-tracker meowdb                    download Classic item names/ids from NiaMeowDB (meowdb.com)
+  mfm-tracker fetch-icons               official meowdb icons for every item you've logged
+  mfm-tracker osms [--force]            update the backup item + map lists (OSMS Data Explorer)
+  mfm-tracker prune [--days N] [--delete | --archive DIR]  archive/delete old listings
+  mfm-tracker import-items FILE         use your own item list (txt / csv / json)
+  mfm-tracker export-items FILE         save the item list in use (json / csv keep ids, categories, icons)
+  mfm-tracker import-maps FILE          use a map list for correcting map names
+  mfm-tracker export-maps FILE          save the map list in use
+  mfm-tracker review [--accept]         names not in the item database, with suggested matches
+  mfm-tracker export FILE.csv [--all]   market prices per item (re-importable), or every sighting
 Every export adds the local date and time to its file name: prices.csv is saved
 as "prices 2026-10-13 08-11-00.csv".
 """
@@ -141,7 +141,7 @@ _migrate_layout()
 DEFAULT_CONFIG = {
     "region": None,            # store window [l, t, w, h]; None = find it automatically
     "map_region": None,        # minimap name area; None = estimate from the store position
-    "interval_seconds": 0.75, # how often monitor/watch grabs the screen
+    "interval_seconds": 0.15, # how often monitor/watch grabs the screen
     "confirm_frames": 2,       # identical reads needed before a row is logged
     "unmatched_extra_frames": 2,  # extra reads for a name not in the meowdb list first
     "close_frames": 3,         # empty frames in a row = shop closed
@@ -149,7 +149,8 @@ DEFAULT_CONFIG = {
     "deal_threshold_pct": 15,  # flag listings this % below/above market
     "history_days": 14,        # window for computing market rate from your logs
     "outliers_on": True,       # ignore absurd prices once an item has enough sightings
-    "outlier_min_n": 5,        # sightings needed before outliers are judged
+    "min_sightings": 5,        # sightings an item needs before it's judged (market price,
+                               # DEAL / HIGH, outliers)
     "outlier_ceiling_pct": 200,  # more than this % ABOVE the median is an outlier (200 = 3x)
     "outlier_floor_pct": 75,     # more than this % BELOW the median is an outlier (75 = 1/4)
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
@@ -175,6 +176,11 @@ def load_config() -> dict:
         saved = json.loads(CONFIG_PATH.read_text())
         if "confirm_frames" not in saved and saved.get("interval_seconds") == 3:
             saved.pop("interval_seconds")  # old default was too slow for scrolling
+        if saved.get("interval_seconds") == 0.75:
+            saved.pop("interval_seconds")  # the previous default: use the new one
+        if "outlier_min_n" in saved:       # renamed: it now applies to DEAL / HIGH too
+            saved.setdefault("min_sightings", saved["outlier_min_n"])
+            saved.pop("outlier_min_n")
         cfg.update(saved)
     return cfg
 
@@ -353,7 +359,7 @@ def grab_full_screen() -> Image.Image:
             return img
 
     # Wayland: X11 grabbers only see black, so shell out to a native tool.
-    tmp = Path(tempfile.gettempdir()) / "mfm_grab.png"
+    tmp = Path(tempfile.gettempdir()) / "mfm-tracker-grab.png"
     candidates = [
         ["grim", str(tmp)],                                   # Hyprland, Sway, river...
         ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],      # KDE Plasma
@@ -424,7 +430,7 @@ def calibrate(parent=None, shot=None, on_done=None, key="region") -> None:
 
     root = tk.Toplevel(parent) if parent else tk.Tk()
     root.attributes("-fullscreen", True)
-    root.title("mfm calibrate - drag around the shop item list, Esc to cancel")
+    root.title("Free Market Tracker - drag around the shop item list, Esc to cancel")
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     scale = min(sw / shot.width, sh / shot.height, 1.0)
     disp = shot.resize((int(shot.width * scale), int(shot.height * scale)))
@@ -2007,7 +2013,7 @@ ITEM_IDS_PATH = CACHE_DIR / "item_ids.json"
 ITEM_ICONS_PATH = CACHE_DIR / "item_icons.json"     # item name -> meowdb icon key
 ITEM_TYPES_PATH = CACHE_DIR / "item_types.json"     # item name -> meowdb subtype ("Throwing Star", ...)
 MEOWDB_API = "https://meowdb.com/msclassic/api"
-USER_AGENT = "mfm-tracker/1.0 (personal MapleStory Classic price tracker)"
+USER_AGENT = "mfm-tracker/1.0 (Free Market price tracker for MapleStory Classic World)"
 
 
 # Trusted certificate authorities for HTTPS. A packaged app carries a Python built on
@@ -3875,7 +3881,7 @@ def similar(a: str, b: str) -> float:
 
 
 # Outliers: troll listings (69,420,420), fat-fingered prices and OCR slips (4 for
-# 4,000) would skew an item's market rate. Once an item has `outlier_min_n`
+# 4,000) would skew an item's market rate. Once an item has `min_sightings`
 # sightings in the history window, anything more than `outlier_ceiling_pct` above
 # or `outlier_floor_pct` below their MEDIAN is set aside. The median is the
 # baseline because one absurd price barely moves it, where it would drag an
@@ -3890,7 +3896,7 @@ def outlier_bounds(con, item: str, cfg: dict) -> tuple[float, float] | None:
     unit = [p for (p,) in con.execute(
         "SELECT price FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
         (item, since))]
-    if len(unit) < max(3, int(cfg.get("outlier_min_n", 5))):
+    if len(unit) < max(3, min_sightings(cfg)):
         return None
     med = statistics.median(unit)
     lo = med * max(0.0, 1 - float(cfg.get("outlier_floor_pct", 75)) / 100)
@@ -3926,14 +3932,31 @@ def price_stats(con, item: str, cfg: dict, bounds="auto") -> dict:
     }
 
 
+def min_sightings(cfg: dict) -> int:
+    """Sightings an item needs (in the history window) before it's judged: before
+    your own sightings give it a market price, and so before DEAL / HIGH, and
+    before unusual prices are set aside as outliers."""
+    try:
+        return max(1, int(cfg.get("min_sightings", 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
 def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     """What an item is worth, in order of preference:
     1. a reference price you imported (e.g. from meso.watch)
     2. the median price it has actually SOLD for (2+ sales seen)
-    3. the median of everything seen, listed and sold (3+ sightings)"""
+    3. the median of everything seen, listed and sold
+    2 and 3 only once the item has `min_sightings` sightings in the history window,
+    so a listing isn't called a DEAL or HIGH against one or two prices."""
     ref = con.execute("SELECT price, source FROM reference WHERE item = ?", (item,)).fetchone()
     if ref:
         return ref[0], ref[1] or "reference"
+    need = min_sightings(cfg)
+    seen = con.execute("SELECT COUNT(*) FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
+                       (item, utc_ago(days=cfg["history_days"]))).fetchone()[0]
+    if seen < need:
+        return None, f"not enough data ({seen} of {need} sightings)"
     bounds = outlier_bounds(con, item, cfg)
     st = price_stats(con, item, cfg, bounds)
     skipped = f", {st['outliers']} outlier{'s' if st['outliers'] != 1 else ''} ignored" if st["outliers"] else ""
@@ -3943,7 +3966,7 @@ def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     unit = [p for (p,) in con.execute(
         "SELECT price FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
         (item, since)) if not is_outlier(p, bounds)]
-    if len(unit) >= 3:
+    if unit:
         return int(statistics.median(unit)), f"median of {len(unit)} seen{skipped}"
     return None, "not enough data"
 
@@ -4211,7 +4234,7 @@ def record(img: Image.Image, channel: str | None, cfg: dict, map_img=None, quiet
         print_listings(con, frame.listings, cfg)
         if not frame.listings:
             print("No listings recognised. Make sure the capture area covers the store window"
-                  " (re-run `mfm calibrate`), or set \"save_captures\": true to inspect captures.")
+                  " (re-run `mfm-tracker calibrate`), or set \"save_captures\": true to inspect captures.")
     return frame.listings
 
 
@@ -4657,9 +4680,9 @@ def hotkey(channel, cfg) -> None:
     if session_type() == "wayland":
         sys.exit(
             "Global hotkeys aren't available to apps on Wayland. Instead, bind a key in your\n"
-            "compositor to run `mfm capture`, e.g. for Hyprland:\n"
-            "  bind = , F8, exec, mfm capture\n"
-            "or use `mfm watch`."
+            "compositor to run `mfm-tracker capture`, e.g. for Hyprland:\n"
+            "  bind = , F8, exec, mfm-tracker capture\n"
+            "or use `mfm-tracker watch`."
         )
     try:
         from pynput import keyboard
@@ -4667,7 +4690,7 @@ def hotkey(channel, cfg) -> None:
         sys.exit("`hotkey` needs pynput, which isn't installed. On Linux it's optional because it\n"
                  "has to be compiled: install a C compiler and your kernel headers (e.g.\n"
                  "`sudo apt install build-essential linux-libc-dev`), then `pip install pynput`.\n"
-                 "Or use `mfm watch` / the GUI, which don't need it.")
+                 "Or use `mfm-tracker watch` / the GUI, which don't need it.")
 
     key_name = cfg["hotkey"].lower()
     target = getattr(keyboard.Key, key_name, None) or keyboard.KeyCode.from_char(key_name)
@@ -5018,7 +5041,7 @@ def selftest(cfg: dict) -> int:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(prog="mfm", description=__doc__,
+    p = argparse.ArgumentParser(prog="mfm-tracker", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("calibrate")
@@ -5115,7 +5138,7 @@ def main() -> None:
         con = db()
         rows = unmatched_items(con)
         if not has_item_list():
-            print("No item database installed yet: run `mfm.py meowdb` first.")
+            print("No item database installed yet: run `mfm-tracker meowdb` first.")
         elif not rows:
             print("Nothing to review: every logged item matches an item in the database.")
         for r in rows:

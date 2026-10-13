@@ -77,7 +77,7 @@ cat > "dist/free-market-tracker.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$NAME
-Comment=MapleStory Classic Free Market price tracker
+Comment=Free Market price tracker for MapleStory Classic World
 Exec="\$HOME/Applications/$NAME"
 Icon=free-market-tracker
 Terminal=false

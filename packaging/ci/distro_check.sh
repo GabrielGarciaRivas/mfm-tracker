@@ -98,17 +98,17 @@ gui_check() {   # $@ = command; it must still be running after 15 s
 
 FAIL=""
 say "from source"
-export XDG_DATA_HOME=/tmp/mfm-src
+export XDG_DATA_HOME=/tmp/mfm-tracker-src
 if $PY -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt; then
-  /tmp/venv/bin/python mfm.py selftest || FAIL="$FAIL source-selftest"
-  gui_check /tmp/venv/bin/python mfm.py gui || FAIL="$FAIL source-gui"
+  /tmp/venv/bin/python mfm-tracker selftest || FAIL="$FAIL source-selftest"
+  gui_check /tmp/venv/bin/python mfm-tracker gui || FAIL="$FAIL source-gui"
 else
   FAIL="$FAIL source-install"
 fi
 
 if [ -n "$APP" ]; then
   say "released app"
-  export XDG_DATA_HOME=/tmp/mfm-app
+  export XDG_DATA_HOME=/tmp/mfm-tracker-app
   if "$APP" selftest; then
     gui_check "$APP" || FAIL="$FAIL app-gui"
   else

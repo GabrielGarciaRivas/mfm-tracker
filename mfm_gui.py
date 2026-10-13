@@ -1,5 +1,5 @@
 """
-Live monitoring window for mfm. Run with:  python mfm.py gui   (or python mfm_gui.py)
+Live monitoring window of Free Market Tracker (mfm-tracker). Run with:  python mfm-tracker gui
 
 Leave it running while you play. Every shop you open and scroll through is read
 continuously; each listing appears in the Live tab the moment it's logged,
@@ -2072,8 +2072,8 @@ class App:
         return self._import_game_data("items", parent)
 
     GAME_DATA = {
-        "items": ("item list", "mfm item list", mfm.import_items, mfm.export_items),
-        "maps": ("map list", "mfm map list", mfm.import_maps, mfm.export_maps),
+        "items": ("item list", "mfm-tracker item list", mfm.import_items, mfm.export_items),
+        "maps": ("map list", "mfm-tracker map list", mfm.import_maps, mfm.export_maps),
     }
 
     def _import_game_data(self, kind, parent=None):
@@ -2551,7 +2551,7 @@ class App:
         )).pack(anchor="w", padx=14, pady=2)
 
         def go():
-            default = mfm.stamped(f"mfm {'market prices' if kind.get() == 'market' else 'sightings'}.csv")
+            default = mfm.stamped(f"mfm-tracker {'market prices' if kind.get() == 'market' else 'sightings'}.csv")
             path = filedialog.asksaveasfilename(parent=win, title="Export prices", defaultextension=".csv",
                                                 initialfile=default, filetypes=[("CSV", "*.csv")])
             if not path:
@@ -2651,14 +2651,14 @@ class App:
         win.transient(self.root)
         win.resizable(False, False)
         fields = [
-            ("deal_threshold_pct", "Flag DEAL / HIGH at ± %", 1, 90, 1),
-            ("interval_seconds", "Capture every (seconds)", 0.25, 10, 0.25),
+            ("interval_seconds", "Capture every (seconds)", 0.05, 10, 0.05),
             ("confirm_frames", "Frames to confirm a row", 1, 5, 1),
             ("unmatched_extra_frames", "Extra reads for names not in database", 0, 5, 1),
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
             ("history_days", "Market median window (days)", 1, 90, 1),
             ("upscale", "OCR upscale factor", 1, 6, 1),
-            ("outlier_min_n", "Outliers: judge after this many sightings", 3, 100, 1),
+            ("min_sightings", "Required sightings before judging", 1, 100, 1),
+            ("deal_threshold_pct", "Flag DEAL / HIGH at ± %", 1, 90, 1),
             ("outlier_ceiling_pct", "Outliers: ceiling, % above median", 10, 10000, 10),
             ("outlier_floor_pct", "Outliers: floor, % below median", 5, 99, 5),
         ]
@@ -2666,7 +2666,8 @@ class App:
             "deal_threshold_pct": "How far below the market price a listing must be to count as a "
                                   "DEAL (and how far above to count as HIGH).",
             "interval_seconds": "How often the screen is read while monitoring. Lower is quicker to "
-                                "catch rows; higher uses less CPU.",
+                                "catch rows; higher uses less CPU. A read that takes longer than "
+                                "this starts the next one straight away.",
             "confirm_frames": "How many identical reads a row needs before it's saved. Higher "
                               "avoids misreads; lower saves rows faster while scrolling.",
             "unmatched_extra_frames": "Names that aren't in the item database are read this many "
@@ -2675,7 +2676,10 @@ class App:
             "history_days": "How many days of your own sightings make up an item's market price.",
             "upscale": "How much the screen text is enlarged before it's read. Raise it if small "
                        "text is misread; higher is slower.",
-            "outlier_min_n": "An item needs this many sightings before unusual prices are set aside.",
+            "min_sightings": "An item needs this many sightings (within the market window) before "
+                             "it's judged: before your sightings give it a market price, so before "
+                             "listings are flagged DEAL or HIGH, and before unusual prices are set "
+                             "aside as outliers. Imported reference prices count straight away.",
             "outlier_ceiling_pct": "Prices this far above the item's usual price are ignored for "
                                    "its market price (troll listings, typos).",
             "outlier_floor_pct": "Prices this far below the item's usual price don't change its "

@@ -1,6 +1,6 @@
 """Entry point of the packaged "Free Market Tracker" app.
 
-Double-click: opens the live window. With arguments it behaves like mfm.py
+Double-click: opens the live window. With arguments it behaves like the mfm-tracker command
 ("Free Market Tracker" deals, ... item NAME, ...).
 """
 import sys

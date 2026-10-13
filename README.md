@@ -1,4 +1,7 @@
-# Maplestory Free Market Tracker — MapleStory Classic price tracker
+# Free Market Tracker
+
+**Free Market price tracker for MapleStory Classic World.** Its technical name, used for
+the repository, the command line and the data folder, is `mfm-tracker`.
 
 Screenshots the shop window, reads item names and prices with OCR, logs them to a
 local database, and tells you whether each listing is a **DEAL**, **fair**, or **HIGH**
@@ -37,7 +40,7 @@ nothing else needs to be installed. Put it anywhere and double-click it.
   differently.) See [Linux distributions](#linux-distributions) for where it runs.
 - Your data (prices, alerts, settings) stays in the same data folder as before, so the app
   and the Python scripts share it.
-- With arguments it works like `mfm.py`, e.g. `"Free Market Tracker" deals`.
+- With arguments it works like the `mfm-tracker` command, e.g. `"Free Market Tracker" deals`.
 
 ### Building the apps yourself
 - **Windows:** double-click `packaging/Build Windows App.bat`. It installs Python and
@@ -89,7 +92,7 @@ Then, in the `mfm-tracker` folder:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # works in bash, zsh and fish
-.venv/bin/python mfm.py gui
+.venv/bin/python mfm-tracker gui
 ```
 Or activate the venv first (`source .venv/bin/activate` in bash/zsh,
 `source .venv/bin/activate.fish` in fish) and use plain `python`.
@@ -156,6 +159,7 @@ is needed.
 cd mfm-tracker
 py -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python mfm-tracker gui
 ```
 Run the game in **windowed or borderless** mode; exclusive fullscreen can capture black.
 
@@ -165,7 +169,7 @@ brew install tesseract python@3.12 python-tk@3.12
 cd mfm-tracker
 python3.12 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python mfm.py gui
+.venv/bin/python mfm-tracker gui
 ```
 Give Terminal (or whichever app runs the script) Screen Recording permission.
 
@@ -173,7 +177,7 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
 
 ### Live window (recommended)
 ```bash
-.venv/bin/python mfm.py gui
+.venv/bin/python mfm-tracker gui
 ```
 1. On first start it offers to download the **MapleStory Classic item list** from
    NiaMeowDB (see below). Say yes: OCR'd names are snapped onto real
@@ -183,7 +187,7 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
    "Pet Equip Speed Scroll"). Letters OCR commonly confuses (g/p, a/o, l/i, rn/m) are
    treated as near-equal when matching, while genuinely different items (Wolbi vs Mokbi,
    10% vs 60%) are never merged. You can also do this from Settings or with
-   `.venv/bin/python mfm.py meowdb`.
+   `.venv/bin/python mfm-tracker meowdb`.
 2. Click **Start monitoring** and play normally. Open shops and scroll through them.
    There's nothing to set up. The store window is found automatically wherever it is, on
    any monitor, by its SELLER INFO / BUY ITEM / LEAVE STORE buttons (only shop windows
@@ -292,7 +296,7 @@ is for sale in a shop you open.
   window as in the Items tab. Right-click an alert for **Show history**, **Change max
   price…** and **Remove item**; right-click an ignored item for **Show history** and
   **Remove item** (stop ignoring it). Both work on several selected rows at once.
-- Alerts are saved in `watchlist.json` in the data folder (`mfm.py where`).
+- Alerts are saved in `watchlist.json` in the data folder (`mfm-tracker where`).
 
 ### Selecting several rows
 Every table (Live, Deals, Items, Alerts, Ignored) lets you pick several rows at once:
@@ -324,7 +328,7 @@ or add them in the **Ignored** tab. Ignored items never ring the deal bell or ge
 green DEAL highlight, and they're hidden from the Deals tab unless you tick **Show
 ignored**. They're still logged (prices, history and market rates keep working), and an
 alert you've set on an ignored item still fires. Stored in `ignorelist.json` in the data
-folder; `mfm.py deals` skips them too.
+folder; `mfm-tracker deals` skips them too.
 
 ### Outliers
 Troll prices (69,420,420), fat-fingered listings and OCR slips (4 for 4,000) would drag an
@@ -343,8 +347,8 @@ aside:
 
 The median is the baseline because a single absurd price barely moves it, where it would
 drag an average far enough to hide itself. Set the ceiling (default 200% = more than 3×
-the median), the floor (default 75% = less than a quarter of it), the number of sightings
-needed, or switch it off in **Settings**. Alerts you've set still fire on any price under
+the median), the floor (default 75% = less than a quarter of it), **Required sightings
+before judging**, or switch it off in **Settings**. Alerts you've set still fire on any price under
 your cap.
 
 ### Sold items
@@ -387,21 +391,21 @@ How it follows you around the market:
   item matches the prefix, it's matched to the full name automatically.
 
 **Upgrading from the first version?** Its parser logged junk rows ("For", "1For"…).
-Clear them out with `.venv/bin/python mfm.py purge-old`.
+Clear them out with `.venv/bin/python mfm-tracker purge-old`.
 
 ### Command line
 ```bash
-python mfm.py calibrate          # manually set the store-window area (normally automatic)
-python mfm.py calibrate --map    # manually set the minimap name area
-python mfm.py calibrate --auto   # forget manual areas, go back to automatic
-python mfm.py watch --channel 5  # same continuous monitoring, printed in the terminal
-python mfm.py hotkey             # one capture per F8 press (Windows / X11)
-python mfm.py deals              # last 24h of listings ranked by % vs market
-python mfm.py item dark scroll gloves  # history for one item (fuzzy name match)
-python mfm.py report             # report.html with trends, open in a browser
-python mfm.py scan shot1.png     # OCR a screenshot of a store window
-python mfm.py scan --full screen.png   # full-screen screenshot: finds the store automatically
-python mfm.py forget "For"       # delete every listing of one (misread) item
+python mfm-tracker calibrate          # manually set the store-window area (normally automatic)
+python mfm-tracker calibrate --map    # manually set the minimap name area
+python mfm-tracker calibrate --auto   # forget manual areas, go back to automatic
+python mfm-tracker watch --channel 5  # same continuous monitoring, printed in the terminal
+python mfm-tracker hotkey             # one capture per F8 press (Windows / X11)
+python mfm-tracker deals              # last 24h of listings ranked by % vs market
+python mfm-tracker item dark scroll gloves  # history for one item (fuzzy name match)
+python mfm-tracker report             # report.html with trends, open in a browser
+python mfm-tracker scan shot1.png     # OCR a screenshot of a store window
+python mfm-tracker scan --full screen.png   # full-screen screenshot: finds the store automatically
+python mfm-tracker forget "For"       # delete every listing of one (misread) item
 ```
 
 Moving the game window or the store window is fine; it's re-found automatically.
@@ -430,10 +434,10 @@ It's downloaded with **Update** (checked at most once a week, with conditional r
 so unchanged files cost almost nothing; Full refresh checks it right away), and also when
 meowdb can't be reached. A downloaded file that doesn't look like the expected format is
 rejected and the previous copy kept. Settings → Game data shows what it adds. Command
-line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
+line: `mfm-tracker osms [--force]`; `mfm-tracker meowdb` updates it too.
 
 - On first start the GUI offers to download the Classic item and map lists; after that,
-  **Settings → Game data → Update** (or `.venv/bin/python mfm.py meowdb`) only fetches
+  **Settings → Game data → Update** (or `.venv/bin/python mfm-tracker meowdb`) only fetches
   what changed:
   - meowdb lists items in id order and new items get new ids, so an update re-checks just
     the page holding your newest item, plus any pages after it: usually **one request**,
@@ -442,7 +446,7 @@ line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
     asking more often makes no requests at all.
   - A full re-download (one request per 500 items, one per second) happens the first time,
     after 30 days, if meowdb's list changed earlier in the list, or when you click **Full
-    refresh** (`mfm.py meowdb --full`).
+    refresh** (`mfm-tracker meowdb --full`).
   - There's no fixed number of pages: each page from meowdb says whether more follow
     (`hasMore`) and how many there are (`totalPages`), and pages are read until there are no
     more, so a list that grows past 11 pages (5,500 items) is still read completely. An
@@ -469,10 +473,10 @@ line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
   - Each icon is downloaded once, ever: later updates only fetch icons of new
   items (an item whose picture changes gets a new icon key, so that's caught too). Closing
   the app stops it; the next update continues where it left off. Icons meowdb doesn't have
-  aren't asked for again for a month. Command line: `mfm.py meowdb --icons`.
+  aren't asked for again for a month. Command line: `mfm-tracker meowdb --icons`.
 - With that option off, icons are still fetched for the items you see in shops and in
   item search. Official icons replace the screen-captured thumbnails; items meowdb doesn't
-  have keep the thumbnail cut from the screen. `mfm.py fetch-icons` fetches icons for
+  have keep the thumbnail cut from the screen. `mfm-tracker fetch-icons` fetches icons for
   everything you've logged.
 - Items whose name doesn't exactly match anything in the item database get a small red
   **!** badge on their thumbnail (Live, Deals, Items and history). It usually means an OCR
@@ -507,13 +511,13 @@ line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
   - **Accept all 90%+ alike** matches every confident suggestion at once, after showing you
     the list.
   The tab title shows how many names are waiting, e.g. "Review (7)". Command line:
-  `mfm.py review` lists them, `mfm.py review --accept` accepts the 90%+ ones.
+  `mfm-tracker review` lists them, `mfm-tracker review --accept` accepts the 90%+ ones.
 - **Manual matching:** right-click an item (Live, Deals or Items) → **Match to database
   item…**, type to search, and pick the right one. Its listings are renamed, and with
   "Remember" ticked the tracker learns that reading, so the next time your OCR produces
   the same misspelling it's logged correctly. Matches are stored in `aliases.json` in the
-  data folder (`mfm.py where`); truncated scroll names are remembered per icon colour.
-  Command line: `mfm.py match "Rennae Hat" "Reggae Hat"`.
+  data folder (`mfm-tracker where`); truncated scroll names are remembered per icon colour.
+  Command line: `mfm-tracker match "Rennae Hat" "Reggae Hat"`.
 - **Map names** are checked against meowdb's map list (downloaded with the items, one
   extra request) and the backup source's, so misreads like "Hidden Streat: Free Marker
   <8>" are logged as "Hidden Street: Free Market <8>". Room and area numbers must match
@@ -590,14 +594,18 @@ Each has **Import…** and **Export…** (command line: `import-items`, `export-
 
 For each item, "market" is:
 1. your imported reference price, if you have one, otherwise
-2. the median price of your own logs over the last 14 days (needs 3+ sightings).
+2. the median price of your own logs over the last 14 days (sold prices once 2+ sales
+   are seen, otherwise everything seen), once the item has **Required sightings before
+   judging** (Settings, default 5) in that window. Until then it has no market price, so
+   its listings aren't flagged **DEAL** or **HIGH** yet ("not enough data (2 of 5
+   sightings)"). An imported reference price counts straight away.
 
 meso.watch's robots.txt disallows automated access, so this tool doesn't scrape it.
 To use its numbers, copy the prices you care about into a CSV like
 `reference_prices.csv` and run:
 
 ```bash
-python mfm.py import-ref reference_prices.csv
+python mfm-tracker import-ref reference_prices.csv
 ```
 
 Re-import whenever you refresh it; existing items are overwritten. If meso.watch
@@ -605,7 +613,7 @@ ever offers an API or data export, that would be the clean way to automate this 
 worth asking the site owner.
 
 ### Exporting prices
-**Export prices…** (next to Import prices, or `mfm.py export FILE.csv [--all]`) saves a CSV:
+**Export prices…** (next to Import prices, or `mfm-tracker export FILE.csv [--all]`) saves a CSV:
 - **Market prices**: one row per item with its market price and where that came from,
   listed and sold medians, outliers ignored, and the cheapest listing still for sale.
   Its first columns are `item,price,source`, so it can be imported again (on another
@@ -613,9 +621,9 @@ worth asking the site owner.
 - **Every sighting**: date, item, price, sold or for sale, shop, seller (player), map, channel.
   Its times are UTC (`first_seen_utc`, `last_seen_utc`, `sold_at_utc`).
 
-Every export (prices, item and map lists, and `mfm.py report`) adds your local date and
-time to the file name, as `YYYY-MM-DD HH-MM-SS`: `mfm market prices 2026-10-13
-08-11-00.csv`, `mfm item list 2026-10-13 08-11-00.zip`. On the command line the time
+Every export (prices, item and map lists, and `mfm-tracker report`) adds your local date and
+time to the file name, as `YYYY-MM-DD HH-MM-SS`: `mfm-tracker market prices
+2026-10-13 08-11-00.csv`, `mfm-tracker item list 2026-10-13 08-11-00.zip`. On the command line the time
 goes onto the name you give (`export prices.csv` → `prices 2026-10-13 08-11-00.csv`).
 
 ## Errors
@@ -651,12 +659,12 @@ The version shown in the status bar is `YYMM.minor.hotfix`, e.g. `2610.1.000`.
   since market prices would have less data.
 - When `prices.db` grows past **100 MB**, a **red warning** appears at the top of the main
   window recommending to archive and/or delete some data; clicking it opens Settings.
-- Command line: `mfm.py prune [--days N] [--delete | --archive DIR]`.
+- Command line: `mfm-tracker prune [--days N] [--delete | --archive DIR]`.
 
 ## Your data
 
 Everything lives in one data folder (`%APPDATA%\mfm-tracker` on Windows,
-`~/Library/Application Support/mfm-tracker` on macOS, `~/.local/share/mfm-tracker` on Linux; `mfm.py where` or **Settings → Open data folder**
+`~/Library/Application Support/mfm-tracker` on macOS, `~/.local/share/mfm-tracker` on Linux; `mfm-tracker where` or **Settings → Open data folder**
 shows it), split three ways so each part can be backed up or cleared on its own:
 
 | folder | what's in it |
@@ -686,7 +694,7 @@ short explanation), or edit `settings/config.json`:
 | key | default | meaning |
 |---|---|---|
 | `deal_threshold_pct` | 15 | % below/above market to flag DEAL/HIGH |
-| `interval_seconds` | 0.75 | how often the screen is read while monitoring |
+| `interval_seconds` | 0.15 | how often the screen is read while monitoring (a read that takes longer starts the next one straight away) |
 | `confirm_frames` | 2 | identical reads needed before a row is logged |
 | `unmatched_extra_frames` | 2 | extra reads for a name not in the item database before it's logged |
 | `close_frames` | 3 | empty frames in a row that mean the shop closed |
@@ -701,7 +709,7 @@ short explanation), or edit `settings/config.json`:
 | `retention` | `archive` | `archive` (copy to the archive, then delete), `delete`, or `keep` (never remove) |
 | `archive_dir` | null | archive folder (null = `archives/` in the data folder) |
 | `outliers_on` | true | ignore outlier prices once an item has enough sightings |
-| `outlier_min_n` | 5 | sightings needed before outliers are judged |
+| `min_sightings` | 5 | Required sightings before judging: sightings an item needs (in the history window) before your own prices give it a market price, so before DEAL / HIGH, and before outliers are set aside |
 | `outlier_ceiling_pct` | 200 | more than this % above the median is an outlier |
 | `outlier_floor_pct` | 75 | more than this % below the median is an outlier |
 
