@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.12.001"
+VERSION = "2610.12.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -1727,15 +1727,21 @@ def find_minimap(full: Image.Image, store=None) -> list | None:
         left = x + gap + 1
         if x0 - left < 2.5 * bwid:
             continue
-        # steel-blue name panel under the strip
-        cx = left + int((x1 - left) * 0.7)
+        # steel-blue name panel under the strip, measured across its width (one
+        # column could run through the map name's letters)
+        xs = range(left + (x1 - left) // 3, x1, 3)
+
+        def panel_share(yy):
+            return sum(1 for xx in xs if px[xx, yy][2] - px[xx, yy][0] >= 25 and px[xx, yy][1] >= 100) / len(xs)
         y = y1 + 2
-        while y < H and y - y1 < bh * 2 and not (px[cx, y][2] - px[cx, y][0] >= 25 and px[cx, y][1] >= 100):
+        while y < H and y - y1 < bh * 2 and panel_share(y) < 0.3:
             y += 1
-        panel_top = y
-        while y < H and y - y1 < bh * 9 and (
-                (px[cx, y][2] - px[cx, y][0] >= 25 and px[cx, y][1] >= 100) or min(px[cx, y]) >= 235
-                or abs(px[cx, y][2] - px[cx, y][0]) >= 15):
+        panel_top, miss = y, 0
+        while y < H and y - y1 < bh * 9:
+            miss = 0 if panel_share(y) >= 0.3 else miss + 1
+            if miss > 1:
+                y -= 1
+                break
             y += 1
         if y - panel_top < bh * 2.5:
             continue

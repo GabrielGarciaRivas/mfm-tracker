@@ -1,5 +1,10 @@
 # Changelog
 
+## 2610.12.002 — 2026-10-13
+
+### Fixed
+- The map wasn't found on some maps, e.g. Victoria Road: Sunset Sky.
+
 ## 2610.12.001 — 2026-10-13
 
 ### New
