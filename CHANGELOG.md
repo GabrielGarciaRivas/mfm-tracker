@@ -20,6 +20,7 @@
   now also applies to DEAL / HIGH: an item needs 5 sightings before it gets a market price.
   **Flag DEAL / HIGH** moved under it in Settings.
 - From source on Linux, `pynput` is only needed for the `hotkey` command.
+- Simpler wording in the app, the README and the changelog.
 
 ### Fixed
 - Free Market map names were sometimes read as junk.

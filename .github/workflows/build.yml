@@ -114,11 +114,11 @@ jobs:
           m = re.search(r"^## " + re.escape(tag) + r"\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
           notes = m.group(1).strip() if m else ""
           downloads = """## Downloads
-          - **Windows:** `Free Market Tracker.exe`. Double-click it. The first time, SmartScreen may say "Windows protected your PC": click **More info → Run anyway** (the app isn't code-signed).
+          - **Windows:** `Free Market Tracker.exe`. Double-click it. If Windows says "Windows protected your PC", click **More info → Run anyway**.
           - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip and drag the app to Applications. If macOS won't open it, go to System Settings → Privacy & Security and click **Open Anyway**. Allow **Screen Recording** when asked, then quit and reopen the app.
-          - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker` (or run `./"Free Market Tracker"`).
+          - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker`.
 
-          Nothing else needs to be installed. See the README for how to use it.
+          Nothing else needs to be installed. The README explains how to use it.
           """
           downloads = "\n".join(line.strip() if line.strip().startswith(("-", "#", "Nothing")) else line
                                 for line in downloads.splitlines())
