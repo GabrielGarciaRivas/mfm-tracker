@@ -1,0 +1,5 @@
+pillow>=10
+pytesseract>=0.3.10
+mss>=9 ; sys_platform == "win32" or sys_platform == "linux"
+pynput>=1.7
+pyspellchecker>=0.7   # English words for correcting OCR'd shop titles
