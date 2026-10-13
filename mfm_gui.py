@@ -1679,7 +1679,8 @@ class App:
         top = ttk.Frame(win, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
-                  "ones you want and click Add.", wraplength=560, justify="left").pack(side="left")
+                  "ones you want and click Add. Add by name… puts in any other item.",
+                  wraplength=560, justify="left").pack(side="left")
         b = ttk.Button(top, text="Inventory area", command=lambda: self.calibrate(key="inventory_region"))
         b.pack(side="right")
         tip("Draw a box around your Item Inventory window, if it isn't found by itself. "
@@ -1722,6 +1723,8 @@ class App:
                 if not r:
                     continue
                 win.chosen[key] = name
+                if r.get("manual"):
+                    continue                     # typed in: no icon from the screen to learn
                 try:
                     mfm.learn_icon(self.con, name, r["icon"])
                     if win.state["matcher"] is not None:
@@ -1800,10 +1803,33 @@ class App:
             self.add_to_inventory(list(merged.items()))
             win.status.config(text=f"Added {mfm.plural(len(merged), 'item')} to My Inventory."
                               + (f" {unknown} unknown skipped." if unknown else ""))
+        def add_by_name():
+            name = self._choose_item(win, "Which item?", "")
+            if not name:
+                return
+            raw = ask_value(win, "Quantity", f"How many {name}?", "1",
+                            check=lambda t: t.strip().isdigit() and int(t) > 0)
+            if raw is None:
+                return
+            key = (-2, sum(1 for k in win.rows if k[0] == -2))
+            icon = mfm.load_icon(self.con, name) or Image.new("RGB", (32, 32), mfm.INV_SLOT_BG)
+            win.rows[key] = {"item": name, "guess": name, "score": 1.0, "qty": int(raw),
+                             "icon": icon, "manual": True}
+            self._inv_scan_show(win)
+            iid = json.dumps(list(key))
+            if tree.exists(iid):
+                tree.selection_add(iid)
+                tree.see(iid)
+            win.status.config(text=f"{name} is in the list. Select it and click Add.")
+
         bottom = ttk.Frame(win, padding=(12, 4, 12, 12))
         bottom.pack(fill="x")
         ttk.Button(bottom, text="Select all", command=lambda: tree.selection_set(tree.get_children())
                    ).pack(side="left")
+        b = ttk.Button(bottom, text="Add by name…", command=add_by_name)
+        b.pack(side="left", padx=6)
+        tip("Put an item in the list by typing its name, e.g. one that isn't in your inventory "
+            "window right now.", b)
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
         ttk.Button(bottom, text="Add", command=add).pack(side="right", padx=6)
         win.stop = threading.Event()
@@ -1931,15 +1957,17 @@ class App:
             name = win.chosen.get((tab, i)) or r["item"] or "?"
             if (tab, i) not in win.photos:
                 ic = r["icon"].copy()
-                ic.thumbnail((34, 34))
+                ic.thumbnail((28, 28))   # same size as the other tables' icons
                 win.photos[(tab, i)] = ImageTk.PhotoImage(ic)
             review = not r["item"] and (tab, i) not in win.chosen
-            match = ("chosen" if (tab, i) in win.chosen else f"{r['score']:.0%}" if r["item"]
+            match = ("added by name" if r.get("manual") and (tab, i) not in win.chosen
+                     else "chosen" if (tab, i) in win.chosen else f"{r['score']:.0%}" if r["item"]
                      else f"review: {r['guess']}? ({r['score']:.0%})" if r.get("guess") else "review: no match")
             tree.insert("", "end", iid=iid, image=win.photos[(tab, i)], tags=("review",) if review else (),
                         values=(
                 name, win.qty.get((tab, i), r["qty"]),
-                self.INV_TABS[tab] if 0 <= tab < len(self.INV_TABS) else "", match))
+                self.INV_TABS[tab] if 0 <= tab < len(self.INV_TABS) else ("By name" if tab == -2 else ""),
+                match))
         tree.selection_set([k for k in keep if tree.exists(k)])
 
     # ------------------------------------------------------------------ watched listings

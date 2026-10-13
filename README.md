@@ -160,7 +160,8 @@ Keep track of what the items you own are worth.
 2. Icons that couldn't be matched are highlighted: press **Enter** to accept the suggested
    item, **M** to pick one yourself, or **Delete** to remove the row. Your choice is
    remembered next time.
-3. Select the items you want and click **Add**.
+3. Select the items you want and click **Add**. **Add by name…** puts any other item in
+   the list by typing its name.
 
 If your inventory isn't found, click **Inventory area** and draw a box around it.
 **Settings → Auto Detection** goes back to finding it automatically.
