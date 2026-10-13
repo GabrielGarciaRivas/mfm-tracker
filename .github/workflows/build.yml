@@ -115,7 +115,7 @@ jobs:
           notes = m.group(1).strip() if m else ""
           downloads = """## Downloads
           - **Windows:** `Free Market Tracker.exe`. Double-click it. The first time, SmartScreen may say "Windows protected your PC": click **More info → Run anyway** (the app isn't code-signed).
-          - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip, drag the app to Applications, then right-click it → **Open** the first time (it isn't notarized by Apple). Allow **Screen Recording** when asked, then quit and reopen the app.
+          - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip and drag the app to Applications. If macOS won't open it, go to System Settings → Privacy & Security and click **Open Anyway**. Allow **Screen Recording** when asked, then quit and reopen the app.
           - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker` (or run `./"Free Market Tracker"`).
 
           Nothing else needs to be installed. See the README for how to use it.
