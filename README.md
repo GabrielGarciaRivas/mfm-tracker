@@ -167,6 +167,20 @@ e.g. `111 (liormm) · Free Market <2> · ch2`.
   Select a row and press Delete (or right-click) to remove a bad OCR read.
 - Double-click any row for its price history (sold sightings drawn as grey squares)
   and every sighting with its status and location.
+- **Filter the Items tab** with the bar above it, modelled on NiaMeowDB's item database:
+  - **Filter**: name contains the text you type.
+  - **Category** (Equip, Use, Etc, Setup, Cash) and, within it, the kind of item (Shoes,
+    Overall, Scroll, Ore, ...).
+  - **Class**: equipment that needs that class; tick **+ all-class** to include
+    equipment any class can use.
+  - **Level**: lowest and/or highest required level (empty = no limit).
+  - **Sold by NPCs**: only items an NPC shop sells.
+  - **Clear** resets it; the count shows how many of your items match. The filter is
+    remembered between sessions. The choices only list what your own items have.
+    Items the item lists don't know only match a name filter.
+  - The details come from the meowdb item list (and the backup source for items meowdb
+    doesn't have). Lists downloaded by older versions don't have them yet: the app
+    offers to re-download once, or press Settings → Game data → **Update**.
 - In the history window, **right-click a sighting** to **change its price** (per item;
   `45000`, `45,000` and `45k` all work), **change its channel** (1–100, or empty for
   unknown), or **delete it**. Pick several with Alt+click (Option+click on a Mac) to

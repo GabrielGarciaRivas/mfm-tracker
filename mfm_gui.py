@@ -744,6 +744,7 @@ class App:
                   text=" = not matched to any item in the database (check the spelling, or it may be new). "
                        "The Review tab lists them all with suggested matches."
                   ).pack(side="left")
+        self._build_item_filter(items)
         self.items = make_tree(items, ("item", "best", "best_shop", "best_player", "best_map", "best_channel",
                                        "listed_med", "listed_n",
                                        "sold_med", "sold_n", "market", "source"))
@@ -1132,8 +1133,14 @@ class App:
 
         best = mfm.cheapest(con, 24, cfg)
         self.items.delete(*self.items.get_children())
+        filt = self.item_filter() if hasattr(self, "f_name") else {}
+        shown = total = 0
         for (item,) in con.execute(
                 "SELECT DISTINCT item FROM listings ORDER BY item COLLATE NOCASE"):
+            total += 1
+            if filt and not mfm.item_matches(item, filt):
+                continue
+            shown += 1
             mkt, src = mfm.market_rate(con, item, cfg)
             st = mfm.price_stats(con, item, cfg, bounds.get(item, "auto"))
             b = best.get(item)
@@ -1150,8 +1157,117 @@ class App:
                 (b[3] or "") if b else "", (b[4] or "") if b else "",
                 mfm.fmt(st["listed_median"]), st["listed_n"],
                 mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt), src))
+        if hasattr(self, "f_count"):
+            self.f_count.config(text=f"{shown:,} of {total:,} items" if shown != total else
+                                f"{total:,} items")
         restore_deals()
         restore_items()
+
+    # ------------------------------------------------------------------ items filter
+    ANY = "Any"
+
+    def _build_item_filter(self, parent):
+        """Filter bar for the Items tab, modelled on NiaMeowDB's item database: name,
+        category and subtype, class (with or without all-class items), level range and
+        sold by NPCs. Remembered between sessions."""
+        saved = self.cfg.get("items_filter") or {}
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", pady=(0, 6))
+        self.f_name = tk.StringVar(value=saved.get("name", ""))
+        self.f_type = tk.StringVar(value=saved.get("type") or self.ANY)
+        self.f_sub = tk.StringVar(value=saved.get("subtype") or self.ANY)
+        self.f_job = tk.StringVar(value=saved.get("job") or self.ANY)
+        self.f_allclass = tk.BooleanVar(value=saved.get("all_class", True))
+        self.f_lmin = tk.StringVar(value="" if saved.get("level_min") is None else str(saved["level_min"]))
+        self.f_lmax = tk.StringVar(value="" if saved.get("level_max") is None else str(saved["level_max"]))
+        self.f_npc = tk.BooleanVar(value=saved.get("npc", False))
+
+        def lab(text, **kw):
+            ttk.Label(bar, text=text).pack(side="left", **kw)
+        lab("Filter:")
+        e = ttk.Entry(bar, textvariable=self.f_name, width=16)
+        e.pack(side="left", padx=(4, 10))
+        tip("Show items whose name contains this text.", e)
+        lab("Category")
+        self.f_type_cb = ttk.Combobox(bar, textvariable=self.f_type, state="readonly", width=7)
+        self.f_type_cb.pack(side="left", padx=(4, 6))
+        tip("Equip, Use, Etc, Setup or Cash, as in NiaMeowDB's item database.", self.f_type_cb)
+        self.f_sub_cb = ttk.Combobox(bar, textvariable=self.f_sub, state="readonly", width=14)
+        self.f_sub_cb.pack(side="left", padx=(0, 10))
+        tip("The kind of item within the category (Shoes, Scroll, Ore, ...).", self.f_sub_cb)
+        lab("Class")
+        self.f_job_cb = ttk.Combobox(bar, textvariable=self.f_job, state="readonly", width=9)
+        self.f_job_cb.pack(side="left", padx=(4, 2))
+        tip("Items that need this class.", self.f_job_cb)
+        cb = ttk.Checkbutton(bar, text="+ all-class", variable=self.f_allclass)
+        cb.pack(side="left", padx=(0, 10))
+        tip("With a class picked, also show items any class can use.", cb)
+        lab("Level")
+        ok = (self.root.register(lambda v: v == "" or (v.isdigit() and int(v) <= 250)), "%P")
+        for var, t in ((self.f_lmin, "Lowest required level"), (self.f_lmax, "Highest required level")):
+            sp = ttk.Spinbox(bar, from_=0, to=200, increment=10, width=4, textvariable=var,
+                             validate="key", validatecommand=ok)
+            sp.pack(side="left", padx=(4, 0))
+            tip(t + " (empty = no limit).", sp)
+            if var is self.f_lmin:
+                lab("–", padx=(3, 0))
+        cb = ttk.Checkbutton(bar, text="Sold by NPCs", variable=self.f_npc)
+        cb.pack(side="left", padx=(10, 0))
+        tip("Only items an NPC shop sells (handy to spot overpriced listings).", cb)
+        b = ttk.Button(bar, text="Clear", command=self.clear_item_filter)
+        b.pack(side="left", padx=(10, 0))
+        self.f_count = ttk.Label(bar, foreground="#666")
+        self.f_count.pack(side="left", padx=(10, 0))
+        self._filter_job = None
+
+        def changed(*_):
+            if self.f_type.get() == self.ANY and self.f_sub.get() != self.ANY:
+                self.f_sub.set(self.ANY)
+            self._update_filter_choices()
+            if self._filter_job:
+                self.root.after_cancel(self._filter_job)
+            self._filter_job = self.root.after(250, self._apply_item_filter)   # after typing pauses
+        for v in (self.f_name, self.f_type, self.f_sub, self.f_job, self.f_allclass,
+                  self.f_lmin, self.f_lmax, self.f_npc):
+            v.trace_add("write", changed)
+        self._update_filter_choices()
+
+    def item_filter(self) -> dict:
+        def num(v):
+            return int(v) if v.strip().isdigit() else None
+        any_ = self.ANY
+        return {"name": self.f_name.get().strip(),
+                "type": None if self.f_type.get() == any_ else self.f_type.get(),
+                "subtype": None if self.f_sub.get() == any_ else self.f_sub.get(),
+                "job": None if self.f_job.get() == any_ else self.f_job.get(),
+                "all_class": self.f_allclass.get(),
+                "level_min": num(self.f_lmin.get()), "level_max": num(self.f_lmax.get()),
+                "npc": self.f_npc.get()}
+
+    def _update_filter_choices(self):
+        names = [r[0] for r in self.con.execute("SELECT DISTINCT item FROM listings")]
+        opts = mfm.item_filter_options(names)
+        self.f_type_cb["values"] = [self.ANY] + opts["types"]
+        t = self.f_type.get()
+        subs = opts["subtypes"].get(t, []) if t != self.ANY else []
+        self.f_sub_cb["values"] = [self.ANY] + subs
+        self.f_sub_cb.state(["!disabled" if subs else "disabled"])
+        self.f_job_cb["values"] = [self.ANY] + opts["jobs"]
+
+    def _apply_item_filter(self):
+        self._filter_job = None
+        f = self.item_filter()
+        self.cfg["items_filter"] = f
+        mfm.save_config(self.cfg)
+        self.refresh_tables()
+
+    def clear_item_filter(self):
+        for v in (self.f_name, self.f_lmin, self.f_lmax):
+            v.set("")
+        for v in (self.f_type, self.f_sub, self.f_job):
+            v.set(self.ANY)
+        self.f_allclass.set(True)
+        self.f_npc.set(False)
 
     def _build_alerts_tab(self):
         tab = ttk.Frame(self.nb, padding=6)
@@ -1963,9 +2079,9 @@ class App:
         if messagebox.askyesno(
                 "Update item list",
                 "Re-download the item and map lists from NiaMeowDB (meowdb.com)? This version also "
-                "saves item categories and the map list, "
-                "which is used to "
-                "correct misread map names like 'Free Marker <8>'."):
+                "saves each item's category, required level and class (for the Items tab's filters) "
+                "and the map list, which is used to correct misread map names like "
+                "'Free Marker <8>'."):
             self.download_meowdb()
 
     def download_meowdb(self, label=None, full=False, force=False, then=None):

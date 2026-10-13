@@ -85,8 +85,8 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.9.000"
-CODENAME = "noqty"
+VERSION = "2610.10.000"
+CODENAME = "filters"
 
 DATA = data_dir()
 # Three kinds of data, kept apart so each can be exported, backed up or cleared
@@ -1930,6 +1930,26 @@ def _page_guard(page: int, data: dict) -> None:
         raise RuntimeError(f"meowdb kept saying more pages follow (page {page} of {total}); stopped")
 
 
+REC_FIELDS = ("name", "displayName", "iconKey", "subtype", "type", "levelReq", "reqJob", "sources")
+
+
+def _meow_record(it: dict) -> dict:
+    """What's kept of a meowdb item: names, icon, category (type: Equip / Use / Etc /
+    Setup / Cash, and subtype: Shoes, Scroll, ...), required level and job, and where
+    it comes from (npc / mob / quest ...). Used for spelling, icons and the Items
+    tab's filters."""
+    try:
+        stats = json.loads(it.get("stats") or "{}") if isinstance(it.get("stats"), str) else (it.get("stats") or {})
+    except ValueError:
+        stats = {}
+    lvl = it.get("levelReq")
+    return {"name": it.get("name"), "displayName": it.get("displayName"), "iconKey": it.get("iconKey"),
+            "subtype": it.get("displaySubtype") or it.get("subtype"), "type": it.get("type"),
+            "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
+            "reqJob": stats.get("reqJob") or None,
+            "sources": [str(x) for x in (it.get("sources") or []) if x]}
+
+
 def update_items_meowdb(progress=None, full: bool = False, force: bool = False) -> SyncResult:
     """Bring the local copy of NiaMeowDB's item list up to date with as few
     requests as possible (used with permission).
@@ -1945,7 +1965,8 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
     recs: dict = _load_json(MEOWDB_ITEMS_PATH, {})
     res = SyncResult(items_total=len(recs))
     last_full = _ago(st.get("last_full"))
-    need_full = full or not recs or last_full is None or last_full > ITEM_FULL_EVERY
+    need_full = (full or not recs or last_full is None or last_full > ITEM_FULL_EVERY
+                 or any("type" not in r for r in recs.values()))    # saved before filters existed
     last_check = _ago(st.get("last_check"))
     if not need_full and not force and last_check is not None and last_check < ITEM_CHECK_EVERY:
         res.message = f"Item list checked {_fmt_ago(last_check)} ago; no request made."
@@ -1968,7 +1989,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
             iid = str(it.get("id"))
             if iid and iid != "None" and iid not in into:
                 n += 1
-            into[iid] = {k: it.get(k) for k in ("name", "displayName", "iconKey", "subtype")}
+            into[iid] = _meow_record(it)
         return n
 
     if need_full:
@@ -2116,7 +2137,12 @@ def is_throwing_star(name: str) -> bool:
 
 def needs_type_refresh() -> bool:
     """A meowdb list from an older version (no categories / no master copy yet)."""
-    return ITEM_ICONS_PATH.exists() and (not ITEM_TYPES_PATH.exists() or not MEOWDB_ITEMS_PATH.exists())
+    if not ITEM_ICONS_PATH.exists():
+        return False
+    if not ITEM_TYPES_PATH.exists() or not MEOWDB_ITEMS_PATH.exists():
+        return True
+    recs = _load_json(MEOWDB_ITEMS_PATH, {})
+    return bool(recs) and any("type" not in r for r in recs.values())   # no details for the filters yet
 
 
 def fix_throwing_star_rows(con) -> int:
@@ -2302,6 +2328,10 @@ def _osms_maps_raw() -> list:
     return out
 
 
+_OSMS_TYPES = {"equipment": "Equip", "equip": "Equip", "use": "Use", "etc": "Etc", "setup": "Setup",
+               "cash": "Cash", "cash shop": "Cash"}
+
+
 def _osms_subtype(it: dict) -> str:
     text = " ".join(str(it.get(k) or "") for k in ("sub_category", "weapon_type", "category"))
     if re.search(r"throwing\s*star|\bstars?\b", text, re.I):
@@ -2325,7 +2355,14 @@ def osms_extras() -> dict:
         gid, name = str(it["id"]).lstrip("0"), str(it["name"]).strip()
         if gid in meow_ids or _norm(name) in meow_names or name in items:
             continue
-        items[name] = {"id": gid, "subtype": _osms_subtype(it)}
+        st = it.get("stats") if isinstance(it.get("stats"), dict) else {}
+        lvl = st.get("reqLevel", it.get("req_level"))
+        job = str(it.get("req_job_label") or "").strip()
+        items[name] = {"id": gid, "subtype": _osms_subtype(it),
+                       "type": _OSMS_TYPES.get(str(it.get("category") or "").lower(), it.get("category")),
+                       "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
+                       "reqJob": None if job.lower() in ("", "all", "any", "none") else job,
+                       "sources": []}
     meow_maps = _load_json(MAPS_PATH, [])
     meow_map_ids = {str(m.get("id") or "").lstrip("0") for m in meow_maps}
     meow_map_names = {_norm(m.get("name", "")) for m in meow_maps}
@@ -2345,7 +2382,77 @@ def osms_extras() -> dict:
 osms_extras.cache = None
 
 
+def item_info(name: str) -> dict | None:
+    """Category, subtype, required level and job, and sources of an item, from the
+    meowdb list (or the backup source for items meowdb doesn't have)."""
+    if item_info.cache is None:
+        idx = {}
+        for name_, e in osms_extras()["items"].items():
+            idx[name_] = {k: e.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources")}
+        for r in _load_json(MEOWDB_ITEMS_PATH, {}).values():
+            info = {k: r.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources")}
+            for n in (r.get("name"), r.get("displayName")):
+                if n:
+                    idx[n] = info
+        item_info.cache = idx
+    return item_info.cache.get(name)
+
+
+item_info.cache = None
+
+
+def item_filter_options(items: list[str]) -> dict:
+    """Values to offer in the Items tab's filters, from the items you have:
+    {"types": [...], "subtypes": {type: [...]}, "jobs": [...]}."""
+    types, subs, jobs = set(), {}, set()
+    for it in items:
+        i = item_info(it)
+        if not i:
+            continue
+        if i.get("type"):
+            types.add(i["type"])
+            if i.get("subtype"):
+                subs.setdefault(i["type"], set()).add(i["subtype"])
+        if i.get("reqJob"):
+            jobs.add(i["reqJob"])
+    order = {"Equip": 0, "Use": 1, "Etc": 2, "Setup": 3, "Cash": 4}
+    return {"types": sorted(types, key=lambda t: (order.get(t, 9), t)),
+            "subtypes": {t: sorted(v) for t, v in subs.items()}, "jobs": sorted(jobs)}
+
+
+def item_matches(item: str, f: dict) -> bool:
+    """Does the item pass the Items tab's filter? f: name, type, subtype, job,
+    all_class (bool), level_min, level_max, npc (bool). Items the item lists don't
+    know only pass filters on their name."""
+    if f.get("name") and f["name"].strip().lower() not in item.lower():
+        return False
+    wants = any(f.get(k) for k in ("type", "subtype", "job", "npc")) or \
+        f.get("level_min") is not None or f.get("level_max") is not None
+    if not wants:
+        return True
+    i = item_info(item)
+    if not i:
+        return False
+    if f.get("type") and i.get("type") != f["type"]:
+        return False
+    if f.get("subtype") and i.get("subtype") != f["subtype"]:
+        return False
+    if f.get("job"):            # a class only applies to equipment, as on meowdb
+        job = i.get("reqJob")
+        if i.get("type") != "Equip" or (job != f["job"] and not (f.get("all_class", True) and not job)):
+            return False
+    lvl = i.get("levelReq") or 0
+    if f.get("level_min") is not None and lvl < f["level_min"]:
+        return False
+    if f.get("level_max") is not None and lvl > f["level_max"]:
+        return False
+    if f.get("npc") and "npc" not in (i.get("sources") or []):
+        return False
+    return True
+
+
 def _reset_name_caches() -> None:
+    item_info.cache = None
     osms_extras.cache = None
     _icon_keys.cache = None
     _item_types.cache = None
@@ -2707,11 +2814,19 @@ def import_items(path: str) -> int:
     if full:
         recs = {}
         for r in rows:
+            lvl = str(r.get("levelreq") or r.get("level") or "").strip()
+            src = r.get("sources") or []
+            if isinstance(src, str):
+                src = [x for x in re.split(r"[|;,]\s*", src) if x]
             recs[str(int(str(r["id"]).strip()))] = {
                 "name": str(r["name"]).strip(),
                 "displayName": (str(r.get("displayname") or "").strip() or None),
                 "iconKey": (str(r.get("iconkey") or r.get("icon_key") or "").strip() or None),
-                "subtype": (str(r.get("subtype") or r.get("type") or "").strip() or None)}
+                "subtype": (str(r.get("subtype") or "").strip() or None),
+                "type": (str(r.get("type") or "").strip() or None),
+                "levelReq": int(lvl) if lvl.isdigit() else None,
+                "reqJob": (str(r.get("reqjob") or "").strip() or None),
+                "sources": [str(x) for x in src]}
         MEOWDB_ITEMS_PATH.write_text(json.dumps(recs), encoding="utf-8")
         _write_item_files(recs)
         # it's a complete list: the next meowdb update only asks for newer items
@@ -2748,8 +2863,7 @@ def export_items(path: str) -> int:
     p = Path(path)
     recs = {} if names_only_items() else _load_json(MEOWDB_ITEMS_PATH, {})
     if recs:
-        rows = [{"id": int(i), "name": r.get("name"), "displayName": r.get("displayName"),
-                 "subtype": r.get("subtype"), "iconKey": r.get("iconKey")}
+        rows = [{"id": int(i), **{k: r.get(k) for k in REC_FIELDS}}
                 for i, r in sorted(recs.items(), key=lambda kv: int(kv[0]))]
     else:      # an imported names-only list
         if not ITEMS_PATH.exists():
@@ -2757,7 +2871,7 @@ def export_items(path: str) -> int:
         ids = _load_json(ITEM_IDS_PATH, {})
         types, icons = _load_json(ITEM_TYPES_PATH, {}), _load_json(ITEM_ICONS_PATH, {})
         rows = [{"id": ids.get(n), "name": n, "displayName": None, "subtype": types.get(n),
-                 "iconKey": icons.get(n)}
+                 "iconKey": icons.get(n), "type": None, "levelReq": None, "reqJob": None, "sources": []}
                 for n in ITEMS_PATH.read_text(encoding="utf-8").splitlines() if n.strip()]
     ext = p.suffix.lower()
     if ext == ".zip":
@@ -2769,10 +2883,13 @@ def export_items(path: str) -> int:
     if ext == ".csv":
         with p.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["id", "name", "displayName", "subtype", "iconKey"])
+            w.writerow(["id", "name", "displayName", "subtype", "iconKey", "type", "levelReq", "reqJob",
+                        "sources"])
             for r in rows:
                 w.writerow([r["id"] if r["id"] is not None else "", r["name"] or "",
-                            r["displayName"] or "", r["subtype"] or "", r["iconKey"] or ""])
+                            r["displayName"] or "", r["subtype"] or "", r["iconKey"] or "",
+                            r.get("type") or "", "" if r.get("levelReq") is None else r["levelReq"],
+                            r.get("reqJob") or "", "|".join(r.get("sources") or [])])
         return len(rows)
     p.write_text(_items_json(rows), encoding="utf-8")
     return len(rows)
