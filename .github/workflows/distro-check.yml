@@ -26,7 +26,8 @@ jobs:
           - { name: "Linux Mint 22",         image: "linuxmintd/mint22-amd64",          family: apt,    app: true }
           - { name: "Fedora 41",             image: "fedora:41",                        family: dnf,    app: true }
           - { name: "Fedora 42",             image: "fedora:42",                        family: dnf,    app: true }
-          - { name: "Rocky Linux 9",         image: "rockylinux/rockylinux:9",          family: el,     app: true }
+          # the app needs glibc 2.35; RHEL-family 9 has 2.34 (checked: "GLIBC_2.35 not found")
+          - { name: "Rocky Linux 9",         image: "rockylinux/rockylinux:9",          family: el,     app: false }
           - { name: "AlmaLinux 10",          image: "almalinux:10",                     family: el,     app: true }
           - { name: "openSUSE Tumbleweed",   image: "opensuse/tumbleweed",              family: zypper, app: true }
           - { name: "openSUSE Leap 15.6",    image: "opensuse/leap:15.6",               family: zypper, app: true }

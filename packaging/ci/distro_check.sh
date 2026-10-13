@@ -64,7 +64,9 @@ case "$FAMILY" in
   xbps)       # Void Linux (glibc)
     xbps-install -Syu xbps >/dev/null 2>&1
     xbps-install -Syu >/dev/null 2>&1
-    xbps-install -y python3 python3-tkinter tesseract-ocr xorg-server-xvfb >/dev/null || exit 1
+    xbps-query -Rs tesseract | head -8
+    xbps-install -y python3 python3-tkinter tesseract-ocr tesseract-ocr-eng \
+      xorg-server-xvfb >/dev/null || exit 1
     for t in grim spectacle gnome-screenshot; do
       xbps-query -R "$t" >/dev/null 2>&1 && WAYLAND_TOOLS="$WAYLAND_TOOLS $t"
     done ;;

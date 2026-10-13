@@ -33,9 +33,8 @@ nothing else needs to be installed. Put it anywhere and double-click it.
 - The app uses the Inter font (SIL Open Font License, `packaging/fonts/OFL.txt`), loaded
   privately by the app: nothing is installed on your system.
 - The Linux app carries its own Tesseract 5.3.4, the version the OCR clean-up was tuned and
-  tested on. (Newer Tesseract releases, like the one Arch currently ships, read some faded
-  text and shop titles slightly differently.) It needs glibc 2.38 or newer, which any
-  up-to-date Arch has.
+  tested on. (Other Tesseract releases read some faded text and shop titles slightly
+  differently.) See [Linux distributions](#linux-distributions) for where it runs.
 - Your data (prices, alerts, settings) stays in the same data folder as before, so the app
   and the Python scripts share it.
 - With arguments it works like `mfm.py`, e.g. `"Free Market Tracker" deals`.
@@ -68,20 +67,84 @@ nothing else needs to be installed. Put it anywhere and double-click it.
 
 ## Install (running from source)
 
-### Arch Linux
-```bash
-sudo pacman -S python python-pip tesseract tesseract-data-eng tk   # tk = the GUI toolkit
-# Wayland only: one screenshot tool for your desktop
-sudo pacman -S grim            # Hyprland / Sway
-#   or spectacle (KDE) / gnome-screenshot (GNOME)
+### Linux
+Install Python 3.10+ with Tk, Tesseract with English data, and on Wayland a screenshot
+tool (see [Wayland](#wayland-screenshots)), with your distro's package manager:
 
-cd mfm-tracker
-python -m venv .venv
+| Distro | Packages |
+|---|---|
+| **Ubuntu, Debian, Linux Mint, Pop!_OS, elementary OS, Zorin OS** | `sudo apt install python3 python3-venv python3-tk tesseract-ocr tesseract-ocr-eng` |
+| **Fedora** | `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
+| **RHEL, Rocky Linux, AlmaLinux 10** | `sudo dnf install epel-release`, then `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
+| **RHEL, Rocky Linux, AlmaLinux 9** | `sudo dnf install epel-release`, `sudo dnf config-manager --set-enabled crb`, then `sudo dnf install python3.12 python3.12-tkinter tesseract tesseract-langpack-eng` (use `python3.12` below) |
+| **openSUSE Tumbleweed** | `sudo zypper install python3 python3-tk tesseract-ocr tesseract-ocr-traineddata-english` |
+| **openSUSE Leap 15.6** | `sudo zypper install python311 python311-tk tesseract-ocr tesseract-ocr-traineddata-english` (use `python3.11` below) |
+| **Arch Linux, Manjaro, EndeavourOS, CachyOS** | `sudo pacman -S python tk tesseract tesseract-data-eng` |
+| **Void Linux** | `sudo xbps-install python3 python3-tkinter tesseract-ocr` |
+| **Alpine Linux** | `sudo apk add python3 python3-tkinter tesseract-ocr tesseract-ocr-data-eng` |
+| **Gentoo** (not tested) | `dev-lang/python` with the `tk` USE flag, and `app-text/tesseract` |
+| **NixOS** (not tested) | `nix-shell -p "python3.withPackages (p: [ p.tkinter ])" tesseract` |
+
+Then, in the `mfm-tracker` folder:
+```bash
+python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # works in bash, zsh and fish
+.venv/bin/python mfm.py gui
 ```
-Then run the tool with `.venv/bin/python mfm.py gui`, or activate the venv first
-(`source .venv/bin/activate` in bash/zsh, `source .venv/bin/activate.fish` in fish)
-and use plain `python`.
+Or activate the venv first (`source .venv/bin/activate` in bash/zsh,
+`source .venv/bin/activate.fish` in fish) and use plain `python`.
+
+- Ubuntu 22.04 and RHEL / Rocky / AlmaLinux 9 ship Tesseract 4.1.1. It works, but the OCR
+  clean-up was tuned on 5.3.4, so a few faded rows or shop titles may read differently;
+  the [app](#the-app-no-install) carries 5.3.4 (on 9 its glibc is too old for the app, see below).
+- `hotkey` (one capture per key press) also needs `pip install pynput`, which compiles a
+  small module: install a C compiler and kernel headers first (`build-essential
+  linux-libc-dev` on Debian/Ubuntu, `gcc kernel-headers` on Fedora, `base-devel
+  linux-api-headers` on Arch). The GUI and `watch` don't need it.
+
+### Linux distributions
+The Linux app runs on **x86-64 distros with glibc 2.35 or newer**: Ubuntu 22.04+, Debian
+12+, Linux Mint 21+, Pop!_OS 22.04+, elementary OS 7+, Zorin OS 17+, Fedora 36+, RHEL /
+Rocky / AlmaLinux 10, openSUSE Tumbleweed and Leap 15.6, Arch and its derivatives
+(Manjaro, EndeavourOS, CachyOS), Void (glibc), Gentoo. It brings its own Python, Tk,
+X11 and font libraries and Tesseract, so no packages are needed.
+
+Checked by the **Linux distro check** workflow (`.github/workflows/distro-check.yml`, run
+from the Actions tab), which installs and starts both the app and the from-source setup
+above in each distro's official container:
+
+| Distro | The app | From source |
+|---|---|---|
+| Ubuntu 22.04, 24.04 | ✓ | ✓ |
+| Debian 12, 13 | ✓ | ✓ |
+| Linux Mint 22 | ✓ | ✓ |
+| Fedora 41, 42 | ✓ | ✓ |
+| AlmaLinux 10 | ✓ | ✓ |
+| Rocky Linux 9 | ✗ glibc 2.34 is too old | ✓ |
+| openSUSE Tumbleweed, Leap 15.6 | ✓ | ✓ |
+| Arch Linux, Manjaro | ✓ | ✓ |
+| Void Linux (glibc) | ✓ | ✓ |
+| Alpine 3.22 | ✗ uses musl, not glibc | ✓ |
+
+✓ = Tesseract reads the test image and the window opens and runs. Not covered: **NixOS**
+(the app needs an FHS environment there, e.g. `steam-run "./Free Market Tracker"`, or
+run from source), **Gentoo**, **ARM** machines (no ARM build; run from source), and
+musl-based Void/Alpine (run from source).
+
+<a id="wayland-screenshots"></a>
+**Wayland.** The app's window runs through XWayland, which every major desktop (GNOME,
+KDE Plasma, Hyprland, Sway, …) includes. Screenshots on Wayland go through a screenshot
+tool, so install the one for your desktop:
+
+| Desktop | Tool | Debian / Ubuntu | Fedora, openSUSE, Arch, Void, Alpine |
+|---|---|---|---|
+| Hyprland, Sway, river, other wlroots | grim | `grim` | `grim` |
+| KDE Plasma | Spectacle | `kde-spectacle` | `spectacle` |
+| GNOME | GNOME Screenshot | `gnome-screenshot` | `gnome-screenshot` |
+
+RHEL-family 9 has `spectacle` and `gnome-screenshot` (no `grim`); RHEL-family 10 has only
+`spectacle` (from EPEL), so there use KDE Plasma or an X11 session. On X11 nothing extra
+is needed.
 
 ### Windows
 1. Install Python 3.10+ from python.org (tick **Add to PATH**; Tk for the GUI is included).
