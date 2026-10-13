@@ -24,6 +24,17 @@ Versions are `YYMM.minor.hotfix`.
   line's `export`, `export-items`, `export-maps` and `report`. For example,
   `mfm market prices 2026-10-13 08-11-00.csv`.
 
+- **Linux distributions** documented: install commands for Ubuntu/Debian/Mint and other
+  apt distros, Fedora, RHEL/Rocky/AlmaLinux, openSUSE, Arch/Manjaro, Void and Alpine,
+  which distros the app runs on (x86-64, glibc 2.35 or newer), and which screenshot tool
+  to install on each Wayland desktop. A new **Linux distro check** workflow (Actions tab)
+  tests all of it in each distro's official container.
+
+### Changed
+- From source on Linux, `pynput` is no longer installed by `requirements.txt`: it has to
+  be compiled (C compiler and kernel headers), which made `pip install` fail on a fresh
+  system. Only `hotkey` uses it; that command now says how to add it.
+
 ### Fixed
 - **Free Market map names read as junk** ("Hidden Streat Lz: Rem aihlea ned…",
   "Hidden Steet: ltl Ud*Cl U"). The minimap is as wide as the map's name, but its
@@ -35,6 +46,7 @@ Versions are `YYMM.minor.hotfix`.
     beside or below it is never read.
 - Listings already saved with a garbled map keep it; the right Free Market number
   can't be recovered from the junk.
+- Tesseract is found on Void Linux, which installs it as `tesseract-ocr`.
 
 ## 2610.11.002 — 2026-10-13
 

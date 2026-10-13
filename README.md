@@ -80,7 +80,7 @@ tool (see [Wayland](#wayland-screenshots)), with your distro's package manager:
 | **openSUSE Tumbleweed** | `sudo zypper install python3 python3-tk tesseract-ocr tesseract-ocr-traineddata-english` |
 | **openSUSE Leap 15.6** | `sudo zypper install python311 python311-tk tesseract-ocr tesseract-ocr-traineddata-english` (use `python3.11` below) |
 | **Arch Linux, Manjaro, EndeavourOS, CachyOS** | `sudo pacman -S python tk tesseract tesseract-data-eng` |
-| **Void Linux** | `sudo xbps-install python3 python3-tkinter tesseract-ocr` |
+| **Void Linux** | `sudo xbps-install python3 python3-tkinter tesseract-ocr tesseract-ocr-eng` |
 | **Alpine Linux** | `sudo apk add python3 python3-tkinter tesseract-ocr tesseract-ocr-data-eng` |
 | **Gentoo** (not tested) | `dev-lang/python` with the `tk` USE flag, and `app-text/tesseract` |
 | **NixOS** (not tested) | `nix-shell -p "python3.withPackages (p: [ p.tkinter ])" tesseract` |
