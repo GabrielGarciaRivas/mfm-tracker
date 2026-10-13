@@ -85,7 +85,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.10.000"
+VERSION = "2610.10.001"
 CODENAME = "filters"
 
 DATA = data_dir()
@@ -300,13 +300,19 @@ def db() -> sqlite3.Connection:
         # 2610.9: no more quantities: a listing's price is the meso amount shown
         con.execute("UPDATE listings SET qty = 1 WHERE qty != 1")
         con.commit()
-    if con.execute("PRAGMA main.user_version").fetchone()[0] < 2:
+    if con.execute("PRAGMA main.user_version").fetchone()[0] < 3:
         # 2610.8: map names are "Area: Zone" ("Hidden Street: Free Market <2>"); give the
-        # zone-only names saved before their area, once a map list is available to look it up
+        # zone-only names saved before their area, once a map list is available to look it up.
+        # 2610.10.001: drop the map count meowdb's index added to some areas ("( 8 )").
         try:
             if _map_names():
+                for (mp,) in con.execute("SELECT DISTINCT map FROM listings WHERE map LIKE '%(%)%:%'").fetchall():
+                    street, zone = _split_map(mp)
+                    fixed = full_map_name(clean_street(street), zone)
+                    if fixed != mp:
+                        con.execute("UPDATE listings SET map = ? WHERE map = ?", (fixed, mp))
                 fix_map_rows(con)
-                con.execute("PRAGMA main.user_version = 2")
+                con.execute("PRAGMA main.user_version = 3")
                 con.commit()
         except Exception:
             pass
@@ -2161,6 +2167,13 @@ MAPS_PATH = CACHE_DIR / "maps.json"          # [{id, name, street}] from meowdb
 MEOWDB_MAPS_URL = "https://meowdb.com/msclassic/maps/all"
 
 
+def clean_street(text: str) -> str:
+    """An area name from meowdb's map index without the map count its heading shows:
+    "Kerning City Subway (8)" or "Kerning City Subway ( 8 )" (the number is in its own
+    tag) -> "Kerning City Subway"."""
+    return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", " ".join((text or "").split()))
+
+
 def parse_meowdb_maps(html_text: str) -> list[dict]:
     """Map links on meowdb's A-Z map index: <a href="/msclassic/maps/080002005">Free
     Market &lt;5&gt; (town)</a>, grouped under street headings (### Hidden Street (23))."""
@@ -2175,7 +2188,7 @@ def parse_meowdb_maps(html_text: str) -> list[dict]:
     for m in token.finditer(html_text):
         if m.group("head") is not None:
             head = htmlmod.unescape(re.sub(r"<[^>]+>", " ", m.group("head")))
-            street = re.sub(r"\s*\(\d+\)\s*$", "", " ".join(head.split()))
+            street = clean_street(head)
             continue
         name = htmlmod.unescape(re.sub(r"<[^>]+>", " ", m.group("text")))
         name = " ".join(name.split())
@@ -2212,7 +2225,7 @@ def _map_names() -> list[str]:
     """Every known map's full name ("Area: Zone"), from meowdb plus the backup source."""
     if _map_names.cache is None:
         try:
-            names = {full_map_name(m.get("street", ""), m["name"])
+            names = {full_map_name(clean_street(m.get("street", "")), m["name"])
                      for m in json.loads(MAPS_PATH.read_text(encoding="utf-8")) if m.get("name")}
         except (OSError, ValueError, KeyError, TypeError):
             names = set()
@@ -2369,7 +2382,7 @@ def osms_extras() -> dict:
     maps, seen_maps = [], set()
     for m in _osms_maps_raw():
         mid, name = str(m.get("id") or "").lstrip("0"), str(m["name"]).strip()
-        street = str(m.get("street_name") or m.get("street") or "").strip()
+        street = clean_street(str(m.get("street_name") or m.get("street") or ""))
         full = full_map_name(street, name)
         if (mid and mid in meow_map_ids) or _norm(name) in meow_map_names or full in seen_maps:
             continue
@@ -2992,7 +3005,7 @@ def import_maps(path: str) -> int:
 def export_maps(path: str) -> int:
     """Save the map list in use (.json / .csv with id, name, street; .txt names only)."""
     p = Path(path)
-    maps = _load_json(MAPS_PATH, [])
+    maps = [{**m, "street": clean_street(m.get("street") or "")} for m in _load_json(MAPS_PATH, [])]
     if not maps:
         raise ValueError("there is no map list to export yet")
     ext = p.suffix.lower()
@@ -3003,7 +3016,7 @@ def export_maps(path: str) -> int:
             w = csv.writer(f)
             w.writerow(["id", "name", "street"])
             for m in maps:
-                w.writerow([m.get("id") or "", m.get("name") or "", m.get("street") or ""])
+                w.writerow([m.get("id") or "", m.get("name") or "", clean_street(m.get("street") or "")])
     else:
         p.write_text(json.dumps({"format": MAPS_FORMAT, "source": maps_info()["source"],
                                  "exported_utc": utc_now(), "maps": maps}, indent=1), encoding="utf-8")
