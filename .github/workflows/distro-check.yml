@@ -50,6 +50,7 @@ jobs:
       - name: Check ${{ matrix.name }}
         shell: bash
         run: |
+          set +e +o pipefail
           docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
             sh packaging/ci/distro_check.sh "${{ matrix.family }}" "${APP:-}" 2>&1 | tee out.txt
           rc=${PIPESTATUS[0]}
