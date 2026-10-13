@@ -20,18 +20,18 @@ nothing else needs to be installed. Put it anywhere and double-click it.
   protected your PC": click **More info → Run anyway**. Some antivirus tools are wary of
   single-file Python apps; it's a false positive, and building it yourself (below) gives
   you an identical file.
-- **Linux:** extract it, then double-click (or run `./"Free Market Tracker"`). If your file
-  manager opens it as text, make it executable: right-click → Properties → "Is executable",
-  or `chmod +x "Free Market Tracker"`. To add it to your app menu, move it to
-  `~/Applications/`, the `.desktop` file to `~/.local/share/applications/` and the `.png` to
-  `~/.local/share/icons/`. On Wayland, `grim` / `spectacle` / `gnome-screenshot` from your
-  desktop is still used for screenshots.
 - **macOS:** build it on your Mac (below), then drag `Free Market Tracker.app` into
   Applications. The first time you press **Start monitoring**, macOS asks for **Screen
   Recording** permission: allow it in System Settings → Privacy & Security → Screen
   Recording, then quit and reopen the app. Without it the app only sees your desktop
   wallpaper and never finds a shop. (A rebuilt app counts as new to macOS, so after
   rebuilding you may need to switch the permission off and on again.)
+- **Linux:** extract it, then double-click (or run `./"Free Market Tracker"`). If your file
+  manager opens it as text, make it executable: right-click → Properties → "Is executable",
+  or `chmod +x "Free Market Tracker"`. To add it to your app menu, move it to
+  `~/Applications/`, the `.desktop` file to `~/.local/share/applications/` and the `.png` to
+  `~/.local/share/icons/`. On Wayland, `grim` / `spectacle` / `gnome-screenshot` from your
+  desktop is still used for screenshots.
 - Starting takes a few seconds, since it unpacks itself to a temporary folder first.
 - The app uses the Inter font (SIL Open Font License, `packaging/fonts/OFL.txt`), loaded
   privately by the app: nothing is installed on your system.
@@ -69,6 +69,30 @@ nothing else needs to be installed. Put it anywhere and double-click it.
   (on a Mac: `"/Applications/Free Market Tracker.app/Contents/MacOS/Free Market Tracker" selftest`).
 
 ## Install (running from source)
+
+### Windows
+1. Install Python 3.10+ from python.org (tick **Add to PATH**; Tk for the GUI is included).
+2. Install Tesseract: the UB Mannheim build at
+   https://github.com/UB-Mannheim/tesseract/wiki (default path
+   `C:\Program Files\Tesseract-OCR\` is detected automatically).
+3. In PowerShell:
+```powershell
+cd mfm-tracker
+py -m venv .venv; .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python mfm-tracker gui
+```
+Run the game in **windowed or borderless** mode; exclusive fullscreen can capture black.
+
+### macOS
+```bash
+brew install tesseract python@3.12 python-tk@3.12
+cd mfm-tracker
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python mfm-tracker gui
+```
+Give Terminal (or whichever app runs the script) Screen Recording permission.
 
 ### Linux
 Install Python 3.10+ with Tk, Tesseract with English data, and on Wayland a screenshot
@@ -148,30 +172,6 @@ tool, so install the one for your desktop:
 RHEL-family 9 has `spectacle` and `gnome-screenshot` (no `grim`); RHEL-family 10 has only
 `spectacle` (from EPEL), so there use KDE Plasma or an X11 session. On X11 nothing extra
 is needed.
-
-### Windows
-1. Install Python 3.10+ from python.org (tick **Add to PATH**; Tk for the GUI is included).
-2. Install Tesseract: the UB Mannheim build at
-   https://github.com/UB-Mannheim/tesseract/wiki (default path
-   `C:\Program Files\Tesseract-OCR\` is detected automatically).
-3. In PowerShell:
-```powershell
-cd mfm-tracker
-py -m venv .venv; .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python mfm-tracker gui
-```
-Run the game in **windowed or borderless** mode; exclusive fullscreen can capture black.
-
-### macOS
-```bash
-brew install tesseract python@3.12 python-tk@3.12
-cd mfm-tracker
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python mfm-tracker gui
-```
-Give Terminal (or whichever app runs the script) Screen Recording permission.
 
 ## Use
 
