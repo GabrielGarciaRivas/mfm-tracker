@@ -64,8 +64,7 @@ case "$FAMILY" in
   xbps)       # Void Linux (glibc)
     xbps-install -Syu xbps >/dev/null 2>&1
     xbps-install -Syu >/dev/null 2>&1
-    xbps-install -y python3 python3-tkinter tesseract-ocr xorg-server-xvfb || exit 1
-    xbps-query -f tesseract-ocr | grep -E "bin/|eng" 
+    xbps-install -y python3 python3-tkinter tesseract-ocr xorg-server-xvfb >/dev/null || exit 1
     for t in grim spectacle gnome-screenshot; do
       xbps-query -R "$t" >/dev/null 2>&1 && WAYLAND_TOOLS="$WAYLAND_TOOLS $t"
     done ;;
@@ -78,8 +77,9 @@ case "$FAMILY" in
   *) echo "unknown family $FAMILY"; exit 2 ;;
 esac
 grep PRETTY_NAME /etc/os-release
-echo "python: $($PY --version 2>&1)  tesseract: $(tesseract --version 2>&1 | head -1)"
-ldd --version 2>&1 | head -1
+T=$(command -v tesseract || command -v tesseract-ocr)
+echo "python: $($PY --version 2>&1)  tesseract: $($T --version 2>&1 | head -1)"
+ldd --version 2>&1 | head -1 || true
 
 gui_check() {   # $@ = command; it must still be running after 15 s
   command -v Xvfb >/dev/null || { echo "GUI: not checked (no Xvfb in this distro's repos)"; return 0; }

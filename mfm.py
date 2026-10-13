@@ -532,6 +532,9 @@ def setup_tesseract(cfg: dict) -> None:
             if Path(c).exists():
                 pytesseract.pytesseract.tesseract_cmd = c
                 break
+    elif not shutil.which("tesseract") and shutil.which("tesseract-ocr"):
+        # Void Linux names the program tesseract-ocr
+        pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract-ocr")
 
 
 def preprocess(img: Image.Image, upscale: int, mode: str = "gray") -> Image.Image:
