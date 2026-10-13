@@ -2004,7 +2004,7 @@ ITEM_IDS_PATH = CACHE_DIR / "item_ids.json"
 ITEM_ICONS_PATH = CACHE_DIR / "item_icons.json"     # item name -> meowdb icon key
 ITEM_TYPES_PATH = CACHE_DIR / "item_types.json"     # item name -> meowdb subtype ("Throwing Star", ...)
 MEOWDB_API = "https://meowdb.com/msclassic/api"
-USER_AGENT = "mfm-tracker/1.0 (personal MapleStory Classic price tracker; meowdb permission)"
+USER_AGENT = "mfm-tracker/1.0 (personal MapleStory Classic price tracker)"
 
 
 # Trusted certificate authorities for HTTPS. A packaged app carries a Python built on
