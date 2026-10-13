@@ -2,7 +2,7 @@
 # Build the single-file Linux app "Free Market Tracker" (Python, Tk, Pillow and
 # Tesseract OCR all inside). Needs, on the build machine only:
 #   python 3.10+ with tkinter, tesseract + English data, and
-#   pip install pyinstaller pillow pytesseract mss pyspellchecker
+#   pip install pyinstaller pillow pytesseract mss pyspellchecker certifi
 # The Python's Tk must be built with Xft (distro Pythons are) or the app can't use
 # the bundled Inter font; for a portable python-build-standalone Python, run
 # packaging/build_tk_xft.sh first and use the Python it prints.
@@ -58,7 +58,7 @@ LD_LIBRARY_PATH="$PYLIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   --icon "$PWD/packaging/icon.png" \
   --paths "$PWD" \
   --hidden-import mfm --hidden-import mfm_gui --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk \
-  --collect-data spellchecker \
+  --collect-data spellchecker --collect-data certifi --hidden-import certifi \
   --exclude-module pynput --strip \
   --exclude-module PIL._avif --exclude-module PIL.AvifImagePlugin \
   --exclude-module PIL._webp --exclude-module PIL.WebPImagePlugin \

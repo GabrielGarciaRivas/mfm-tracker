@@ -85,7 +85,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.11.001"
+VERSION = "2610.11.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -1850,6 +1850,53 @@ MEOWDB_API = "https://meowdb.com/msclassic/api"
 USER_AGENT = "mfm-tracker/1.0 (personal MapleStory Classic price tracker; meowdb permission)"
 
 
+# Trusted certificate authorities for HTTPS. A packaged app carries a Python built on
+# another machine, whose idea of where the system's certificates are can be wrong
+# (built on GitHub's Ubuntu, run on Arch: "unable to get local issuer certificate").
+_CA_FILES = ("/etc/ssl/certs/ca-certificates.crt",      # Debian, Ubuntu, Arch, Gentoo
+             "/etc/pki/tls/certs/ca-bundle.crt",        # Fedora, RHEL
+             "/etc/ssl/ca-bundle.pem",                  # openSUSE
+             "/etc/pki/tls/cacert.pem", "/etc/ssl/cert.pem",   # OpenELEC, Alpine, macOS
+             "/usr/local/etc/openssl/cert.pem", "/opt/homebrew/etc/openssl@3/cert.pem")
+
+
+def ssl_context():
+    """An SSL context that trusts the usual certificate authorities: the bundle
+    shipped with the app (certifi), plus the system's own (Windows certificate
+    store, or the first CA file found on Linux/macOS)."""
+    if ssl_context.cache is not None:
+        return ssl_context.cache
+    import ssl
+
+    ctx = ssl.create_default_context()           # the system store (works on Windows)
+    loaded = False
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+        loaded = True
+    except Exception:
+        pass
+    for f in _CA_FILES:
+        if os.path.isfile(f):
+            try:
+                ctx.load_verify_locations(cafile=f)
+                loaded = True
+                break
+            except Exception:
+                continue
+    if not loaded and FROZEN:
+        try:
+            with open(DATA / "app.log", "a", encoding="utf-8") as fh:
+                fh.write(f"{utc_now()} no CA certificates found; HTTPS may fail\n")
+        except OSError:
+            pass
+    ssl_context.cache = ctx
+    return ctx
+
+
+ssl_context.cache = None
+
+
 def _get(url: str, timeout: int = 30) -> bytes:
     """HTTP GET with a descriptive user agent and polite retry on rate limiting."""
     import urllib.error
@@ -1858,7 +1905,7 @@ def _get(url: str, timeout: int = 30) -> bytes:
     for attempt in range(4):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code in (429, 502, 503) and attempt < 3:
@@ -1907,7 +1954,7 @@ def _get_cond(url: str, etag: str | None = None, last_modified: str | None = Non
     for attempt in range(4):
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
                 return r.status, r.read(), r.headers.get("ETag"), r.headers.get("Last-Modified")
         except urllib.error.HTTPError as e:
             if e.code == 304:
@@ -2597,7 +2644,7 @@ def _get_once(url: str, timeout: int = 15) -> bytes:
     import urllib.request
 
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
         return r.read()
 
 

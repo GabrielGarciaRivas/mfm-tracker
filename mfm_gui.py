@@ -935,6 +935,9 @@ class App:
             hint = "The disk is full: free some space so prices can be saved."
         elif "database is locked" in low:
             hint = "The price database is busy (another copy of the tracker open?). Close the other one."
+        elif "certificate" in low:
+            hint = ("The secure connection couldn't be checked (certificate). This is usually the "
+                    "app, not your internet: please report it, with the details above.")
         elif any(k in low for k in ("urlopen", "timed out", "name resolution", "connection", "http error")):
             hint = "Check your internet connection; you can retry later from Settings."
         key = (title, msg)

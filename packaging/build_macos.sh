@@ -41,7 +41,7 @@ mkdir -p "$WORK"
 "$PY" -m venv "$WORK/venv"
 VPY="$WORK/venv/bin/python"
 "$VPY" -m pip install --upgrade pip
-"$VPY" -m pip install pyinstaller pillow pytesseract mss pyspellchecker
+"$VPY" -m pip install pyinstaller pillow pytesseract mss pyspellchecker certifi
 
 # --- Tesseract: the program, the Homebrew libraries it uses, English data only
 TESS="${TESSERACT:-}"
@@ -73,7 +73,7 @@ iconutil -c icns "$ICONSET" -o "$WORK/icon.icns"
   --paths "$ROOT" \
   --hidden-import mfm --hidden-import mfm_gui \
   --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk \
-  --collect-data spellchecker \
+  --collect-data spellchecker --collect-data certifi --hidden-import certifi \
   --exclude-module pynput \
   --add-data "$WORK/tesseract:tesseract" \
   --add-data "$ROOT/packaging/icon.png:." \

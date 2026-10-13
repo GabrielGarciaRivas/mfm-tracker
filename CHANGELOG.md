@@ -2,6 +2,17 @@
 
 Versions are `YYMM.minor.hotfix`.
 
+## 2610.11.002 — 2026-10-13
+
+### Fixed
+- **meowdb couldn't be reached** from the apps built on GitHub ("certificate verify
+  failed: unable to get local issuer certificate"). Their Python looked for trusted
+  certificates where GitHub's build machine keeps them, not where your system does.
+  The apps now carry their own certificate bundle and also use the system's
+  certificates, wherever the system keeps them.
+- Certificate errors get their own hint in the error window instead of "check your
+  internet connection".
+
 ## 2610.11.001 — 2026-10-13
 
 Changes since 2610.7.001.
