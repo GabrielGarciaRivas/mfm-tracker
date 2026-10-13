@@ -642,3 +642,7 @@ Also in the app: **Settings → About**.
 - [pynput](https://github.com/moses-palmer/pynput): global hotkey for the command-line `hotkey` mode (not in the packaged app) · LGPL-3.0
 
 MapleStory is a trademark of NEXON. This is an unofficial fan tool, not affiliated with or endorsed by NEXON, NiaMeowDB or OSMS Data Explorer.
+
+## License
+
+Free Market Tracker is free software under the [GNU General Public License v3.0](LICENSE). The open-source components listed above keep their own licenses.
