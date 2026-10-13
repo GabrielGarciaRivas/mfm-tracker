@@ -48,6 +48,13 @@ jobs:
           chmod +x "$app"
           echo "APP=/w/$app" >> "$GITHUB_ENV"
       - name: Check ${{ matrix.name }}
+        shell: bash
         run: |
           docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
-            sh packaging/ci/distro_check.sh "${{ matrix.family }}" "${APP:-}"
+            sh packaging/ci/distro_check.sh "${{ matrix.family }}" "${APP:-}" 2>&1 | tee out.txt
+          rc=${PIPESTATUS[0]}
+          # the result as an annotation too, readable from the run's summary page
+          msg="$(grep -v '^[[:space:]]*$' out.txt | tail -45 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
+          if [ "$rc" = 0 ]; then echo "::notice title=${{ matrix.name }}: OK::$msg"
+          else echo "::warning title=${{ matrix.name }}: FAILED::$msg"; fi
+          exit $rc
