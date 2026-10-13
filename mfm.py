@@ -4658,7 +4658,13 @@ def hotkey(channel, cfg) -> None:
             "  bind = , F8, exec, mfm capture\n"
             "or use `mfm watch`."
         )
-    from pynput import keyboard
+    try:
+        from pynput import keyboard
+    except ImportError:
+        sys.exit("`hotkey` needs pynput, which isn't installed. On Linux it's optional because it\n"
+                 "has to be compiled: install a C compiler and your kernel headers (e.g.\n"
+                 "`sudo apt install build-essential linux-libc-dev`), then `pip install pynput`.\n"
+                 "Or use `mfm watch` / the GUI, which don't need it.")
 
     key_name = cfg["hotkey"].lower()
     target = getattr(keyboard.Key, key_name, None) or keyboard.KeyCode.from_char(key_name)

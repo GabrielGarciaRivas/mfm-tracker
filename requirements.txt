@@ -1,6 +1,6 @@
 pillow>=10
 pytesseract>=0.3.10
 mss>=9 ; sys_platform == "win32" or sys_platform == "linux"
-pynput>=1.7
+pynput>=1.7 ; sys_platform != "linux"   # only for `hotkey`; on Linux: pip install pynput (needs a compiler)
 pyspellchecker>=0.7   # English words for correcting OCR'd shop titles
 certifi>=2023.7   # trusted HTTPS certificates for the packaged app

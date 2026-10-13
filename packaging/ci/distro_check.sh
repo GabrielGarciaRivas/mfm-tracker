@@ -32,8 +32,8 @@ case "$FAMILY" in
   el)         # RHEL, Rocky Linux, AlmaLinux 9 / 10 (Tesseract is in EPEL)
     dnf install -y -q epel-release >/dev/null || exit 1
     if [ "$(rpm -E %rhel)" -ge 10 ]; then
-      dnf install -y -q python3 python3-tkinter tesseract tesseract-langpack-eng \
-        xorg-x11-server-Xvfb >/dev/null || exit 1
+      dnf install -y -q python3 python3-tkinter tesseract tesseract-langpack-eng >/dev/null || exit 1
+      dnf install -y -q /usr/bin/Xvfb >/dev/null 2>&1     # only for this check's GUI test
     else
       dnf config-manager --set-enabled crb >/dev/null 2>&1
       dnf install -y -q python3.12 python3.12-tkinter tesseract tesseract-langpack-eng \
@@ -70,7 +70,7 @@ case "$FAMILY" in
       xbps-query -R "$t" >/dev/null 2>&1 && WAYLAND_TOOLS="$WAYLAND_TOOLS $t"
     done ;;
   apk)        # Alpine Linux (musl: from source only)
-    apk add -q python3 py3-tkinter tesseract-ocr tesseract-ocr-data-eng xvfb \
+    apk add -q python3 python3-tkinter tesseract-ocr tesseract-ocr-data-eng xvfb \
       font-dejavu >/dev/null || exit 1
     for t in grim spectacle gnome-screenshot; do
       apk search -q -x "$t" | grep -q . && WAYLAND_TOOLS="$WAYLAND_TOOLS $t"
@@ -82,6 +82,7 @@ echo "python: $($PY --version 2>&1)  tesseract: $(tesseract --version 2>&1 | hea
 ldd --version 2>&1 | head -1
 
 gui_check() {   # $@ = command; it must still be running after 15 s
+  command -v Xvfb >/dev/null || { echo "GUI: not checked (no Xvfb in this distro's repos)"; return 0; }
   Xvfb :91 -screen 0 1280x800x24 >/dev/null 2>&1 &
   XP=$!
   sleep 2
