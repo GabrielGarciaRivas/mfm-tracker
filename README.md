@@ -1,90 +1,47 @@
 # Free Market Tracker
 
-**Free Market price tracker for MapleStory Classic World.** Its technical name, used for
-the repository, the command line and the data folder, is `mfm-tracker`.
+**Free Market price tracker for MapleStory Classic World.**
 
-Screenshots the shop window, reads item names and prices with OCR, logs them to a
-local database, and tells you whether each listing is a **DEAL**, **fair**, or **HIGH**
-compared with market rate. It only reads pixels from your screen; it never touches
-the game client, memory, or network traffic.
+Free Market Tracker reads the shop windows you open in the Free Market, logs every item and
+price, and marks each listing as a **DEAL**, **fair** or **HIGH** compared with the market
+price. It only looks at your screen; it never touches the game.
 
-What changed in each version: [CHANGELOG.md](CHANGELOG.md).
+Technical name (command line, data folder, repository): `mfm-tracker`.
+What's new: [CHANGELOG.md](CHANGELOG.md).
 
-## The app (no install)
+## Install
 
-**Windows:** `Free Market Tracker.exe`. **macOS:** `Free Market Tracker.app`. **Linux:**
-`Free Market Tracker`. Each has Python, the window toolkit and Tesseract OCR built in;
-nothing else needs to be installed. Put it anywhere and double-click it.
+Download the app for your system from the
+[Releases page](https://github.com/jayee88/mfm-tracker/releases). Nothing else needs to be
+installed.
 
-- **Windows:** the .exe isn't code-signed, so the first time SmartScreen may say "Windows
-  protected your PC": click **More info → Run anyway**. Some antivirus tools are wary of
-  single-file Python apps; it's a false positive, and building it yourself (below) gives
-  you an identical file.
-- **macOS:** build it on your Mac (below), then drag `Free Market Tracker.app` into
-  Applications. The first time you press **Start monitoring**, macOS asks for **Screen
-  Recording** permission: allow it in System Settings → Privacy & Security → Screen
-  Recording, then quit and reopen the app. Without it the app only sees your desktop
-  wallpaper and never finds a shop. (A rebuilt app counts as new to macOS, so after
-  rebuilding you may need to switch the permission off and on again.)
-- **Linux:** extract it, then double-click (or run `./"Free Market Tracker"`). If your file
-  manager opens it as text, make it executable: right-click → Properties → "Is executable",
-  or `chmod +x "Free Market Tracker"`. To add it to your app menu, move it to
-  `~/Applications/`, the `.desktop` file to `~/.local/share/applications/` and the `.png` to
-  `~/.local/share/icons/`. On Wayland, `grim` / `spectacle` / `gnome-screenshot` from your
-  desktop is still used for screenshots.
-- Starting takes a few seconds, since it unpacks itself to a temporary folder first.
-- The app uses the Inter font (SIL Open Font License, `packaging/fonts/OFL.txt`), loaded
-  privately by the app: nothing is installed on your system.
-- The Linux app carries its own Tesseract 5.3.4, the version the OCR clean-up was tuned and
-  tested on. (Other Tesseract releases read some faded text and shop titles slightly
-  differently.) See [Linux distributions](#linux-distributions) for where it runs.
-- Your data (prices, alerts, settings) stays in the same data folder as before, so the app
-  and the Python scripts share it.
-- With arguments it works like the `mfm-tracker` command, e.g. `"Free Market Tracker" deals`.
+- **Windows:** run `Free Market Tracker.exe`. If Windows shows "Windows protected your
+  PC", click **More info → Run anyway**.
+- **macOS** (Apple silicon; on an Intel Mac, build it yourself, below): unzip it and drag
+  **Free Market Tracker** into Applications. If macOS won't open it, go to System
+  Settings → Privacy & Security and click **Open Anyway**. When you first press **Start
+  monitoring**, allow **Screen Recording** (System Settings → Privacy & Security → Screen
+  Recording), then reopen the app.
+- **Linux:** extract it and double-click **Free Market Tracker** (if it opens as text:
+  right-click → Properties → "Is executable"). Runs on 64-bit distros with glibc 2.35 or
+  newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland, also
+  install your desktop's screenshot tool: `grim` (Hyprland, Sway), `spectacle` (KDE) or
+  `gnome-screenshot` (GNOME).
 
-### Building the apps yourself
-- **Windows:** double-click `packaging/Build Windows App.bat`. It installs Python and
-  Tesseract with winget if needed (for the build only), then writes
-  `dist/Free Market Tracker.exe`.
-- **macOS:** double-click `packaging/Build macOS App.command`. It installs Homebrew,
-  Tesseract and Python with Tk if needed (for the build only), checks that OCR works from
-  inside the finished app, then writes `dist/Free Market Tracker.app` and a
-  `dist/Free Market Tracker (macOS).zip` for copying to another Mac. The app is built for
-  your Mac's processor (Apple silicon or Intel). If macOS won't open the .command file
-  because it was downloaded ("unidentified developer"), right-click it → **Open**, or
-  allow it under System Settings → Privacy & Security → **Open Anyway**; or run it from
-  Terminal: `bash "packaging/Build macOS App.command"`.
-- **Linux:** `packaging/build_tesseract_static.sh` once (builds a self-contained Tesseract
-  5.3.4; needs `base-devel cmake ninja libpng zlib`), then `packaging/build_linux.sh` (needs
-  `python`, `tk`, `tesseract-data-eng`, and `pip install pyinstaller pillow pytesseract mss
-  pyspellchecker`). Without the static Tesseract it bundles your system's tesseract and its
-  libraries instead, which works but makes the file about three times bigger.
-- **All three, on GitHub:** push this folder to a GitHub repository and run the "Build
-  apps" workflow from the Actions tab (`.github/workflows/build.yml`); the files appear
-  under the run's Artifacts (the Mac one is for Apple silicon). Pushing a tag like
-  `v2610.1.000` also publishes them as a release. A Mac app downloaded this way isn't
-  notarized by Apple, so the first time right-click it → **Open** (or run
-  `xattr -cr "/Applications/Free Market Tracker.app"` once).
-- Any built app can check its own OCR: `"Free Market Tracker" selftest`
-  (on a Mac: `"/Applications/Free Market Tracker.app/Contents/MacOS/Free Market Tracker" selftest`).
+Play the game **windowed or borderless**, not exclusive fullscreen.
 
-## Install (running from source)
+### Run from source (optional)
 
-### Windows
-1. Install Python 3.10+ from python.org (tick **Add to PATH**; Tk for the GUI is included).
-2. Install Tesseract: the UB Mannheim build at
-   https://github.com/UB-Mannheim/tesseract/wiki (default path
-   `C:\Program Files\Tesseract-OCR\` is detected automatically).
-3. In PowerShell:
+**Windows:** install [Python](https://www.python.org/downloads/) (tick **Add to PATH**)
+and [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki), then in PowerShell:
 ```powershell
 cd mfm-tracker
 py -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python mfm-tracker gui
 ```
-Run the game in **windowed or borderless** mode; exclusive fullscreen can capture black.
 
-### macOS
+**macOS:**
 ```bash
 brew install tesseract python@3.12 python-tk@3.12
 cd mfm-tracker
@@ -92,632 +49,177 @@ python3.12 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python mfm-tracker gui
 ```
-Give Terminal (or whichever app runs the script) Screen Recording permission.
 
-### Linux
-Install Python 3.10+ with Tk, Tesseract with English data, and on Wayland a screenshot
-tool (see [Wayland](#wayland-screenshots)), with your distro's package manager:
+**Linux:** install the packages for your distro, then run the same three commands as on
+macOS with `python3`:
 
 | Distro | Packages |
 |---|---|
-| **Ubuntu, Debian, Linux Mint, Pop!_OS, elementary OS, Zorin OS** | `sudo apt install python3 python3-venv python3-tk tesseract-ocr tesseract-ocr-eng` |
-| **Fedora** | `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
-| **RHEL, Rocky Linux, AlmaLinux 10** | `sudo dnf install epel-release`, then `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
-| **RHEL, Rocky Linux, AlmaLinux 9** | `sudo dnf install epel-release`, `sudo dnf config-manager --set-enabled crb`, then `sudo dnf install python3.12 python3.12-tkinter tesseract tesseract-langpack-eng` (use `python3.12` below) |
-| **openSUSE Tumbleweed** | `sudo zypper install python3 python3-tk tesseract-ocr tesseract-ocr-traineddata-english` |
-| **openSUSE Leap 15.6** | `sudo zypper install python311 python311-tk tesseract-ocr tesseract-ocr-traineddata-english` (use `python3.11` below) |
-| **Arch Linux, Manjaro, EndeavourOS, CachyOS** | `sudo pacman -S python tk tesseract tesseract-data-eng` |
-| **Void Linux** | `sudo xbps-install python3 python3-tkinter tesseract-ocr tesseract-ocr-eng` |
-| **Alpine Linux** | `sudo apk add python3 python3-tkinter tesseract-ocr tesseract-ocr-data-eng` |
-| **Gentoo** (not tested) | `dev-lang/python` with the `tk` USE flag, and `app-text/tesseract` |
-| **NixOS** (not tested) | `nix-shell -p "python3.withPackages (p: [ p.tkinter ])" tesseract` |
+| Ubuntu, Debian, Mint, Pop!_OS | `sudo apt install python3 python3-venv python3-tk tesseract-ocr tesseract-ocr-eng` |
+| Fedora | `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
+| openSUSE | `sudo zypper install python3 python3-tk tesseract-ocr tesseract-ocr-traineddata-english` |
+| Arch, Manjaro, EndeavourOS | `sudo pacman -S python tk tesseract tesseract-data-eng` |
+| Void | `sudo xbps-install python3 python3-tkinter tesseract-ocr tesseract-ocr-eng` |
+| Alpine | `sudo apk add python3 python3-tkinter tesseract-ocr tesseract-ocr-data-eng` |
+| RHEL, Rocky, AlmaLinux 10 | `sudo dnf install epel-release`, then `sudo dnf install python3 python3-tkinter tesseract tesseract-langpack-eng` |
 
-Then, in the `mfm-tracker` folder:
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt   # works in bash, zsh and fish
-.venv/bin/python mfm-tracker gui
-```
-Or activate the venv first (`source .venv/bin/activate` in bash/zsh,
-`source .venv/bin/activate.fish` in fish) and use plain `python`.
+### Build the app yourself (optional)
+- **Windows:** double-click `packaging/Build Windows App.bat`.
+- **macOS:** double-click `packaging/Build macOS App.command`.
+- **Linux:** run `packaging/build_tesseract_static.sh`, then `packaging/build_linux.sh`.
+- **All three on GitHub:** run the **Build apps** workflow from the Actions tab.
 
-- Ubuntu 22.04 and RHEL / Rocky / AlmaLinux 9 ship Tesseract 4.1.1. It works, but the OCR
-  clean-up was tuned on 5.3.4, so a few faded rows or shop titles may read differently;
-  the [app](#the-app-no-install) carries 5.3.4 (on 9 its glibc is too old for the app, see below).
-- `hotkey` (one capture per key press) also needs `pip install pynput`, which compiles a
-  small module: install a C compiler and kernel headers first (`build-essential
-  linux-libc-dev` on Debian/Ubuntu, `gcc kernel-headers` on Fedora, `base-devel
-  linux-api-headers` on Arch). The GUI and `watch` don't need it.
+The finished app is in the `dist` folder.
 
-### Linux distributions
-The Linux app runs on **x86-64 distros with glibc 2.35 or newer**: Ubuntu 22.04+, Debian
-12+, Linux Mint 21+, Pop!_OS 22.04+, elementary OS 7+, Zorin OS 17+, Fedora 36+, RHEL /
-Rocky / AlmaLinux 10, openSUSE Tumbleweed and Leap 15.6, Arch and its derivatives
-(Manjaro, EndeavourOS, CachyOS), Void (glibc), Gentoo. It brings its own Python, Tk,
-X11 and font libraries and Tesseract, so no packages are needed.
+## Getting started
 
-Checked by the **Linux distro check** workflow (`.github/workflows/distro-check.yml`, run
-from the Actions tab), which installs and starts both the app and the from-source setup
-above in each distro's official container:
+1. Open Free Market Tracker. The first time, it offers to download the MapleStory Classic
+   item and map lists. Say yes; they correct misread item and map names.
+2. Pick your **Channel**.
+3. Click **Start monitoring**, then play normally: open shops and scroll through them.
 
-| Distro | The app | From source |
-|---|---|---|
-| Ubuntu 22.04, 24.04 | ✓ | ✓ |
-| Debian 12, 13 | ✓ | ✓ |
-| Linux Mint 22 | ✓ | ✓ |
-| Fedora 41, 42 | ✓ | ✓ |
-| AlmaLinux 10 | ✓ | ✓ |
-| Rocky Linux 9 | ✗ glibc 2.34 is too old | ✓ |
-| openSUSE Tumbleweed, Leap 15.6 | ✓ | ✓ |
-| Arch Linux, Manjaro | ✓ | ✓ |
-| Void Linux (glibc) | ✓ | ✓ |
-| Alpine 3.22 | ✗ uses musl, not glibc | ✓ |
+The shop window and the minimap are found automatically, on any monitor. Each listing is
+saved with its item, price, shop, player, map, channel and time. The panel on the right
+shows what's being read.
 
-✓ = Tesseract reads the test image and the window opens and runs. Not covered: **NixOS**
-(the app needs an FHS environment there, e.g. `steam-run "./Free Market Tracker"`, or
-run from source), **Gentoo**, **ARM** machines (no ARM build; run from source), and
-musl-based Void/Alpine (run from source).
+If the shop or map is ever not found, use **Shop area** / **Map area** to draw a box
+around it. **Settings → Auto Detection** goes back to finding them automatically.
 
-<a id="wayland-screenshots"></a>
-**Wayland.** The app's window runs through XWayland, which every major desktop (GNOME,
-KDE Plasma, Hyprland, Sway, …) includes. Screenshots on Wayland go through a screenshot
-tool, so install the one for your desktop:
+## Channel
 
-| Desktop | Tool | Debian / Ubuntu | Fedora, openSUSE, Arch, Void, Alpine |
-|---|---|---|---|
-| Hyprland, Sway, river, other wlroots | grim | `grim` | `grim` |
-| KDE Plasma | Spectacle | `kde-spectacle` | `spectacle` |
-| GNOME | GNOME Screenshot | `gnome-screenshot` | `gnome-screenshot` |
+Click the arrow on the **Channel** box to pick from the channel picker, or type the
+number. The channel stays set until you change it.
 
-RHEL-family 9 has `spectacle` and `gnome-screenshot` (no `grim`); RHEL-family 10 has only
-`spectacle` (from EPEL), so there use KDE Plasma or an X11 session. On X11 nothing extra
-is needed.
+The app also asks for your channel when it starts and each time you change channel in
+the game (after the game's Change Channel window closes). Turn this off, or set how many
+channels the picker shows, in **Settings**.
 
-## Use
+## Tabs
 
-### Live window (recommended)
-```bash
-.venv/bin/python mfm-tracker gui
-```
-1. On first start it offers to download the **MapleStory Classic item list** from
-   NiaMeowDB (see below). Say yes: OCR'd names are snapped onto real
-   item names, so a misread like "Mokhbi Throwing Stars" is logged as "Mokbi
-   Throwing-Stars". Names that aren't in the list (e.g. Classic World's renamed scrolls)
-   still get word-level fixes from a vocabulary of item words ("PetEquip Speed Scrall" ->
-   "Pet Equip Speed Scroll"). Letters OCR commonly confuses (g/p, a/o, l/i, rn/m) are
-   treated as near-equal when matching, while genuinely different items (Wolbi vs Mokbi,
-   10% vs 60%) are never merged. You can also do this from Settings or with
-   `.venv/bin/python mfm-tracker meowdb`.
-2. Click **Start monitoring** and play normally. Open shops and scroll through them.
-   There's nothing to set up. The store window is found automatically wherever it is, on
-   any monitor, by its SELLER INFO / BUY ITEM / LEAVE STORE buttons (only shop windows
-   have that stack), so sky, clouds or other white windows can't be mistaken for it. The
-   map name is read from the minimap, found by its "MINI MAP" title strip and WORLD
-   button at the game window's top-left, whatever size the current map makes it, and
-   even if you've dragged the shop window somewhere else. The minimap shows the name on
-   two lines, the area on top and the zone below, and both are read: the map is saved as
-   **"Area: Zone"**, e.g. "Kerning City Subway: Line 1 <Area 1>" or "Hidden Street: Free
-   Market <2>". The area's icon left of the name is blanked out before reading.
-3. Pick your channel in **Channel**: its arrow (or the Down key) opens the **channel
-   picker**, a grid of channel buttons 8 wide, or type the number in the box (1–100;
-   nothing else can be entered). **Settings → Channels in the channel picker** sets how
-   many buttons it shows (1–100, default 20); any channel up to 100
-   can still be typed. It stays set for every shop you open until you change it, and is saved
-   with each listing, since the channel isn't shown anywhere the tool can read.
+- **Live:** the shop you're in, filling in as you scroll. Green = DEAL, red = HIGH,
+  grey = no market price yet, faded = sold.
+- **Deals:** listings still for sale, best deals first. Tick **Include sold** to see sold
+  ones.
+- **Items:** every item you've seen: the cheapest listing still for sale and where it is,
+  listed and sold prices, market price, and the NPC buy / sell prices. Filter by name,
+  category, class, level or "Sold by NPCs" with the bar above it.
+- **Review:** names that didn't match an item in the database. Press **Enter** to accept
+  the suggested item, **M** to pick one yourself, **K** to keep the name, **Delete** to
+  remove it.
+- **Alerts** and **Ignored:** see below.
 
-   By default you're also asked: **Settings → Ask for the channel at launch and after a
-   channel change** (on unless you untick it). The channel picker opens when the app starts,
-   and again each time you change channel in the game: the app watches for the game's
-   **CHANGE CHANNEL** and **CANCEL** buttons side by side, and once that window has
-   closed (about 2 seconds without it) asks which channel you're on. **Keep chN** closes
-   it unchanged (e.g. if you cancelled). It works while monitoring and while not; on
-   Wayland only while monitoring.
+Double-click any item for its **price history**: a chart and every sighting. Right-click a
+sighting to change its price or channel, or delete it.
 
-The panel on the right shows what it found ("Shop area: auto, found at …") and a preview
-of exactly what's being read.
-
-**Manual areas (only if auto-detection misses):** **Shop area** lets you drag a box
-around the whole store window (title bar to the bottom of the item list), and **Map
-area** around the minimap's street + map name. Do this if you play windowed with an
-unusual window size or have moved the minimap away from the corner. **Settings → Auto
-Detection** forgets the areas you drew and goes back to finding the shop and minimap
-automatically.
-
-Every listing is logged with **where** it is: shop title, seller, map and your channel,
-e.g. `111 (liormm) · Free Market <2> · ch2`.
-
-- Every item gets a **thumbnail**, captured from the store window the first time it's
-  seen (and replaced if the first one came from a faded, sold row). Icons show in all
-  tables and the history window, and are stored in the database.
-- A listing's **Price** is the meso amount shown before "mesos". Whatever comes before
-  "for" (a quantity) is ignored: "699 for 222,222 mesos" is a price of 222,222. Databases
-  from older versions, which divided by the quantity, are converted once.
-- Where a listing is shows in four columns: **Shop** (the shop's name), **Player** (who's
-  selling), **Map** and **Channel** (centered). The **Time** column shows your computer's local time as
-  YYYY-MM-DD HH:MM; times are
-  saved in UTC, so the database stays correct if you move it to another computer or time
-  zone (older records are converted once, from this computer's time zone).
-- **Live** shows the shop you're in, filling in as you scroll. Green = DEAL, red = HIGH,
-  grey = no market price yet, shaded grey = SOLD. A deal only makes a sound when the item
-  is on your Alerts list (see Alerts).
-- **Deals** ranks listings still for sale by % vs market, with their location
-  (tick **Include sold** to see sold ones too).
-- **Items** shows, per item: the **cheapest listing still for sale and where it is**,
-  the **listed median** vs. the **sold median** (what it actually sells for), and counts.
-  Select a row and press Delete (or right-click) to remove a bad OCR read.
-- Double-click any row for its price history (sold sightings drawn as grey squares)
-  and every sighting with its status and location.
-- **NPC buy** and **NPC sell** (Items tab, after Market): what an NPC shop charges for
-  the item (the cheapest shop, from NiaMeowDB's NPC Shop Database) and what an NPC pays
-  you for it (the item's value in NiaMeowDB's item data). "-" when there's none. Handy
-  to spot listings above the NPC price or below what an NPC would pay. Both are part of
-  the item data and are downloaded with it on every **Update** (the shop page with a
-  conditional request, so an unchanged page costs almost nothing); lists downloaded
-  before this version get one full re-download for them. Wide tables scroll sideways.
-- **Filter the Items tab** with the bar above it, modelled on NiaMeowDB's item database:
-  - **Filter**: name contains the text you type.
-  - **Category** (Equip, Use, Etc, Setup, Cash) and, within it, the kind of item (Shoes,
-    Overall, Scroll, Ore, ...).
-  - **Class**: equipment that needs that class; tick **+ all-class** to include
-    equipment any class can use.
-  - **Level**: lowest and/or highest required level (empty = no limit).
-  - **Sold by NPCs**: only items an NPC shop sells (they have an NPC buy price).
-  - **Clear** resets it; the count shows how many of your items match. The filter is
-    remembered between sessions. The choices only list what your own items have.
-    Items the item lists don't know only match a name filter.
-  - The details come from the meowdb item list (and the backup source for items meowdb
-    doesn't have). Lists downloaded by older versions don't have them yet: the app
-    offers to re-download once, or press Settings → Game data → **Update**.
-- In the history window, **right-click a sighting** to **change its price** (per item;
-  `45000`, `45,000` and `45k` all work), **change its channel** (1–100, or empty for
-  unknown), or **delete it**. Pick several with Alt+click (Option+click on a Mac) to
-  change them together; double-click a sighting to change its price, Delete removes it.
-  The chart, market rate and every table update right away.
-
-### Alerts (watchlist)
-Get a **ping** and a **green outline** around the item's icon when something you want
-is for sale in a shop you open.
-
-- **Alerts** tab: type an item (suggestions, with icons, come from the item database), optionally a
-  **max price**, and click **Add alert**. Leave the max price empty to be alerted at
-  any price. Or right-click any item in Live, Deals or Items → **Alert me when this is
-  listed…**
-- When a matching listing shows up while monitoring, the tracker plays a ping, shows
-  the price and shop/map in the status bar, brings its window to the front, and
-  records where it was: the Alerts tab shows each alert's **Last price**, **Shop**,
-  **Player**, **Map**, **Channel** and **Time**. Several matches at once give one ping.
-- Matching rows in Live, Deals and Items get a green outline on the icon and bold text.
-- Sold (faded) listings and listings above your max price never alert.
-- **Choose sound…** picks your own `.wav`; **Test sound** plays it. The sound is played
-  with `winsound` on Windows and `pw-play`/`paplay`/`aplay` on Linux (PipeWire,
-  PulseAudio or ALSA). If none of those exists you'll get the system bell instead.
-  The ping sound and "bring window to front" can each be switched off in the tab.
-- Double-click an item in the Alerts (or Ignored) tab for its price history, the same
-  window as in the Items tab. Right-click an alert for **Show history**, **Change max
-  price…** and **Remove item**; right-click an ignored item for **Show history** and
-  **Remove item** (stop ignoring it). Both work on several selected rows at once.
-- Alerts are saved in `watchlist.json` in the data folder (`mfm-tracker where`).
+Right-click items in any table for more options: alerts, ignore, match to the right item,
+delete a bad read, or look the item up on meowdb.
 
 ### Selecting several rows
-Every table (Live, Deals, Items, Alerts, Ignored) lets you pick several rows at once:
+- **Alt + click** adds or removes a row; **Ctrl + Alt + drag** selects every row you pass
+  over. Ctrl + click, Shift + click and Ctrl + A work too.
+- On a Mac, use **Option** instead of Alt and **Cmd** instead of Ctrl.
+- Right-click the selection to act on all of it, or press Delete.
 
-| | |
-|---|---|
-| **Alt + click** | add or remove one row |
-| **Ctrl + Alt + drag** | add every row the mouse passes over (scrolls at the top/bottom edge) |
-| Ctrl + click / Shift + click | standard toggle / range select, also work |
-| Ctrl + A, Esc | select all, clear |
+## Alerts
 
-On a Mac, Alt is the **Option** key: **Option + click**, and **Cmd + Option + drag** (or
-Ctrl + Option + drag). Cmd + click / Shift + click and Cmd + A work too, and right-click is
-also Ctrl + click or a two-finger click. Delete is the ⌫ key.
+Get a sound and a green outline when an item you want is for sale.
 
-Right-click inside a selection to act on all of it: **Alert me when these are listed**
-(one max price for all), **Ignore deals on** / **Stop ignoring**, and **Delete N listings**
-(Live, Deals: just those shops' listings) or **Delete all listings of N items** (Items).
-The Delete key does the same. A selection survives the tables' automatic refresh.
+1. In the **Alerts** tab, type the item, optionally a **max price**, and click **Add
+   alert**. Or right-click any item → **Alert me when this is listed…**
+2. When it shows up in a shop you open, the app pings, brings its window to the front and
+   records the price, shop, player, map, channel and time.
 
-Linux note: many desktops use Alt+drag (KDE Plasma 5, some tiling WMs) or Alt+click to
-move windows, which swallows the click before the tracker sees it. Use Ctrl+click /
-Shift+click there, or change the window-move modifier to Super/Meta in your desktop
-settings.
+Pick your own sound with **Choose sound…**. Sound and "bring to front" can each be turned
+off. Right-click an alert to see its history, change the max price or remove it.
 
-### Ignore list
-Items you don't care about can be ignored for deals: right-click → **Ignore deals on…**,
-or add them in the **Ignored** tab. Ignored items never ring the deal bell or get the
-green DEAL highlight, and they're hidden from the Deals tab unless you tick **Show
-ignored**. They're still logged (prices, history and market rates keep working), and an
-alert you've set on an ignored item still fires. Stored in `ignorelist.json` in the data
-folder; `mfm-tracker deals` skips them too.
+**Ignored:** items you don't care about. They never count as deals or ring the bell, but
+their prices are still logged. Right-click any item → **Ignore deals on…**
 
-### Outliers
-Troll prices (69,420,420), fat-fingered listings and OCR slips (4 for 4,000) would drag an
-item's market rate around. Once an item has **5 sightings** in the history window, any
-price more than the **ceiling** above or the **floor** below the item's **median** is set
-aside:
+## Market price
 
-- it's left out of the market rate and the listed/sold medians;
-- a price **below the floor** is still a **DEAL** (it's shown, highlighted, and counts for
-  deal alerts like any other deal) and is marked "very low" in the item's history; it
-  just doesn't move the market rate until prices around it make it normal;
-- a price **above the ceiling** is shown as **OUTLIER** (orange), never a deal, and is left
-  out of "cheapest listed"; the Deals tab hides those unless you tick **Show outliers**;
-- in an item's history the chart scales to normal prices and outliers are drawn as hollow
-  orange rings pinned to the edge, labelled with their price.
+An item's market price is:
+1. a reference price you imported, or
+2. the median of the prices you've seen over the last 14 days (only sold prices, once it
+   has sold at least twice).
 
-The median is the baseline because a single absurd price barely moves it, where it would
-drag an average far enough to hide itself. Set the ceiling (default 200% = more than 3×
-the median), the floor (default 75% = less than a quarter of it), **Required sightings
-before judging**, or switch it off in **Settings**. Alerts you've set still fire on any price under
-your cap.
+Your own sightings only count once an item has been seen **5 times** (Settings →
+**Required sightings before judging**). Until then it shows no DEAL or HIGH.
 
-### Sold items
-Items drawn faded in a store have sold. They're logged as **sold**, and sold prices
-are the preferred basis for the market rate:
+**Outliers:** troll prices and misreads far from an item's usual price are left out of its
+market price. Very low ones still show as deals; very high ones show as **OUTLIER**. Adjust
+or turn this off in Settings.
 
-1. a reference price you imported, else
-2. the median **sold** price (once 2+ sales have been seen), else
-3. the median of everything seen.
+**Sold items:** listings that are faded in a shop are logged as sold. Coming back to the
+same shop doesn't log the same listing twice.
 
-Coming back to a shop doesn't double-count. Before a listing is saved, it's checked
-against the last 24 hours: if the same item and price was logged in a shop
-with the same shop name, player name and map, it's shown in Live (marked
-**already logged** in the Saved column, greyed) but not added again; only its "last
-seen" time is updated. Small OCR slips in the shop or player name ("lynn" / "Iynn")
-still count as the same shop. The **channel is not compared**, so forgetting to change
-it when you move channels can't create duplicates. A price change, another seller or
-another map is a new listing, and so is one last seen more than 24 hours ago.
+## Import and export
 
-If a listing was for sale on an earlier visit (within 7 days) and is faded now, that
-row is marked as sold ("marked sold") instead of a second, sold copy being added.
+- **Export prices…** saves a CSV of market prices (one row per item) or every sighting.
+- **Import prices…** loads reference prices from a CSV with the columns `item,price`, for
+  example prices you copied from meso.watch.
+- **Settings → Game data:** **Update** downloads the latest item and map lists (and item
+  icons) from NiaMeowDB, with OSMS Data Explorer as a backup. **Import…** / **Export…**
+  saves or restores each list; an item list exported as **.zip** includes every icon.
 
-How it follows you around the market:
-- It only runs OCR when a store window is actually on screen (a ~7 ms colour check),
-  so it stays light on CPU while you walk around.
-- Item icons and their quantity badges are blanked out before reading, and faded rows
-  get a second, contrast-boosted read so their prices come out right.
-- Scrolling is handled automatically: each listing is logged once per shop visit.
-  Rows cut off at the edge of the list are skipped until they scroll fully into view.
-- A visit ends when you close the shop, or when the store header (title, avatar, seller)
-  changes, i.e. you opened a different shop. Scrolling never changes the header, so it
-  never starts a new visit. If it ever misses a switch, **Ctrl+N** ends the current visit.
-- **The mouse cursor and item tooltips are ignored.** Rows under the glove cursor or under
-  the pop-up item window are skipped for that frame (the panel shows "+N under cursor")
-  and read as soon as you move the mouse off them, so the cursor can't turn "Toga" into
-  "Topa" or glue "Orange Hooded…" from a tooltip onto the row below. Scrolling with the
-  wheel while hovering the list is fine; just move the mouse off a row if it stays unread.
-- Long names are truncated by the game (e.g. `Crossbow Attack Scroll: I…`) and are
-  logged that way. If you import a reference price under the full name and only one
-  item matches the prefix, it's matched to the full name automatically.
-
-**Upgrading from the first version?** Its parser logged junk rows ("For", "1For"…).
-Clear them out with `.venv/bin/python mfm-tracker purge-old`.
-
-### Command line
-```bash
-python mfm-tracker calibrate          # manually set the store-window area (normally automatic)
-python mfm-tracker calibrate --map    # manually set the minimap name area
-python mfm-tracker calibrate --auto   # forget manual areas, go back to automatic
-python mfm-tracker watch --channel 5  # same continuous monitoring, printed in the terminal
-python mfm-tracker hotkey             # one capture per F8 press (Windows / X11)
-python mfm-tracker deals              # last 24h of listings ranked by % vs market
-python mfm-tracker item dark scroll gloves  # history for one item (fuzzy name match)
-python mfm-tracker report             # report.html with trends, open in a browser
-python mfm-tracker scan shot1.png     # OCR a screenshot of a store window
-python mfm-tracker scan --full screen.png   # full-screen screenshot: finds the store automatically
-python mfm-tracker forget "For"       # delete every listing of one (misread) item
-```
-
-Moving the game window or the store window is fine; it's re-found automatically.
-
-**Wayland:** the GUI and `watch` both work (screenshots go through grim/spectacle/
-gnome-screenshot). `hotkey` doesn't, since apps can't grab global keys there.
-On KDE, spectacle may be slow at sub-second intervals; raise the capture interval in
-Settings if the OCR time looks high.
-
-## Item data from NiaMeowDB
-
-Item names, ids and icons come from [NiaMeowDB](https://meowdb.com/msclassic/item-db)
-(meowdb.com). Thanks to the meowdb team.
-
-**Backup source:** [OSMS Data Explorer](https://osmsdataexplorer.com/), game
-data mined from MapleStory Classic World. It's used only where NiaMeowDB has nothing:
-- **items** missing from meowdb's list (compared by the game's own item id, which meowdb
-  uses as the icon key, and by name), so their names are spell-checked too, with their
-  category;
-- **maps** missing from meowdb's map list (it has every map, with street and region), so
-  misread names on any map can be corrected;
-- **icons** meowdb doesn't have: when meowdb answers "not found" for an icon, the backup
-  source's picture of that item is used.
-
-It's downloaded with **Update** (checked at most once a week, with conditional requests,
-so unchanged files cost almost nothing; Full refresh checks it right away), and also when
-meowdb can't be reached. A downloaded file that doesn't look like the expected format is
-rejected and the previous copy kept. Settings → Game data shows what it adds. Command
-line: `mfm-tracker osms [--force]`; `mfm-tracker meowdb` updates it too.
-
-- On first start the GUI offers to download the Classic item and map lists; after that,
-  **Settings → Game data → Update** (or `.venv/bin/python mfm-tracker meowdb`) only fetches
-  what changed:
-  - meowdb lists items in id order and new items get new ids, so an update re-checks just
-    the page holding your newest item, plus any pages after it: usually **one request**,
-    sent as a conditional request so an unchanged page comes back as "304 Not Modified".
-  - The item list is checked at most once a day and the map list at most once a week;
-    asking more often makes no requests at all.
-  - A full re-download (one request per 500 items, one per second) happens the first time,
-    after 30 days, if meowdb's list changed earlier in the list, or when you click **Full
-    refresh** (`mfm-tracker meowdb --full`).
-  - There's no fixed number of pages: each page from meowdb says whether more follow
-    (`hasMore`) and how many there are (`totalPages`), and pages are read until there are no
-    more, so a list that grows past 11 pages (5,500 items) is still read completely. An
-    update starts at the page holding your newest item and continues onto any new pages.
-  - `cache/meowdb_sync.json` is the bookkeeping for this: when the item list was last
-    checked and fully downloaded, the version tag meowdb sent for each page (so an unchanged
-    page costs a "304 Not Modified" instead of the whole page), and the same for the map
-    list. It holds no item data; deleting it only makes the next update a full download.
-- OCR'd names are snapped onto item names from the database ("Reppae Hat" -> "Reggae Hat"), and truncated
-  names are expanded when only one item matches ("Claw Attack Scroll: Interm…" ->
-  "Claw Attack Scroll: Intermediate").
-- **Item icons:** Update and Full refresh also download every official item
-  icon you don't have yet (Settings → Game data, on by default): up to **10 per second**
-  in the background, so the first time takes roughly **10 minutes** for ~5,500 icons; the
-  status bar shows progress and the time left.
-  - **Automatic slow-down:** if meowdb answers "too many requests" (429) or "busy" (503),
-    the speed halves and downloads pause for as long as meowdb asks (Retry-After, else 10
-    s); slow answers (over 3 s) or errors reduce it by a quarter. After 50 good answers in a
-    row it speeds back up by a quarter, never above 10 per second and never below one
-    request per 2 seconds. The status bar says when meowdb has asked to slow down.
-  - Four downloads are in flight at once, because one request on its own takes longer than
-    a tenth of a second; the rate limit applies to all of them together. The speed is the
-    `icon_rate` setting in `settings/config.json`.
-  - Each icon is downloaded once, ever: later updates only fetch icons of new
-  items (an item whose picture changes gets a new icon key, so that's caught too). Closing
-  the app stops it; the next update continues where it left off. Icons meowdb doesn't have
-  aren't asked for again for a month. Command line: `mfm-tracker meowdb --icons`.
-- With that option off, icons are still fetched for the items you see in shops and in
-  item search. Official icons replace the screen-captured thumbnails; items meowdb doesn't
-  have keep the thumbnail cut from the screen. `mfm-tracker fetch-icons` fetches icons for
-  everything you've logged.
-- Items whose name doesn't exactly match anything in the item database get a small red
-  **!** badge on their thumbnail (Live, Deals, Items and history). It usually means an OCR
-  misread the item list couldn't fix, a name cut off too short to identify, or an item
-  newer than your copy of the list. No badges are shown when no item list is installed.
-- Look-alike names are guarded against: a short word can't gain or lose a letter ("Topa"
-  is never snapped to "Topaz"), and when two different items are about equally close
-  to what was read, the tracker doesn't guess. The row keeps its OCR text with a red **!**
-  for you to match.
-- **Fixing one bad read:** in Live or Deals, right-click → **Delete this listing (bad
-  read)**, or **Match to database item…** with **Only this listing** ticked. That changes just
-  that shop's listing, so a one-off misread of a real item (Toga logged as Topaz) can be
-  fixed without renaming every genuine Topaz. For real item names this is the default,
-  and "Remember" starts unticked.
-- **Unmatched names get extra reads.** A row whose name doesn't match any item in the database isn't
-  shown in Live or logged straight away: it's read on 2 more screen captures first (fresh
-  reads, even if the screen hasn't moved). If one of those reads identifies the item, only
-  the correct name is logged and the garbled read is dropped. Genuinely unknown items are
-  logged after the extra reads, and one that scrolls out of view before then is still
-  logged when you leave the shop, provided it was read at least twice. The number of
-  extra reads is in Settings (0 turns this off).
-- **Review tab:** every logged name that doesn't match an item in the database, most-seen first, with
-  the closest database item, how alike they are, how many listings it has and what OCR read.
-  Truncated scroll names are graded by their saved icon colour. Work through it from the
-  keyboard (the next row is selected after each action, and several selected rows are
-  handled at once):
-  - **Enter**: accept the suggestion (renames the listings and, with "Remember" ticked,
-    learns the reading for next time);
-  - **M**: match by hand; **K**: keep the name as it is (an item newer than your list, say).
-    Kept names lose their ! badge; tick "Show kept names" to see them or un-keep with K;
-  - **Delete**: delete its listings (junk reads such as tooltip text);
-  - **Accept all 90%+ alike** matches every confident suggestion at once, after showing you
-    the list.
-  The tab title shows how many names are waiting, e.g. "Review (7)". Command line:
-  `mfm-tracker review` lists them, `mfm-tracker review --accept` accepts the 90%+ ones.
-- **Manual matching:** right-click an item (Live, Deals or Items) → **Match to database
-  item…**, type to search, and pick the right one. Its listings are renamed, and with
-  "Remember" ticked the tracker learns that reading, so the next time your OCR produces
-  the same misspelling it's logged correctly. Matches are stored in `aliases.json` in the
-  data folder (`mfm-tracker where`); truncated scroll names are remembered per icon colour.
-  Command line: `mfm-tracker match "Rennae Hat" "Reggae Hat"`.
-- **Map names** are checked against meowdb's map list (downloaded with the items, one
-  extra request) and the backup source's, so misreads like "Hidden Streat: Free Marker
-  <8>" are logged as "Hidden Street: Free Market <8>". Room and area numbers must match
-  exactly and are never changed. If the area line is misread, the zone alone decides
-  when only one map has that zone. Map names already in your database are corrected
-  when the list is downloaded, and names saved by versions before 2610.8 (zone only,
-  "Free Market <2>") get their area added once.
-- **Look up on meowdb** (right-click in Items, or the button in an item's history window)
-  opens the item's meowdb page.
-
-### Scroll grades from icon colour
-Long scroll names are cut off by the game ("Overall Armor LUK Scroll:…"), and the visible
-part can match several grades. When it does, the scroll's icon colour picks the grade:
-
-| Icon colour | Grade |
-|---|---|
-| yellow | Greater |
-| red | Intermediate |
-| blue | Lesser |
-| black | Chaos |
-
-Any partial grade that is visible ("Topwear DEF Scroll: Gre…") is still respected, and it
-works for faded (sold) scrolls too.
-
-The colour is checked for **every** scroll name that isn't an exact item, before anything
-else decides: it doesn't matter whether OCR kept the "..." ("Overall Armor DEF Scroll",
-"…Scroll: Inter..", "Two-handed Blunt Wea"), small misreads in the visible part are
-tolerated ("Overal Armor LUK Scrol"), and grades you've logged before never decide it.
-A name that could be more than one scroll ("Overall Armor D…" = DEF or DEX) is never
-guessed; it waits in the Review tab. If the colour can't be read, a visible grade letter
-("Scroll: G") is used instead. Without an item list, names ending in "Scroll:" are
-completed the same way ("Overall Armor LUK Scroll: Greater").
-
-### Shop titles
-Shop titles are corrected for OCR letter swaps ("55 burpers" -> "55 burgers") using an
-English word list (`pyspellchecker`, installed from requirements.txt) plus item words.
-A word is only changed when it isn't a real word and undoing a commonly-confused letter
-turns it into one, so slang and shorthand ("pwease", "S>Scolls", "nx") stay as typed.
-**Seller names are never corrected**, since players pick unusual names.
-
-### Game data in Settings: what each file is for
-**Settings → Game data** shows the two reference lists the app reads the game with (they
-aren't your prices), how many entries each has and where it came from:
-
-| list | used for | files (in the data folder's `cache/`) |
-|---|---|---|
-| **Item list** | spelling correction of item names; the item search in Alerts, Ignored, Match and Review; meowdb links and icons; category, level, class and NPC buy / sell prices (Items tab) | `items.txt` (names), `meowdb_items.json` (meowdb copy: id, name, category, level, class, NPC sell price, icon), `item_ids.json`, `item_types.json`, `item_icons.json`, `npc_shops.json` (NPC shop prices) |
-| **Map list** | correcting misread minimap names (`Free Marker <8>` → `Free Market <8>`) | `maps.json` (id, name, street) |
-| **Backup source** | items, maps and icons meowdb doesn't have (OSMS Data Explorer) | `osms_items.json`, `osms_maps.json` (included in an item .zip export) |
-
-Each has **Import…** and **Export…** (command line: `import-items`, `export-items`,
-`import-maps`, `export-maps`):
-- **Update** / **Full refresh** (at the top of the section) update both lists.
-- Export as **.json** or **.csv** saves each list as one file. It doesn't look like the
-  files in `cache/` because it's the source they're made from: the item export holds
-  every item's meowdb id, name, display name, category and icon key (= `meowdb_items.json`),
-  and `items.txt`, `item_ids.json`, `item_types.json` and `item_icons.json` are rebuilt
-  from it on import, byte for byte the same; the map export holds everything in
-  `maps.json`. So importing it restores the lists exactly, here or on another PC, and the
-  next **Update** only asks for newer items. Not included: icons (use .zip)
-  and the record of when meowdb was last checked.
-- Export the item list as **.zip** to include **every icon** too: `items.json` (the same as
-  a .json export), `icons/meowdb/<icon key>.png` for official icons and
-  `icons/captured/` for thumbnails cut from the screen (items meowdb doesn't have, with
-  their names in `index.json`). Importing the .zip restores the list and all icons, so
-  another PC doesn't need the icon download. A map .csv saved by Excel loses the leading zeros of map ids; they're restored
-  on import.
-- **.txt** is names only, one per line. Importing a names-only item list uses just those
-  names for spelling.
-- **Update** replaces an imported list with meowdb's again.
-- Your prices have their own **Export prices / Import prices** buttons in the main window.
-
-## Market rate and meso.watch
-
-For each item, "market" is:
-1. your imported reference price, if you have one, otherwise
-2. the median price of your own logs over the last 14 days (sold prices once 2+ sales
-   are seen, otherwise everything seen), once the item has **Required sightings before
-   judging** (Settings, default 5) in that window. Until then it has no market price, so
-   its listings aren't flagged **DEAL** or **HIGH** yet ("not enough data (2 of 5
-   sightings)"). An imported reference price counts straight away.
-
-meso.watch's robots.txt disallows automated access, so this tool doesn't scrape it.
-To use its numbers, copy the prices you care about into a CSV like
-`reference_prices.csv` and run:
-
-```bash
-python mfm-tracker import-ref reference_prices.csv
-```
-
-Re-import whenever you refresh it; existing items are overwritten. If meso.watch
-ever offers an API or data export, that would be the clean way to automate this —
-worth asking the site owner.
-
-### Exporting prices
-**Export prices…** (next to Import prices, or `mfm-tracker export FILE.csv [--all]`) saves a CSV:
-- **Market prices**: one row per item with its market price and where that came from,
-  listed and sold medians, outliers ignored, and the cheapest listing still for sale.
-  Its first columns are `item,price,source`, so it can be imported again (on another
-  computer, or after clearing your data) as reference prices.
-- **Every sighting**: date, item, price, sold or for sale, shop, seller (player), map, channel.
-  Its times are UTC (`first_seen_utc`, `last_seen_utc`, `sold_at_utc`).
-
-Every export (prices, item and map lists, and `mfm-tracker report`) adds your local date and
-time to the file name, as `YYYY-MM-DD HH-MM-SS`: `mfm-tracker market prices
-2026-10-13 08-11-00.csv`, `mfm-tracker item list 2026-10-13 08-11-00.zip`. On the command line the time
-goes onto the name you give (`export prices.csv` → `prices 2026-10-13 08-11-00.csv`).
-
-## Errors
-
-Errors are shown in the status bar and in an error window (one window that collects them,
-with a hint when the cause is clear: no internet for a meowdb download, a write-protected
-or full disk for the price database). The same error repeating, e.g. on every frame while
-monitoring, reopens the window at most every 2 minutes. Details also go to `app.log` in
-the data folder.
-
-## Version
-
-The version shown in the status bar is `YYMM.minor.hotfix`, e.g. `2610.1.000`.
-
-## Data retention
-**Settings → Data retention** keeps the price database from growing forever:
-
-- **Keep listings for N days** (default **30**): a listing that hasn't been seen (or sold)
-  for that long is old. Listings you keep seeing in shops stay, however old the first
-  sighting is.
-- **Then:** **Archive, then delete** (default): old listings are first copied into
-  `prices-archive.db` in the **Archive to** folder (default `archives/` in the data folder;
-  **Browse…** picks any folder, e.g. another drive), and only removed from your price
-  database once the copy is complete. The archive has the same columns as `prices.db`
-  (plus a log of each cleanup) and is added to every time, never overwritten.
-  **Delete** removes them for good. **Keep everything** never removes anything.
-- It runs automatically every time the app starts, every 6 hours while it's open (if
-  you're monitoring at that moment it waits until you stop, checking every 10 minutes,
-  since cleaning up briefly locks the database), and whenever you press **Clean up now**
-  (which uses what's in the form). The database file is compacted afterwards so it
-  actually shrinks. The line next to it shows the database size and how many listings are due.
-- If the retention is shorter than the market price window (14 days), Save asks first,
-  since market prices would have less data.
-- When `prices.db` grows past **100 MB**, a **red warning** appears at the top of the main
-  window recommending to archive and/or delete some data; clicking it opens Settings.
-- Command line: `mfm-tracker prune [--days N] [--delete | --archive DIR]`.
-
-## Your data
-
-Everything lives in one data folder (`%APPDATA%\mfm-tracker` on Windows,
-`~/Library/Application Support/mfm-tracker` on macOS, `~/.local/share/mfm-tracker` on Linux; `mfm-tracker where` or **Settings → Open data folder**
-shows it), split three ways so each part can be backed up or cleared on its own:
-
-| folder | what's in it |
-|---|---|
-| `prices/` | `prices.db`: every listing you've seen, and imported reference prices |
-| `settings/` | `config.json` (settings and capture areas), `watchlist.json` (alerts), `ignorelist.json`, `aliases.json` (manual matches), `kept_names.json` |
-| `cache/` | downloaded or rebuildable: item and map database, item icons (`icons.db`), the ping sound |
-| `backups/` | copies made before anything is cleared |
-
-Older versions kept everything in the top folder; files are moved into place the first
-time this version starts.
-
-**Settings → Your data:**
-- **Clear pricing data…** deletes every listing and reference price (settings, alerts, the
-  item list and icons are kept).
-- **Reset personal settings…** lets you tick what to reset: settings and capture areas,
-  alerts, ignore list, manual matches, kept names.
-
-Both ask twice before deleting anything, and save a backup copy to `backups/` first
-(`prices-<date>.db` / `settings-<date>/`). To undo, close the app and copy the backup back.
+Exported files get the date and time in their name, e.g.
+`mfm-tracker market prices 2026-10-13 08-11-00.csv`.
 
 ## Settings
 
-Change these in the GUI's **Settings** (rest the mouse on any setting or button there for a
-short explanation), or edit `settings/config.json`:
+Rest the mouse on any setting for a short explanation.
 
-| key | default | meaning |
+| Setting | Default | What it does |
 |---|---|---|
-| `deal_threshold_pct` | 15 | % below/above market to flag DEAL/HIGH |
-| `interval_seconds` | 0.15 | how often the screen is read while monitoring (a read that takes longer starts the next one straight away) |
-| `confirm_frames` | 2 | identical reads needed before a row is logged |
-| `unmatched_extra_frames` | 2 | extra reads for a name not in the item database before it's logged |
-| `close_frames` | 3 | empty frames in a row that mean the shop closed |
-| `hotkey` | `f8` | any pynput key name (`f9`, `home`, …) |
-| `upscale` | 3 | OCR upscaling; raise to 4 if small text misreads |
-| `save_captures` | false | keep every capture PNG to debug OCR |
-| `tesseract_cmd` | null | full path to tesseract.exe if not auto-found |
-| `search_icons` | true | show item icons in item search (Settings → Game data → Item list) |
-| `download_all_icons` | true | Update also downloads every item icon not here yet |
-| `icon_rate` | 10 | icon downloads per second (slows down by itself if meowdb asks) |
-| `keep_days` | 30 | listings not seen for this many days are archived and/or deleted |
-| `retention` | `archive` | `archive` (copy to the archive, then delete), `delete`, or `keep` (never remove) |
-| `archive_dir` | null | archive folder (null = `archives/` in the data folder) |
-| `outliers_on` | true | ignore outlier prices once an item has enough sightings |
-| `min_sightings` | 5 | Required sightings before judging: sightings an item needs (in the history window) before your own prices give it a market price, so before DEAL / HIGH, and before outliers are set aside |
-| `outlier_ceiling_pct` | 200 | more than this % above the median is an outlier |
-| `outlier_floor_pct` | 75 | more than this % below the median is an outlier |
+| Capture every (seconds) | 0.15 | how often the screen is read while monitoring |
+| Frames to confirm a row | 2 | identical reads needed before a listing is saved |
+| Extra reads for names not in database | 2 | extra reads before an unknown name is saved |
+| Empty frames = shop closed | 3 | reads without a shop before it counts as closed |
+| Market median window (days) | 14 | how many days of sightings make the market price |
+| OCR upscale factor | 3 | raise it if small text is misread |
+| Required sightings before judging | 5 | sightings needed before an item gets a market price, DEAL / HIGH, and outliers |
+| Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
+| Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
+| Ask for the channel at launch and after a channel change | on | the channel prompt |
+| Channels in the channel picker | 20 | buttons in the channel picker |
+| Data retention | 30 days, archive | see below |
 
-## Tips for good OCR
-- Icons and their number badges, buttons and the scrollbar are ignored automatically.
-- If names come out garbled, set `save_captures: true` and look at what's being read.
-- The first sighting of an item locks in its spelling; later OCR typos snap to it.
-  Importing reference prices with the correct names gives a clean starting list.
+**Data retention:** listings not seen for 30 days are copied to an archive file and then
+removed (or just deleted, or kept forever). This runs at start, every 6 hours, and when you
+click **Clean up now**. A red warning appears if the price database grows past 100 MB.
+
+## Your data
+
+Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
+`~/Library/Application Support/mfm-tracker` (macOS) or `~/.local/share/mfm-tracker`
+(Linux). **Settings → Open data folder** opens it.
+
+| Folder | Contents |
+|---|---|
+| `prices/` | your prices (`prices.db`) |
+| `settings/` | settings, alerts, ignore list, manual matches |
+| `cache/` | downloaded item and map lists, icons |
+| `archives/` | old listings moved out by data retention |
+| `backups/` | copies made before anything is cleared |
+
+**Settings → Clear pricing data…** and **Reset personal settings…** ask twice and save a
+backup first.
+
+## Command line
+
+The app and `mfm-tracker` (from source) also take commands:
+```bash
+mfm-tracker deals                   # recent listings ranked against the market price
+mfm-tracker item "dark scroll"      # one item's price history
+mfm-tracker watch --channel 5       # monitor in the terminal
+mfm-tracker report                  # an HTML report
+mfm-tracker export prices.csv       # export prices (--all for every sighting)
+mfm-tracker import-ref prices.csv   # import reference prices
+mfm-tracker meowdb                  # update the item and map lists
+mfm-tracker where                   # show the data folder
+mfm-tracker --help                  # every command
+```
+With the app, use `"Free Market Tracker" deals` and so on. From source:
+`python mfm-tracker deals`.
 
 ## Credits
 
