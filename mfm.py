@@ -85,8 +85,8 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.10.001"
-CODENAME = "filters"
+VERSION = "2610.11.000"
+CODENAME = "npcprices"
 
 DATA = data_dir()
 # Three kinds of data, kept apart so each can be exported, backed up or cleared
@@ -1936,7 +1936,7 @@ def _page_guard(page: int, data: dict) -> None:
         raise RuntimeError(f"meowdb kept saying more pages follow (page {page} of {total}); stopped")
 
 
-REC_FIELDS = ("name", "displayName", "iconKey", "subtype", "type", "levelReq", "reqJob", "sources")
+REC_FIELDS = ("name", "displayName", "iconKey", "subtype", "type", "levelReq", "reqJob", "sources", "npcSell")
 
 
 def _meow_record(it: dict) -> dict:
@@ -1953,6 +1953,7 @@ def _meow_record(it: dict) -> dict:
             "subtype": it.get("displaySubtype") or it.get("subtype"), "type": it.get("type"),
             "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
             "reqJob": stats.get("reqJob") or None,
+            "npcSell": int(stats["price"]) if str(stats.get("price", "")).isdigit() else None,
             "sources": [str(x) for x in (it.get("sources") or []) if x]}
 
 
@@ -1972,7 +1973,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
     res = SyncResult(items_total=len(recs))
     last_full = _ago(st.get("last_full"))
     need_full = (full or not recs or last_full is None or last_full > ITEM_FULL_EVERY
-                 or any("type" not in r for r in recs.values()))    # saved before filters existed
+                 or any("npcSell" not in r for r in recs.values()))  # saved before filters / NPC prices
     last_check = _ago(st.get("last_check"))
     if not need_full and not force and last_check is not None and last_check < ITEM_CHECK_EVERY:
         res.message = f"Item list checked {_fmt_ago(last_check)} ago; no request made."
@@ -2050,6 +2051,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
         MEOWDB_ITEMS_PATH.write_text(json.dumps(recs), encoding="utf-8")
         _write_item_files(recs)
     _sync_maps(sync, res, res.full)     # the map list keeps its weekly limit except on full refreshes
+    _sync_npc_shops(sync, res, res.full)
     MEOWDB_SYNC_PATH.write_text(json.dumps(sync, indent=1), encoding="utf-8")
     if not res.message:
         what = "full download" if res.full else ("new items" if res.items_new else "no new items")
@@ -2165,6 +2167,53 @@ def fix_throwing_star_rows(con) -> int:
 
 MAPS_PATH = CACHE_DIR / "maps.json"          # [{id, name, street}] from meowdb
 MEOWDB_MAPS_URL = "https://meowdb.com/msclassic/maps/all"
+MEOWDB_NPC_SHOPS_URL = "https://meowdb.com/msclassic/npc-shops"
+NPC_SHOPS_PATH = CACHE_DIR / "npc_shops.json"   # {meowdb item id: cheapest NPC shop price}
+
+
+def parse_meowdb_npc_shops(html_text: str) -> dict[str, int]:
+    """Item prices from meowdb's NPC Shop Database page: each shop row links the item
+    (/msclassic/item-db/<id>) and shows its price ("50mesos", "1,000 mesos"). The same
+    item in several shops keeps its cheapest price."""
+    import html as htmlmod
+
+    link = re.compile(r"<a\b[^>]*href=[\"'](?:https?://(?:www\.)?meowdb\.com)?/msclassic/(?:[a-z]{2}/)?"
+                      r"item-db/(\d+)[\"'][^>]*>", re.I)
+    links = list(link.finditer(html_text))
+    prices: dict[str, int] = {}
+    for i, m in enumerate(links):
+        end = links[i + 1].start() if i + 1 < len(links) else len(html_text)
+        seg = htmlmod.unescape(re.sub(r"<[^>]+>", " ", html_text[m.end(): min(end, m.end() + 3000)]))
+        p = re.search(r"(\d[\d,]*)\s*mesos?\b", seg, re.I)
+        if p:
+            price = int(p.group(1).replace(",", ""))
+            prices[m.group(1)] = min(prices.get(m.group(1), price), price)
+    return prices
+
+
+def _sync_npc_shops(sync: dict, res, force: bool) -> None:
+    """NPC shop prices, checked weekly like the map list (conditional request)."""
+    st = sync.setdefault("npc_shops", {})
+    last = _ago(st.get("last_check"))
+    if not force and NPC_SHOPS_PATH.exists() and last is not None and last < MAP_CHECK_EVERY:
+        return
+    try:
+        if res.requests:
+            time.sleep(1.0)
+        status, body, et, lm = _get_cond(MEOWDB_NPC_SHOPS_URL, *(st.get("etag") or [None, None])
+                                         if NPC_SHOPS_PATH.exists() else (None, None))
+        res.requests += 1
+        st["last_check"] = datetime.now().isoformat(timespec="seconds")
+        if status == 200:
+            prices = parse_meowdb_npc_shops(body.decode("utf-8", "replace"))
+            if len(prices) < 50:
+                raise RuntimeError(f"only found {len(prices)} NPC shop prices; the page may have changed")
+            NPC_SHOPS_PATH.write_text(json.dumps(prices), encoding="utf-8")
+            item_info.cache = None
+            st["etag"] = [et, lm]
+    except Exception as e:      # the item list is still useful on its own
+        res.message = (res.message + " " if res.message else "") + f"(NPC shop prices not updated: {e})"
+    MEOWDB_SYNC_PATH.write_text(json.dumps(sync, indent=1), encoding="utf-8")
 
 
 def clean_street(text: str) -> str:
@@ -2375,7 +2424,8 @@ def osms_extras() -> dict:
                        "type": _OSMS_TYPES.get(str(it.get("category") or "").lower(), it.get("category")),
                        "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
                        "reqJob": None if job.lower() in ("", "all", "any", "none") else job,
-                       "sources": []}
+                       "sources": [],
+                       "npcSell": int(it["price"]) if str(it.get("price") or "").isdigit() else None}
     meow_maps = _load_json(MAPS_PATH, [])
     meow_map_ids = {str(m.get("id") or "").lstrip("0") for m in meow_maps}
     meow_map_names = {_norm(m.get("name", "")) for m in meow_maps}
@@ -2401,9 +2451,11 @@ def item_info(name: str) -> dict | None:
     if item_info.cache is None:
         idx = {}
         for name_, e in osms_extras()["items"].items():
-            idx[name_] = {k: e.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources")}
-        for r in _load_json(MEOWDB_ITEMS_PATH, {}).values():
-            info = {k: r.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources")}
+            idx[name_] = {k: e.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources", "npcSell")}
+        shop = _load_json(NPC_SHOPS_PATH, {})
+        for iid, r in _load_json(MEOWDB_ITEMS_PATH, {}).items():
+            info = {k: r.get(k) for k in ("type", "subtype", "levelReq", "reqJob", "sources", "npcSell")}
+            info["npcBuy"] = shop.get(str(iid))
             for n in (r.get("name"), r.get("displayName")):
                 if n:
                     idx[n] = info
@@ -2459,7 +2511,7 @@ def item_matches(item: str, f: dict) -> bool:
         return False
     if f.get("level_max") is not None and lvl > f["level_max"]:
         return False
-    if f.get("npc") and "npc" not in (i.get("sources") or []):
+    if f.get("npc") and "npc" not in (i.get("sources") or []) and not i.get("npcBuy"):
         return False
     return True
 
@@ -2839,8 +2891,13 @@ def import_items(path: str) -> int:
                 "type": (str(r.get("type") or "").strip() or None),
                 "levelReq": int(lvl) if lvl.isdigit() else None,
                 "reqJob": (str(r.get("reqjob") or "").strip() or None),
+                "npcSell": int(str(r.get("npcsell")).strip()) if str(r.get("npcsell") or "").strip().isdigit() else None,
                 "sources": [str(x) for x in src]}
         MEOWDB_ITEMS_PATH.write_text(json.dumps(recs), encoding="utf-8")
+        shop = {str(int(str(r["id"]).strip())): int(str(r.get("npcbuy")).strip())
+                for r in rows if str(r.get("npcbuy") or "").strip().isdigit()}
+        if shop:
+            NPC_SHOPS_PATH.write_text(json.dumps(shop), encoding="utf-8")
         _write_item_files(recs)
         # it's a complete list: the next meowdb update only asks for newer items
         sync = _load_json(MEOWDB_SYNC_PATH, {})
@@ -2876,7 +2933,8 @@ def export_items(path: str) -> int:
     p = Path(path)
     recs = {} if names_only_items() else _load_json(MEOWDB_ITEMS_PATH, {})
     if recs:
-        rows = [{"id": int(i), **{k: r.get(k) for k in REC_FIELDS}}
+        shop = _load_json(NPC_SHOPS_PATH, {})
+        rows = [{"id": int(i), **{k: r.get(k) for k in REC_FIELDS}, "npcBuy": shop.get(i)}
                 for i, r in sorted(recs.items(), key=lambda kv: int(kv[0]))]
     else:      # an imported names-only list
         if not ITEMS_PATH.exists():
@@ -2884,7 +2942,8 @@ def export_items(path: str) -> int:
         ids = _load_json(ITEM_IDS_PATH, {})
         types, icons = _load_json(ITEM_TYPES_PATH, {}), _load_json(ITEM_ICONS_PATH, {})
         rows = [{"id": ids.get(n), "name": n, "displayName": None, "subtype": types.get(n),
-                 "iconKey": icons.get(n), "type": None, "levelReq": None, "reqJob": None, "sources": []}
+                 "iconKey": icons.get(n), "type": None, "levelReq": None, "reqJob": None, "sources": [],
+                 "npcSell": None, "npcBuy": None}
                 for n in ITEMS_PATH.read_text(encoding="utf-8").splitlines() if n.strip()]
     ext = p.suffix.lower()
     if ext == ".zip":
@@ -2897,12 +2956,14 @@ def export_items(path: str) -> int:
         with p.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["id", "name", "displayName", "subtype", "iconKey", "type", "levelReq", "reqJob",
-                        "sources"])
+                        "sources", "npcSell", "npcBuy"])
             for r in rows:
                 w.writerow([r["id"] if r["id"] is not None else "", r["name"] or "",
                             r["displayName"] or "", r["subtype"] or "", r["iconKey"] or "",
                             r.get("type") or "", "" if r.get("levelReq") is None else r["levelReq"],
-                            r.get("reqJob") or "", "|".join(r.get("sources") or [])])
+                            r.get("reqJob") or "", "|".join(r.get("sources") or []),
+                            "" if r.get("npcSell") is None else r["npcSell"],
+                            "" if r.get("npcBuy") is None else r["npcBuy"]])
         return len(rows)
     p.write_text(_items_json(rows), encoding="utf-8")
     return len(rows)

@@ -167,6 +167,12 @@ e.g. `111 (liormm) · Free Market <2> · ch2`.
   Select a row and press Delete (or right-click) to remove a bad OCR read.
 - Double-click any row for its price history (sold sightings drawn as grey squares)
   and every sighting with its status and location.
+- **NPC buy** and **NPC sell** (Items tab, after Market): what an NPC shop charges for
+  the item (the cheapest shop, from NiaMeowDB's NPC Shop Database) and what an NPC pays
+  you for it (the item's value in NiaMeowDB's item data). "-" when there's none. Handy
+  to spot listings above the NPC price or below what an NPC would pay. Both arrive with
+  **Update** (the shop prices are checked weekly, like the map list); lists downloaded
+  before this version get one full re-download for them. Wide tables scroll sideways.
 - **Filter the Items tab** with the bar above it, modelled on NiaMeowDB's item database:
   - **Filter**: name contains the text you type.
   - **Category** (Equip, Use, Etc, Setup, Cash) and, within it, the kind of item (Shoes,
@@ -174,7 +180,7 @@ e.g. `111 (liormm) · Free Market <2> · ch2`.
   - **Class**: equipment that needs that class; tick **+ all-class** to include
     equipment any class can use.
   - **Level**: lowest and/or highest required level (empty = no limit).
-  - **Sold by NPCs**: only items an NPC shop sells.
+  - **Sold by NPCs**: only items an NPC shop sells (they have an NPC buy price).
   - **Clear** resets it; the count shows how many of your items match. The filter is
     remembered between sessions. The choices only list what your own items have.
     Items the item lists don't know only match a name filter.

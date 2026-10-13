@@ -128,7 +128,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "source": "Source", "best": "Cheapest", "best_where": "Cheapest at",
         "status": "Status", "listed_med": "Listed med.", "sold_med": "Sold med.",
         "listed_n": "Listed", "sold_n": "Sold", "total": "Bundle price",
-        "max_each": "Max price", "last_price": "Last price",
+        "max_each": "Max price", "last_price": "Last price", "npc_buy": "NPC buy", "npc_sell": "NPC sell",
         "saved": "Saved",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
@@ -136,11 +136,11 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "best_shop": 140, "best_player": 100, "best_map": 265, "best_channel": 72,
          "time": 126, "low": 95, "high": 95, "seen": 50, "source": 110,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
-         "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100,
+         "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
-           "max_each", "last_price"}
+           "max_each", "last_price", "npc_buy", "npc_sell"}
 CENTER = {"channel", "best_channel"}
 
 
@@ -329,9 +329,18 @@ def make_tree(parent, cols) -> ttk.Treeview:
         tree.column(c, width=WIDTH[c], anchor="center" if c in CENTER else "e" if c in NUMERIC else "w",
                     stretch=(c == "item"))
     sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+    hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
     tree.configure(yscrollcommand=sb.set)
-    tree.pack(side="left", fill="both", expand=True)
+
+    def xset(lo, hi):        # the horizontal bar only shows when the columns don't fit
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            hsb.pack_forget()
+        elif not hsb.winfo_ismapped():
+            hsb.pack(side="bottom", fill="x", before=tree)
+        hsb.set(lo, hi)
+    tree.configure(xscrollcommand=xset)
     sb.pack(side="right", fill="y")
+    tree.pack(side="left", fill="both", expand=True)
     tree.tag_configure("deal", background="#d5f2dc", foreground="#145c2c")
     tree.tag_configure("high", background="#fadad7", foreground="#8c1d16")
     tree.tag_configure("unknown", foreground="#8a8a8a")
@@ -747,7 +756,7 @@ class App:
         self._build_item_filter(items)
         self.items = make_tree(items, ("item", "best", "best_shop", "best_player", "best_map", "best_channel",
                                        "listed_med", "listed_n",
-                                       "sold_med", "sold_n", "market", "source"))
+                                       "sold_med", "sold_n", "market", "npc_buy", "npc_sell", "source"))
         self.items.frame.pack(fill="both", expand=True)
         self.items.bind("<Double-1>", lambda e: self.open_history(self.items))
         self.items.bind("<Delete>", lambda e: self.forget_selected())
@@ -1142,6 +1151,7 @@ class App:
                 continue
             shown += 1
             mkt, src = mfm.market_rate(con, item, cfg)
+            info = mfm.item_info(item)
             st = mfm.price_stats(con, item, cfg, bounds.get(item, "auto"))
             b = best.get(item)
             tag = ""
@@ -1156,7 +1166,9 @@ class App:
                 item, mfm.fmt(b[0]) if b else "-", (b[1] or "") if b else "", (b[2] or "") if b else "",
                 (b[3] or "") if b else "", (b[4] or "") if b else "",
                 mfm.fmt(st["listed_median"]), st["listed_n"],
-                mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt), src))
+                mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt),
+                mfm.fmt(info.get("npcBuy")) if info and info.get("npcBuy") else "-",
+                mfm.fmt(info.get("npcSell")) if info and info.get("npcSell") else "-", src))
         if hasattr(self, "f_count"):
             self.f_count.config(text=f"{shown:,} of {total:,} items" if shown != total else
                                 f"{total:,} items")
