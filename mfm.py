@@ -85,8 +85,8 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.7.001"
-CODENAME = "retention"
+VERSION = "2610.8.000"
+CODENAME = "fullmaps"
 
 DATA = data_dir()
 # Three kinds of data, kept apart so each can be exported, backed up or cleared
@@ -296,6 +296,16 @@ def db() -> sqlite3.Connection:
                      ("sold", "INTEGER DEFAULT 0"), ("last_seen", "TEXT"), ("sold_ts", "TEXT")):
         if col not in cols:  # upgrade older databases in place
             con.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
+    if con.execute("PRAGMA main.user_version").fetchone()[0] < 2:
+        # 2610.8: map names are "Area: Zone" ("Hidden Street: Free Market <2>"); give the
+        # zone-only names saved before their area, once a map list is available to look it up
+        try:
+            if _map_names():
+                fix_map_rows(con)
+                con.execute("PRAGMA main.user_version = 2")
+                con.commit()
+        except Exception:
+            pass
     return con
 
 
@@ -1742,39 +1752,84 @@ def white_text_mask(img: Image.Image, up: int = 4, thr: int = 190) -> Image.Imag
     return ImageOps.invert(ImageChops.multiply(bright, neutral))
 
 
+def _blank_minimap_icon(img: Image.Image) -> Image.Image:
+    """The minimap's name panel has the area's icon at its left; OCR reads it as
+    junk ("ies ||"). Paint it over with the panel colour: the icon is the run of
+    columns at the left that are mostly not steel-blue over the panel's rows."""
+    rgb = img.convert("RGB")
+    W, H = rgb.size
+    px = rgb.load()
+
+    def blue(p):
+        return p[2] - p[0] >= 25 and p[1] >= 100
+    rows = [y for y in range(H) if sum(blue(px[x, y]) for x in range(0, W, 2)) > 0.25 * W]
+    if len(rows) < 8:
+        return rgb
+    ys = rows[:: max(1, len(rows) // 40)]
+    frac = [sum(not blue(px[x, y]) for y in ys) / len(ys) for x in range(W)]
+    text_level = sorted(frac[W // 3:])[len(frac[W // 3:]) // 2] if W > 30 else 0
+    x, limit = 0, W // 4
+    while x < limit and frac[x] < text_level + 0.3:
+        x += 1
+    if x >= limit:
+        return rgb                               # no icon (e.g. a hand-drawn area without it)
+    start = x
+    while x < W // 3 and frac[x] >= text_level + 0.3:
+        x += 1
+    if x - start < max(6, 0.4 * len(rows)):      # too thin to be the icon
+        return rgb
+    out = rgb.copy()
+    fill = tuple(int(v) for v in px[min(W - 1, x + 2), rows[len(rows) // 2]])
+    from PIL import ImageDraw
+    ImageDraw.Draw(out).rectangle((0, rows[0], x + 2, rows[-1]), fill=fill)
+    return out
+
+
+def _clean_map_line(ln: str) -> str:
+    ln = re.sub(r"^[\W_]+", "", ln)                  # crumbs on the left
+    ln = re.sub(r"[^\w<>)\]]+$", "", ln).strip()
+    toks = ln.split()
+    while toks and len(re.sub(r"[\W_]", "", toks[0])) < 3 and not re.fullmatch(r"<\d+>", toks[0]):
+        toks.pop(0)                     # crumbs from icons or the mouse cursor: "Se’ Free..."
+    ln = " ".join(toks)
+    if "<" in ln and ">" in ln[ln.index("<"):]:
+        ln = ln[: ln.rindex(">") + 1]   # "Line 1 <Area 1> [@l" -> "Line 1 <Area 1>"
+    else:
+        toks = ln.split()
+        while toks and is_junk(toks[-1]):
+            toks.pop()                  # minimap window-button crumbs
+        ln = " ".join(toks)
+    ln = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", ln)       # "FreeMarket" -> "Free Market"
+    ln = re.sub(r"(?<=\S)<", " <", ln)                 # "Market<4>" -> "Market <4>"
+    return ln
+
+
 def read_map(img: Image.Image, cfg: dict, known_maps: list[str] = ()) -> str:
-    """Read the map name from the minimap header, e.g. 'Free Market <2>'.
-    The minimap shows the street name, then the map name below it."""
+    """Read the full map name from the minimap header. It's on two lines: the area
+    (street) on top and the zone below; together "Kerning City Subway: Line 1 <Area 1>"
+    or "Hidden Street: Free Market <2>"."""
     import pytesseract
 
     setup_tesseract(cfg)
     if img.height > img.width * 0.6:
         # a manual area that includes the minimap picture: the names are at the top
         img = img.crop((0, 0, img.width, int(img.width * 0.42)))
+    img = _blank_minimap_icon(img)
     text = pytesseract.image_to_string(white_text_mask(img), config="--psm 6")
     good = []
     for ln in text.splitlines():
-        ln = re.sub(r"^[\W_]+", "", ln)                 # icon crumbs on the left
-        ln = re.sub(r"[^\w<>)\]]+$", "", ln).strip()
-        if len(re.findall(r"[A-Za-z]", ln)) >= 4:
+        if re.search(r"(?i)mini\s*ma[pr]", ln):        # the window's title strip
+            continue
+        ln = _clean_map_line(ln)
+        if len(re.findall(r"[A-Za-z]", ln)) >= 4 or re.search(r"<\w*\s*\d+>", ln):
             good.append(ln)
     if not good:
         return ""
-    name = good[-1]
-    toks = name.split()
-    while toks and len(re.sub(r"[\W_]", "", toks[0])) < 3 and not re.fullmatch(r"<\d+>", toks[0]):
-        toks.pop(0)                     # crumbs from icons or the mouse cursor: "Se’ Free..."
-    name = " ".join(toks)
-    if "<" in name and ">" in name[name.index("<"):]:
-        name = name[: name.rindex(">") + 1]        # "Free Market <6> [@l" -> "Free Market <6>"
-    toks = name.split()
-    while toks and is_junk(toks[-1]) and not re.fullmatch(r"<\d+>", toks[-1]):
-        toks.pop()                                  # minimap window-button crumbs
-    name = " ".join(toks)
-    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)    # "FreeMarket" -> "Free Market"
-    name = re.sub(r"(?<=\S)<", " <", name)              # "Market<4>" -> "Market <4>"
+    zone = good[-1]
+    street = good[-2] if len(good) >= 2 else ""
+    name = full_map_name(street, zone)
     if _map_names():
-        return snap_map(name)                            # validated against meowdb's map list
+        return snap_map(name)                            # validated against the map lists
     return normalize_name(name, list(known_maps)) if known_maps else name
 
 
@@ -2112,11 +2167,25 @@ def update_maps_meowdb(force: bool = True) -> int:
     return len(_map_names())
 
 
+def full_map_name(street: str, name: str) -> str:
+    """The full map name, as the minimap shows it on two lines: the area (street)
+    on top and the zone below, e.g. "Kerning City Subway: Line 1 <Area 1>"."""
+    street, name = (street or "").strip(), (name or "").strip()
+    return f"{street}: {name}" if street and name else name or street
+
+
+def _split_map(full: str) -> tuple[str, str]:
+    street, sep, zone = (full or "").partition(": ")
+    return (street, zone) if sep else ("", full or "")
+
+
 def _map_names() -> list[str]:
+    """Every known map's full name ("Area: Zone"), from meowdb plus the backup source."""
     if _map_names.cache is None:
         try:
-            names = {m["name"] for m in json.loads(MAPS_PATH.read_text(encoding="utf-8"))}
-        except (OSError, ValueError, KeyError):
+            names = {full_map_name(m.get("street", ""), m["name"])
+                     for m in json.loads(MAPS_PATH.read_text(encoding="utf-8")) if m.get("name")}
+        except (OSError, ValueError, KeyError, TypeError):
             names = set()
         _map_names.cache = sorted(names | set(osms_extras()["maps"]))
     return _map_names.cache
@@ -2129,28 +2198,63 @@ def needs_map_refresh() -> bool:
     return ITEM_ICONS_PATH.exists() and not MAPS_PATH.exists()
 
 
+def _map_key(text: str) -> str:
+    return _norm(text.replace("<", " <").replace(">", "> "))
+
+
+def _map_score(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, fold(a.replace(" ", "")), fold(b.replace(" ", ""))).ratio()
+
+
 def snap_map(name: str) -> str:
-    """Correct an OCR'd map name to a real one ('Free Marker <8>' -> 'Free Market <8>').
-    Numbers must match exactly, so a room number is never changed."""
+    """Correct an OCR'd map name to a real one, as "Area: Zone"
+    ('Kerning City Subvvay: Line 1 <Area 1>' -> 'Kerning City Subway: Line 1 <Area 1>').
+    Numbers must match exactly, so a room or area number is never changed. If the
+    area line was misread (or missing, as in names saved by older versions), the
+    zone alone decides when only one map has that zone."""
     names = _map_names()
     if not name or not names:
         return name
-    key = _norm(name.replace("<", " <").replace(">", "> "))
+    street, zone = _split_map(name)
+    key, zkey = _map_key(name), _map_key(zone)
     best, best_score = None, 0.0
     for n in names:
-        nk = _norm(n.replace("<", " <").replace(">", "> "))
+        nk = _map_key(n)
         if nk == key:
             return n
-        if re.findall(r"\d+", nk) != re.findall(r"\d+", key):
+        if street and re.findall(r"\d+", nk) == re.findall(r"\d+", key):
+            sc = _map_score(key, nk)
+            if sc > best_score:
+                best, best_score = n, sc
+    if best_score >= 0.85:
+        return best
+    # the zone line on its own (the area line can be cut off or garbled)
+    zbest, zscore = [], 0.0
+    for n in names:
+        nz = _map_key(_split_map(n)[1])
+        if re.findall(r"\d+", nz) != re.findall(r"\d+", zkey):
             continue
-        sc = difflib.SequenceMatcher(None, fold(key.replace(" ", "")), fold(nk.replace(" ", ""))).ratio()
-        if sc > best_score:
-            best, best_score = n, sc
-    return best if best_score >= 0.8 else name
+        sc = 1.0 if nz == zkey else _map_score(zkey, nz)
+        if sc > zscore + 1e-9:
+            zbest, zscore = [n], sc
+        elif abs(sc - zscore) <= 1e-9:
+            zbest.append(n)
+    if zscore >= 0.85 and zbest:
+        if len(zbest) == 1:
+            return zbest[0]
+        if street:          # several areas have this zone: the area line picks one
+            pick = max(zbest, key=lambda n: _map_score(_map_key(street), _map_key(_split_map(n)[0])))
+            if _map_score(_map_key(street), _map_key(_split_map(pick)[0])) >= 0.6:
+                return pick
+    if best_score >= 0.8:
+        return best
+    return name
 
 
 def fix_map_rows(con) -> int:
-    """Re-snap map names already logged (fixes earlier misreads like 'Free Marker <3>')."""
+    """Re-snap map names already logged: fixes earlier misreads like 'Free Marker <3>',
+    and gives names saved by versions before 2610.8 (zone only) their area:
+    'Free Market <3>' -> 'Hidden Street: Free Market <3>'."""
     n = 0
     for (mp,) in con.execute("SELECT DISTINCT map FROM listings WHERE map IS NOT NULL AND map != ''").fetchall():
         fixed = snap_map(mp)
@@ -2222,12 +2326,15 @@ def osms_extras() -> dict:
     meow_maps = _load_json(MAPS_PATH, [])
     meow_map_ids = {str(m.get("id") or "").lstrip("0") for m in meow_maps}
     meow_map_names = {_norm(m.get("name", "")) for m in meow_maps}
-    maps = []
+    maps, seen_maps = [], set()
     for m in _osms_maps_raw():
         mid, name = str(m.get("id") or "").lstrip("0"), str(m["name"]).strip()
-        if (mid and mid in meow_map_ids) or _norm(name) in meow_map_names or name in maps:
+        street = str(m.get("street_name") or m.get("street") or "").strip()
+        full = full_map_name(street, name)
+        if (mid and mid in meow_map_ids) or _norm(name) in meow_map_names or full in seen_maps:
             continue
-        maps.append(name)
+        seen_maps.add(full)
+        maps.append(full)
     osms_extras.cache = {"items": items, "maps": maps}
     return osms_extras.cache
 

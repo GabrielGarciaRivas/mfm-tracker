@@ -125,7 +125,10 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
    have that stack), so sky, clouds or other white windows can't be mistaken for it. The
    map name is read from the minimap, found by its "MINI MAP" title strip and WORLD
    button at the game window's top-left, whatever size the current map makes it, and
-   even if you've dragged the shop window somewhere else.
+   even if you've dragged the shop window somewhere else. The minimap shows the name on
+   two lines, the area on top and the zone below, and both are read: the map is saved as
+   **"Area: Zone"**, e.g. "Kerning City Subway: Line 1 <Area 1>" or "Hidden Street: Free
+   Market <2>". The area's icon left of the name is blanked out before reading.
 3. Pick your channel in **Channel** (1–100: choose it from the list or type it; nothing else
    can be entered). It stays set for every shop you open until you change it, and is saved
    with each listing, since the channel isn't shown anywhere the tool can read.
@@ -413,9 +416,12 @@ line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
   data folder (`mfm.py where`); truncated scroll names are remembered per icon colour.
   Command line: `mfm.py match "Rennae Hat" "Reggae Hat"`.
 - **Map names** are checked against meowdb's map list (downloaded with the items, one
-  extra request), so misreads like "Free Marker <8>" are logged as "Free Market <8>".
-  Room numbers must match exactly and are never changed. Map names already in your
-  database are corrected when the list is downloaded.
+  extra request) and the backup source's, so misreads like "Hidden Streat: Free Marker
+  <8>" are logged as "Hidden Street: Free Market <8>". Room and area numbers must match
+  exactly and are never changed. If the area line is misread, the zone alone decides
+  when only one map has that zone. Map names already in your database are corrected
+  when the list is downloaded, and names saved by versions before 2610.8 (zone only,
+  "Free Market <2>") get their area added once.
 - **Look up on meowdb** (right-click in Items, or the button in an item's history window)
   opens the item's meowdb page.
 - **Throwing stars** (anything meowdb categorises as a throwing star, including ones

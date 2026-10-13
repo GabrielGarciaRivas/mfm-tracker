@@ -129,9 +129,9 @@ HEAD = {"item": "Item", "qty": "Qty", "each": "Price / ea", "market": "Market",
         "max_each": "Max price / ea", "last_price": "Last price",
         "saved": "Saved",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
-WIDTH = {"item": 205, "qty": 45, "each": 100, "market": 100, "diff": 55, "verdict": 65,
-         "shop": 180, "map": 120, "channel": 75, "best_shop": 180, "best_map": 120, "best_channel": 75,
-         "time": 140, "low": 95, "high": 95, "seen": 50, "source": 110,
+WIDTH = {"item": 170, "qty": 45, "each": 90, "market": 90, "diff": 55, "verdict": 65,
+         "shop": 165, "map": 262, "channel": 66, "best_shop": 165, "best_map": 262, "best_channel": 66,
+         "time": 126, "low": 95, "high": 95, "seen": 50, "source": 110,
          "best": 90, "best_where": 230, "status": 70, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100,
          "saved": 110, "suggest": 260, "score": 60, "count": 65, "raw": 300}
@@ -603,7 +603,7 @@ class App:
         self.logged_today = 0
 
         root.title("Free Market Tracker")
-        root.geometry("1220x680")
+        root.geometry("1300x700")
         root.minsize(980, 500)
         self._build()
         self.refresh_tables()
