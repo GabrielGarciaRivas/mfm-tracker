@@ -7,8 +7,13 @@
   show in a new **Notes** column in Live, Deals and item history.
 - **Watched listings:** right-click a listing → **Watch this listing…** to get an alert when
   that player's listing is for sale again.
+- **My Inventory tab:** add the items you own and see what they're worth: market price,
+  price range, sightings, sales in the last 24 hours and the average of the last 3 sales,
+  with net worth totals. **Add items…** reads your Item Inventory window in the game and
+  matches the icons; unmatched icons can be reviewed and are remembered.
 
 ### Changed
+- The channel picker shows 18 channels by default.
 - The **Alerts** tab is now **Watched**, with watched items on top and watched listings
   below. Watched items and listings get alerts.
 

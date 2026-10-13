@@ -106,7 +106,7 @@ channels the picker shows, in **Settings**.
 - **Review:** names that didn't match an item in the database. Press **Enter** to accept
   the suggested item, **M** to pick one yourself, **K** to keep the name, **Delete** to
   remove it.
-- **Watched** and **Ignored:** see below.
+- **Watched**, **Ignored** and **My Inventory:** see below.
 
 Double-click any item for its **price history**: a chart and every sighting. Right-click a
 sighting to change its price or channel, add a note, watch it, or delete it.
@@ -150,6 +150,29 @@ each be turned off.
 
 **Ignored:** items you don't care about. They never count as deals, but their prices are
 still logged and watched items still get alerts. Right-click any item → **Ignore deals on…**
+
+## My Inventory
+
+Keep track of what the items you own are worth.
+
+1. Click **Add items…**. A window opens that reads your **Item Inventory** in the game
+   (open it with the I key). Your items show up as you switch between its tabs.
+2. Icons that couldn't be matched are highlighted: press **Enter** to accept the suggested
+   item, **M** to pick one yourself, or **Delete** to remove the row. Your choice is
+   remembered next time.
+3. Select the items you want and click **Add**.
+
+If your inventory isn't found, click **Inventory area** and draw a box around it.
+**Settings → Auto Detection** goes back to finding it automatically.
+
+For each item, the tab shows its market price, the range of prices seen, how many
+sightings there are, how many sold in the last 24 hours, and the average of its last 3
+sales. **Net worth** at the bottom adds them up:
+- **Possible range:** the lowest and highest prices of all your items.
+- **Estimated value (market prices)** and **(last 3 sales)**.
+
+Right-click an item to see its history, change the quantity or remove it. Matching works
+best with all item icons downloaded (Settings → Game data → Update).
 
 ## Market price
 
@@ -196,7 +219,7 @@ Rest the mouse on any setting for a short explanation.
 | Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
 | Ask for the channel at launch and after a channel change | on | the channel prompt |
-| Channels in the channel picker | 20 | buttons in the channel picker |
+| Channels in the channel picker | 18 | buttons in the channel picker |
 | Data retention | 30 days, archive | see below |
 
 **Data retention:** listings not seen for 30 days are copied to an archive file and then
@@ -212,7 +235,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 | Folder | Contents |
 |---|---|
 | `prices/` | your prices (`prices.db`) |
-| `settings/` | settings, watched items and listings, ignore list, manual matches |
+| `settings/` | settings, watched items and listings, my inventory, ignore list, manual matches |
 | `cache/` | downloaded item and map lists, icons |
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |

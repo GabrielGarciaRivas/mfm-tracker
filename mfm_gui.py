@@ -9,10 +9,12 @@ it's in.
 from __future__ import annotations
 
 import csv
+import json
 import re
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
@@ -129,7 +131,9 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "status": "Status", "listed_med": "Listed med.", "sold_med": "Sold med.",
         "listed_n": "Listed", "sold_n": "Sold", "total": "Bundle price",
         "max_each": "Max price", "last_price": "Last price", "npc_buy": "NPC buy", "npc_sell": "NPC sell",
-        "saved": "Saved", "notes": "Notes",
+        "saved": "Saved", "notes": "Notes", "qty": "Qty", "range": "Price range",
+        "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
+        "match": "Match / suggestion",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -137,10 +141,11 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "time": 126, "low": 95, "high": 95, "seen": 50, "source": 110,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
-         "saved": 110, "notes": 170, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
+         "last3": 130, "tab": 70, "match": 230, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
-           "max_each", "last_price", "npc_buy", "npc_sell"}
+           "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3"}
 CENTER = {"channel", "best_channel"}
 
 
@@ -615,6 +620,7 @@ class App:
         self._icon_worker = None
         self.watch = mfm.load_watchlist()
         self.watched_listings = mfm.load_watched_listings()
+        self.inventory = mfm.load_inventory()
         self._error_times: dict = {}
         root.report_callback_exception = self._tk_error
         self.ignored = set(mfm.load_ignorelist())
@@ -778,6 +784,7 @@ class App:
         self._build_review_tab()
         self._build_watched_tab()
         self._build_ignore_tab()
+        self._build_inventory_tab()
 
         self.status = ttk.Label(self.root, style="Status.TLabel", padding=(10, 4))
         self.status.pack(fill="x")
@@ -888,7 +895,7 @@ class App:
                 return
             win.destroy()                         # an open drop-down gives way to the prompt
         cur = self.channel()
-        count = max(1, min(100, int(self.cfg.get("channel_count", 20) or 20)))
+        count = max(1, min(100, int(self.cfg.get("channel_count", 18) or 18)))
         win = tk.Toplevel(self.root)
         self.chan_popup = win
         win.mode = "dropdown" if dropdown else "prompt"
@@ -1280,6 +1287,7 @@ class App:
         self.refresh_alerts()
         self.refresh_ignored()
         self.refresh_review()
+        self.refresh_inventory()
         row_key = lambda t, k: tuple(t.set(k, c) for c in ("item", "each", "status", "shop", "player", "map",
                                                            "channel"))
         restore_deals = self._keep_selection(self.deals, row_key)
@@ -1548,6 +1556,391 @@ class App:
         self.sound_lbl.pack(side="left", padx=6)
         self.refresh_alerts()
         self.refresh_watched_listings()
+
+    # ------------------------------------------------------------------ my inventory
+    def _build_inventory_tab(self):
+        tab = ttk.Frame(self.nb, padding=6)
+        self.nb.add(tab, text="  My Inventory  ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x", pady=(0, 6))
+        b = ttk.Button(top, text="Add items…", command=self.open_inventory_scan)
+        b.pack(side="left")
+        tip("Opens a window that reads your Item Inventory in the game.", b)
+        ttk.Button(top, text="Remove selected", command=self.remove_inventory).pack(side="left", padx=6)
+        ttk.Label(top, foreground="#555", text="Items you own and what they're worth, from the "
+                  "prices you've seen.").pack(side="left", padx=(10, 0))
+        self.inv_tree = make_tree(tab, ("item", "qty", "market", "range", "points", "sold24", "last3"))
+        self.inv_tree.frame.pack(fill="both", expand=True)
+        self.inv_tree.bind("<Double-1>", lambda e: self.open_history(self.inv_tree))
+        self._list_menu(self.inv_tree, [
+            ("Show history", self.open_history, True),
+            ("Change quantity…", lambda t: self.change_inventory_qty(), False),
+            None,
+            ("Remove", lambda t: self.remove_inventory(), False)])
+        self.inv_tree.bind("<Delete>", lambda e: self.remove_inventory())
+        self.inv_tree.bind("<BackSpace>", lambda e: self.remove_inventory())
+        worth = ttk.LabelFrame(tab, text=" Net worth ", padding=(10, 4, 10, 6))
+        worth.pack(fill="x", pady=(6, 0))
+        self.worth_range = ttk.Label(worth, style="Bold.TLabel")
+        self.worth_market = ttk.Label(worth, style="Bold.TLabel")
+        self.worth_sales = ttk.Label(worth, style="Bold.TLabel")
+        self.worth_note = ttk.Label(worth, foreground="#666")
+        for w in (self.worth_range, self.worth_market, self.worth_sales, self.worth_note):
+            w.pack(anchor="w")
+        tip("The lowest and highest prices seen for each item, added up.", self.worth_range)
+        tip("Each item's market price, added up.", self.worth_market)
+        tip("The average of each item's last 3 sales, added up.", self.worth_sales)
+        self.refresh_inventory()
+
+    def refresh_inventory(self):
+        if not hasattr(self, "inv_tree"):
+            return
+        t = self.inv_tree
+        restore = self._keep_selection(t, lambda tr, k: tr.set(k, "item"))
+        t.delete(*t.get_children())
+        lo = hi = mkt = sales = 0
+        missing = 0
+        for e in self.inventory:
+            item, qty = e["item"], int(e.get("qty") or 1)
+            st = mfm.inventory_stats(self.con, item, self.cfg)
+            if st["low"] is not None:
+                lo += st["low"] * qty
+                hi += st["high"] * qty
+            if st["market"]:
+                mkt += st["market"] * qty
+            if st["last3"]:
+                sales += st["last3"] * qty
+            if st["low"] is None and not st["market"]:
+                missing += 1
+            rng = (f"{mfm.fmt(st['low'])} – {mfm.fmt(st['high'])}" if st["low"] is not None
+                   and st["low"] != st["high"] else mfm.fmt(st["low"]))
+            t.insert("", "end", image=self.icon_for(item), values=(
+                item, qty, mfm.fmt(st["market"]), rng, st["points"], st["sold24"],
+                mfm.fmt(st["last3"]) + (f" ({st['last3_n']})" if st["last3"] and st["last3_n"] < 3 else "")))
+        restore()
+        self.worth_range.config(text=f"Possible range:  {mfm.fmt(lo)} – {mfm.fmt(hi)}")
+        self.worth_market.config(text=f"Estimated value (market prices):  {mfm.fmt(mkt)}")
+        self.worth_sales.config(text=f"Estimated value (last 3 sales):  {mfm.fmt(sales)}")
+        n = sum(int(e.get("qty") or 1) for e in self.inventory)
+        self.worth_note.config(text=f"{mfm.plural(len(self.inventory), 'item')} ({n} in total)"
+                               + (f"  ·  {missing} without price data" if missing else ""))
+
+    def add_to_inventory(self, items: list[tuple[str, int]]):
+        for item, qty in items:
+            e = next((e for e in self.inventory if e["item"] == item), None)
+            if e:
+                e["qty"] = int(e.get("qty") or 1) + qty
+            else:
+                self.inventory.append({"item": item, "qty": qty, "added": mfm.utc_now()})
+        mfm.save_inventory(self.inventory)
+        self.refresh_inventory()
+        self._set_status(f"Added {mfm.plural(len(items), 'item')} to My Inventory.")
+
+    def change_inventory_qty(self):
+        items = [self.inv_tree.set(k, "item") for k in self.inv_tree.selection()]
+        if not items:
+            return
+        cur = self.inv_tree.set(self.inv_tree.selection()[0], "qty") if len(items) == 1 else ""
+        raw = ask_value(self.root, "Quantity", f"How many {'of ' + repr(items[0]) if len(items) == 1 else 'of each'}"
+                        " do you have?", cur, check=lambda s: s.strip().isdigit() and int(s) > 0)
+        if raw is None:
+            return
+        for e in self.inventory:
+            if e["item"] in items:
+                e["qty"] = int(raw)
+        mfm.save_inventory(self.inventory)
+        self.refresh_inventory()
+
+    def remove_inventory(self):
+        gone = {self.inv_tree.set(k, "item") for k in self.inv_tree.selection()}
+        if not gone:
+            return
+        self.inventory = [e for e in self.inventory if e["item"] not in gone]
+        mfm.save_inventory(self.inventory)
+        self.refresh_inventory()
+
+    # ------------------------------------------------------------------ add items window
+    def open_inventory_scan(self):
+        w = getattr(self, "inv_scan", None)
+        if w is not None and w.winfo_exists():
+            w.deiconify()
+            w.lift()
+            return
+        if not mfm.mac_screen_access(ask=True):
+            messagebox.showwarning("Screen Recording permission needed",
+                                   "Allow Free Market Tracker in System Settings > Privacy & Security > "
+                                   "Screen Recording, then quit and reopen the app.")
+            return
+        win = tk.Toplevel(self.root)
+        self.inv_scan = win
+        win.title("Add items from your inventory")
+        win.geometry("920x660")
+        win.minsize(760, 560)
+        top = ttk.Frame(win, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
+                  "ones you want and click Add.", wraplength=560, justify="left").pack(side="left")
+        b = ttk.Button(top, text="Inventory area", command=lambda: self.calibrate(key="inventory_region"))
+        b.pack(side="right")
+        tip("Draw a box around your Item Inventory window, if it isn't found by itself. "
+            "Settings → Auto Detection goes back to finding it.", b)
+        body = ttk.Frame(win, padding=(12, 4, 12, 4))
+        body.pack(fill="both", expand=True)
+        right = ttk.Frame(body)
+        right.pack(side="right", fill="y", padx=(10, 0))
+        ttk.Label(right, text="What's being read").pack(anchor="w")
+        win.preview = ttk.Label(right, text="—", relief="solid", anchor="center", width=24)
+        win.preview.pack(anchor="n", pady=(2, 6))
+        win.status = ttk.Label(right, foreground="#555", wraplength=220, justify="left",
+                               text="Loading item icons…")
+        win.status.pack(anchor="w")
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        ttk.Label(left, foreground="#555", wraplength=560, justify="left", text=(
+            "Icons that couldn't be matched are highlighted. Enter = accept the suggestion · "
+            "M = pick an item · Delete = remove. Your choice is remembered for next time."
+            )).pack(anchor="w", pady=(0, 4))
+        tree = make_tree(left, ("item", "qty", "tab", "match"))
+        tree.column("item", width=240)
+        tree.tag_configure("review", background="#fff1dc")
+        tree.frame.pack(fill="both", expand=True)
+        win.tree = tree
+        win.rows = {}             # (tab, slot) -> scan result
+        win.chosen = {}           # (tab, slot) -> item picked by hand
+        win.qty = {}              # (tab, slot) -> quantity set by hand
+        win.photos = {}
+        win.state = {"matcher": None, "memo": {}}   # shared with the scanning thread
+        win.hidden = set()
+
+        def keys_of(sel):
+            return [tuple(json.loads(k)) for k in sel]
+
+        def learn(name, keys):
+            """Use this item for these slots, and remember their icons."""
+            for key in keys:
+                r = win.rows.get(key)
+                if not r:
+                    continue
+                win.chosen[key] = name
+                try:
+                    mfm.learn_icon(self.con, name, r["icon"])
+                    if win.state["matcher"] is not None:
+                        win.state["matcher"].add(name, r["icon"])
+                except Exception:
+                    pass
+            win.state["memo"].clear()           # read every slot again with what was learned
+            self._inv_scan_show(win)
+
+        def pick_item():
+            sel = tree.selection()
+            if not sel:
+                return
+            cur = tree.set(sel[0], "item")
+            guess = win.rows.get(keys_of(sel)[0], {}).get("guess") or ""
+            name = self._choose_item(win, "Which item is this?", guess if cur == "?" else cur)
+            if name:
+                learn(name, keys_of(sel))
+
+        def accept():
+            done = 0
+            for key in keys_of(tree.selection()):
+                r = win.rows.get(key)
+                if r and not r["item"] and key not in win.chosen and r.get("guess"):
+                    learn(r["guess"], [key])
+                    done += 1
+            if not done:
+                self.root.bell()
+
+        def remove():
+            for key in keys_of(tree.selection()):
+                win.hidden.add(key)
+            self._inv_scan_show(win)
+
+        def set_qty():
+            sel = tree.selection()
+            if not sel:
+                return
+            raw = ask_value(win, "Quantity", "How many?", tree.set(sel[0], "qty"),
+                            check=lambda s: s.strip().isdigit() and int(s) > 0)
+            if raw is None:
+                return
+            for k in sel:
+                win.qty[tuple(json.loads(k))] = int(raw)
+            self._inv_scan_show(win)
+        self._list_menu(tree, [("Accept suggestion  (Enter)", lambda t: accept(), False),
+                               ("Pick an item…  (M)", lambda t: pick_item(), False),
+                               ("Change quantity…", lambda t: set_qty(), False),
+                               None,
+                               ("Remove  (Delete)", lambda t: remove(), False)])
+        tree.bind("<Double-1>", lambda e: pick_item())
+        tree.bind("<Return>", lambda e: accept())
+        tree.bind("<KeyPress-m>", lambda e: pick_item())
+        tree.bind("<KeyPress-M>", lambda e: pick_item())
+        tree.bind("<Delete>", lambda e: remove())
+        tree.bind("<BackSpace>", lambda e: remove())
+        win.pick_item = pick_item
+
+        def add():
+            sel = tree.selection() or ()
+            items, unknown = [], 0
+            for k in sel:
+                name = tree.set(k, "item")
+                if name == "?":
+                    unknown += 1
+                    continue
+                items.append((name, int(tree.set(k, "qty") or 1)))
+            if not items:
+                messagebox.showinfo("Add items", "Select the items to add first."
+                                    + (" Items shown as ? need an item chosen (double-click)." if unknown else ""),
+                                    parent=win)
+                return
+            merged: dict[str, int] = {}
+            for name, q in items:
+                merged[name] = merged.get(name, 0) + q
+            self.add_to_inventory(list(merged.items()))
+            win.status.config(text=f"Added {mfm.plural(len(merged), 'item')} to My Inventory."
+                              + (f" {unknown} unknown skipped." if unknown else ""))
+        bottom = ttk.Frame(win, padding=(12, 4, 12, 12))
+        bottom.pack(fill="x")
+        ttk.Button(bottom, text="Select all", command=lambda: tree.selection_set(tree.get_children())
+                   ).pack(side="left")
+        ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
+        ttk.Button(bottom, text="Add", command=add).pack(side="right", padx=6)
+        win.stop = threading.Event()
+        win.bind("<Destroy>", lambda e: e.widget is win and win.stop.set())
+        threading.Thread(target=self._inventory_scan_loop, args=(win.stop, win.state), daemon=True).start()
+
+    def _choose_item(self, parent, title, cur=""):
+        """A small dialog to pick an item by name (with suggestions). Returns the name or None."""
+        dlg = tk.Toplevel(parent)
+        dlg.title(title)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        ttk.Label(dlg, text=title, padding=(12, 10, 12, 4)).pack(anchor="w")
+        res = {}
+        box = ItemSearch(dlg, self, width=40, on_return=lambda: ok())
+        box.pack(padx=12, pady=4)
+        box.set(cur)
+
+        def ok():
+            name = box.var.get().strip()
+            if name:
+                if mfm.has_item_list() and not mfm.is_known_item(name):
+                    sugg = mfm.suggest_items(name, 1)
+                    if sugg:
+                        name = sugg[0]
+                res["name"] = name
+            dlg.destroy()
+        bf = ttk.Frame(dlg, padding=(12, 6, 12, 12))
+        bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right")
+        ttk.Button(bf, text="OK", command=ok).pack(side="right", padx=6)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        box.entry.focus_set()
+        dlg.grab_set()
+        dlg.wait_window()
+        return res.get("name")
+
+    def _inventory_scan_loop(self, stop, state):
+        """Background: read the item inventory window about once a second while the
+        Add items window is open."""
+        import hashlib
+        try:
+            con = mfm.db()
+            matcher = mfm.IconMatcher(con)
+            state["matcher"] = matcher
+        except Exception as e:
+            self.events.put(("inv_scan", {"error": f"Couldn't load item icons: {e}"}))
+            return
+        n_off = sum(1 for r in matcher.refs if r[2])
+        self.events.put(("inv_scan", {"status": "Looking for your Item Inventory…",
+                                      "icons": len(matcher.refs), "official": n_off}))
+        memo = state["memo"]
+        region = None
+        while not stop.is_set():
+            t0 = time.monotonic()
+            try:
+                full = mfm.grab_full_screen()
+                manual = self.cfg.get("inventory_region")
+                if manual and not mfm.is_auto(manual, full.size):
+                    region, how = manual, "manual area"
+                else:
+                    region = mfm.find_inventory(full)
+                    how = f"auto, found at {region[0]},{region[1]}" if region else ""
+                if not region:
+                    self.events.put(("inv_scan", {"status": "Item Inventory not found. Open it in the game "
+                                                            "(or set the Inventory area)."}))
+                else:
+                    win = mfm.crop(full, region)
+                    tab = mfm.inventory_tab(win)
+                    found = []
+                    for i, (x0, y0, x1, y1) in enumerate(mfm.inventory_slots(win)):
+                        slot = win.crop((x0, y0, x1, y1))
+                        key = hashlib.md5(slot.resize((24, 24)).tobytes()).hexdigest()
+                        if key not in memo:
+                            best = matcher.match_slot(slot)
+                            if not best:
+                                memo[key] = None
+                            else:
+                                memo[key] = {**mfm.decide_match(best),
+                                             "qty": mfm.read_slot_count(slot, self.cfg), "icon": slot}
+                        if memo[key]:
+                            found.append((i, memo[key]))
+                    self.events.put(("inv_scan", {"tab": tab, "slots": found, "preview": win,
+                                                  "status": f"Inventory: {how}."}))
+            except SystemExit as e:
+                self.events.put(("inv_scan", {"error": str(e)}))
+                return
+            except Exception as e:
+                self.events.put(("inv_scan", {"status": f"Read failed: {type(e).__name__}: {e}"}))
+            stop.wait(max(0.2, 1.0 - (time.monotonic() - t0)))
+
+    def on_inv_scan(self, p):
+        win = getattr(self, "inv_scan", None)
+        if win is None or not win.winfo_exists():
+            return
+        if "error" in p:
+            win.status.config(text=p["error"])
+            return
+        if "icons" in p:
+            win.icons_note = ("" if p["official"] else
+                              "\n\nFew item icons are downloaded, so matching is limited: "
+                              "Settings → Game data → Update downloads them.")
+        if p.get("status"):
+            win.status.config(text=p["status"] + getattr(win, "icons_note", ""))
+        if "slots" in p:
+            tab = p["tab"] if p["tab"] is not None else -1
+            for i, r in p["slots"]:
+                win.rows[(tab, i)] = r
+            prev = p["preview"].copy()
+            prev.thumbnail((220, 300))
+            win.preview_photo = ImageTk.PhotoImage(prev)
+            win.preview.config(image=win.preview_photo, text="")
+            self._inv_scan_show(win)
+
+    INV_TABS = ("Equip", "Use", "Set Up", "Etc", "Cash", "Deco")
+
+    def _inv_scan_show(self, win):
+        tree = win.tree
+        keep = set(tree.selection())
+        tree.delete(*tree.get_children())
+        for (tab, i), r in sorted(win.rows.items()):
+            if (tab, i) in win.hidden:
+                continue
+            iid = json.dumps([tab, i])
+            name = win.chosen.get((tab, i)) or r["item"] or "?"
+            if (tab, i) not in win.photos:
+                ic = r["icon"].copy()
+                ic.thumbnail((34, 34))
+                win.photos[(tab, i)] = ImageTk.PhotoImage(ic)
+            review = not r["item"] and (tab, i) not in win.chosen
+            match = ("chosen" if (tab, i) in win.chosen else f"{r['score']:.0%}" if r["item"]
+                     else f"review: {r['guess']}? ({r['score']:.0%})" if r.get("guess") else "review: no match")
+            tree.insert("", "end", iid=iid, image=win.photos[(tab, i)], tags=("review",) if review else (),
+                        values=(
+                name, win.qty.get((tab, i), r["qty"]),
+                self.INV_TABS[tab] if 0 <= tab < len(self.INV_TABS) else "", match))
+        tree.selection_set([k for k in keep if tree.exists(k)])
 
     # ------------------------------------------------------------------ watched listings
     def refresh_watched_listings(self):
@@ -2672,7 +3065,7 @@ class App:
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
                     self._update_stats(None, None)
-                    label = "Map area" if key == "map_region" else "Shop area"
+                    label = {"map_region": "Map area", "inventory_region": "Inventory area"}.get(key, "Shop area")
                     self._set_status(f"{label} set to {region}.")
                     if then_start and not was_running:
                         self.start()
@@ -2785,6 +3178,8 @@ class App:
             self.watch = mfm.load_watchlist()
             self.watched_listings = mfm.load_watched_listings()
             self.refresh_watched_listings()
+            self.inventory = mfm.load_inventory()
+            self.refresh_inventory()
             self.ignored = set(mfm.load_ignorelist())
             self.sound_on.set(self.cfg.get("alert_sound_on", True))
             self.raise_on.set(self.cfg.get("alert_raise", True))
@@ -2942,7 +3337,7 @@ class App:
         tip("Asks for your channel when the app opens and after you change channel in the game.", cb)
         rc = ttk.Frame(win)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
-        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
+        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 18)))
         lc = ttk.Label(rc, text="Channels in the channel picker")
         lc.pack(side="left")
         sc = ttk.Spinbox(rc, from_=1, to=100, increment=1, width=6, textvariable=chan_count)
@@ -2987,7 +3382,7 @@ class App:
             win.destroy()
 
         def reset_auto():
-            self.cfg["region"] = self.cfg["map_region"] = None
+            self.cfg["region"] = self.cfg["map_region"] = self.cfg["inventory_region"] = None
             mfm.save_config(self.cfg)
             self.found_at = None
             self._update_stats(None, None)
@@ -2996,7 +3391,7 @@ class App:
         b.grid(row=len(fields) + 1, column=0, sticky="w", padx=12, pady=(8, 0))
         tip("Find the shop and minimap automatically again.", b)
         ttk.Label(win, foreground="#666", wraplength=620, justify="left", text=(
-            "Forgets the shop and map areas you drew and finds them automatically."
+            "Forgets the shop, map and inventory areas you drew and finds them automatically."
             )).grid(row=len(fields) + 1, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=(8, 0))
         self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
                                         padx=12, pady=(12, 0))

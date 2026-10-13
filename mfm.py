@@ -2357,7 +2357,18 @@ class IconMatcher:
         return sorted(scored.items(), key=lambda t: t[1])[:top]
 
 
-INV_MATCH_OK = 0.55       # a match closer than this is shown as found
+INV_MATCH_OK = 0.45       # a match closer than this, and clearly ahead of the next, is found
+INV_MATCH_MARGIN = 0.02
+
+
+def decide_match(best: list[tuple[str, float]]) -> dict:
+    """From match_slot's list: the item if it's a clear match (else None, for you to
+    review), the best guess, and how alike it is (0-1)."""
+    if not best:
+        return {"item": None, "guess": None, "score": 0.0}
+    item, dist = best[0]
+    clear = dist <= INV_MATCH_OK and (len(best) < 2 or best[1][1] - dist >= INV_MATCH_MARGIN)
+    return {"item": item if clear else None, "guess": item, "score": max(0.0, min(1.0, 1 - dist))}
 
 
 def learn_icon(con, item: str, icon: Image.Image) -> None:
@@ -2396,10 +2407,8 @@ def scan_inventory(win: Image.Image, matcher: IconMatcher, cfg: dict, read_count
         best = matcher.match_slot(slot)
         if not best:
             continue
-        item, dist = best[0]
-        out.append({"slot": i, "item": item if dist <= INV_MATCH_OK else None, "guess": item,
-                    "score": max(0.0, min(1.0, 1 - dist)), "qty": read_slot_count(slot, cfg) if read_counts else 1,
-                    "icon": slot})
+        out.append({"slot": i, **decide_match(best),
+                    "qty": read_slot_count(slot, cfg) if read_counts else 1, "icon": slot})
     return out
 
 
