@@ -85,9 +85,22 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: out
+      - name: Package the Linux app (a tar.gz keeps it executable)
+        run: |
+          cd out
+          chmod +x "Free Market Tracker (Linux)/Free Market Tracker"
+          tar -czf "Free Market Tracker (Linux).tar.gz" "Free Market Tracker (Linux)"
       - uses: softprops/action-gh-release@v2
         with:
+          name: Free Market Tracker ${{ github.ref_name }}
+          body: |
+            ## Downloads
+            - **Windows:** `Free Market Tracker.exe`. Double-click it. The first time, SmartScreen may say "Windows protected your PC": click **More info → Run anyway** (the app isn't code-signed).
+            - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip, drag the app to Applications, then right-click it → **Open** the first time (it isn't notarized by Apple). Allow **Screen Recording** when asked, then quit and reopen the app.
+            - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker` (or run `./"Free Market Tracker"`).
+
+            Nothing else needs to be installed. See the README for how to use it.
           files: |
             out/**/Free Market Tracker.exe
             out/**/Free Market Tracker (macOS).zip
-            out/**/Free Market Tracker
+            out/Free Market Tracker (Linux).tar.gz
