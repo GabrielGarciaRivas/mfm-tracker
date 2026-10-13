@@ -10,8 +10,10 @@ W="$PWD/build/tess-src"; P="$W/prefix"
 mkdir -p "$W"
 [ -d "$W/leptonica" ] || git clone --depth 1 --branch 1.87.0 https://github.com/DanBloomberg/leptonica "$W/leptonica"
 [ -d "$W/tesseract" ] || git clone --depth 1 --branch 5.3.4 https://github.com/tesseract-ocr/tesseract "$W/tesseract"
-PNG_A="$(ls /usr/lib/x86_64-linux-gnu/libpng16.a /usr/lib/libpng16.a 2>/dev/null | head -1)"
-Z_A="$(ls /usr/lib/x86_64-linux-gnu/libz.a /usr/lib/libz.a 2>/dev/null | head -1)"
+# static libpng / zlib, wherever this distro keeps them (Ubuntu: x86_64-linux-gnu, Arch: /usr/lib)
+first() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
+PNG_A="$(first /usr/lib/x86_64-linux-gnu/libpng16.a /usr/lib/libpng16.a)"
+Z_A="$(first /usr/lib/x86_64-linux-gnu/libz.a /usr/lib/libz.a)"
 cmake -S "$W/leptonica" -B "$W/lept-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$P" \
   -DBUILD_SHARED_LIBS=OFF -DBUILD_PROG=OFF -DSW_BUILD=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DENABLE_PNG=ON -DENABLE_ZLIB=ON -DENABLE_JPEG=OFF -DENABLE_TIFF=OFF -DENABLE_GIF=OFF -DENABLE_WEBP=OFF -DENABLE_OPENJPEG=OFF \
