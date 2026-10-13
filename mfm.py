@@ -17,7 +17,7 @@ Commands:
   mfm scan IMAGE...          OCR existing screenshots instead of the live screen
   mfm deals                  listings from the last day vs. market rate
   mfm item NAME              price history for one item
-  mfm report                 write an HTML report (report.html)
+  mfm report                 write an HTML report ("report YYYY-MM-DD HH-MM-SS.html")
   mfm import-ref FILE.csv    load reference prices (item,price) e.g. from meso.watch
   mfm forget NAME            delete all logged listings of one item (bad OCR reads)
   mfm purge-old              delete everything logged by the first (buggy) parser version
@@ -31,6 +31,8 @@ Commands:
   mfm export-maps FILE       save the map list in use
   mfm review [--accept]      names not in the item database, with suggested matches
   mfm export FILE.csv [--all]  market prices per item (re-importable), or every sighting
+Every export adds the local date and time to its file name: prices.csv is saved
+as "prices 2026-10-13 08-11-00.csv".
 """
 from __future__ import annotations
 
@@ -85,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.11.003"
+VERSION = "2610.12.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -152,6 +154,7 @@ DEFAULT_CONFIG = {
     "outlier_floor_pct": 75,     # more than this % BELOW the median is an outlier (75 = 1/4)
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
+    "channel_prompt": False,   # ask for the channel at launch and after a channel change
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
@@ -1736,6 +1739,90 @@ def find_minimap(full: Image.Image, store=None) -> list | None:
     else:
         found.sort(key=lambda m: m[0] + m[1])
     return found[0]
+
+
+def _blue_button_mask(img: Image.Image) -> Image.Image:
+    """The bright blue of the game's blue buttons (CHANGE CHANNEL)."""
+    from PIL import ImageChops
+
+    r, g, b = img.convert("RGB").split()
+    mul = ImageChops.multiply
+
+    def band(ch, lo, hi):
+        return ch.point(lambda v: 255 if lo <= v <= hi else 0)
+    return mul(mul(band(b, 180, 255), band(g, 95, 200)),
+               ImageChops.subtract(b, r).point(lambda v: 255 if v >= 110 else 0))
+
+
+def find_channel_dialog(full: Image.Image) -> list | None:
+    """The game's change-channel dialog, found by its two buttons side by side:
+    a blue CHANGE CHANNEL with an orange CANCEL just to its right, the same
+    height, the blue one about twice as wide, both with white lettering.
+    Returns [left, top, width, height] around the pair, or None."""
+    img = full.convert("RGB")
+    W, H = img.size
+    sc = 2 if W > 1200 else 1
+    small = img.resize((W // sc, H // sc), Image.NEAREST)
+    orange, _ = _color_masks(small)
+    oranges = [tuple(v * sc for v in b) for b in _blobs(orange, min_w=max(4, 20 // sc), min_h=max(3, 8 // sc))]
+    oranges = [b for b in oranges if 12 <= b[3] - b[1] <= 80 and 2.2 <= (b[2] - b[0]) / (b[3] - b[1]) <= 6.5]
+    if not oranges:
+        return None
+    blues = [tuple(v * sc for v in b)
+             for b in _blobs(_blue_button_mask(small), min_w=max(6, 40 // sc), min_h=max(3, 8 // sc))]
+    px = img.load()
+
+    def white_share(b):
+        n = w = 0
+        for y in range(b[1], b[3], 2):
+            for x in range(b[0], b[2], 2):
+                n += 1
+                w += min(px[x, y]) >= 225
+        return w / max(1, n)
+
+    for o in oranges:
+        oh, ow = o[3] - o[1], o[2] - o[0]
+        for bl in blues:
+            bh, bw = bl[3] - bl[1], bl[2] - bl[0]
+            gap = o[0] - bl[2]
+            overlap = min(o[3], bl[3]) - max(o[1], bl[1])
+            if not (-2 <= gap <= max(6, 0.8 * oh) and overlap >= 0.7 * min(oh, bh)
+                    and 0.75 <= bh / oh <= 1.35 and 1.3 <= bw / ow <= 2.4):
+                continue
+            if not (0.04 <= white_share(bl) <= 0.45 and 0.03 <= white_share(o) <= 0.45):
+                continue                  # both carry white lettering
+            x0, y0 = min(bl[0], o[0]), min(bl[1], o[1])
+            return [x0, y0, max(bl[2], o[2]) - x0, max(bl[3], o[3]) - y0]
+    return None
+
+
+class ChannelWatch:
+    """Notices a channel change: the change-channel dialog (find_channel_dialog)
+    was on screen and has gone away, i.e. you changed channel (or cancelled).
+    It only counts as gone after `misses` checks in a row without it, so a
+    mouse over a button or one bad frame doesn't end it early."""
+
+    def __init__(self, misses: int = 2, every: float = 0.7):
+        self.misses, self.every = misses, every
+        self.seen = False
+        self.gone = 0
+        self.last = 0.0
+
+    def due(self) -> bool:
+        return time.monotonic() - self.last >= self.every
+
+    def feed(self, full: Image.Image) -> bool:
+        """Check one screenshot; True once the dialog has come and gone."""
+        self.last = time.monotonic()
+        if find_channel_dialog(full):
+            self.seen, self.gone = True, 0
+            return False
+        if self.seen:
+            self.gone += 1
+            if self.gone >= self.misses:
+                self.seen, self.gone = False, 0
+                return True
+        return False
 
 
 def is_auto(region, full_size) -> bool:
@@ -4231,6 +4318,7 @@ class Monitor:
         self.map_img = None
         self.layout: Layout | None = None
         self.map_fresh = False   # minimap measured since the last visit ended
+        self.chan_watch = ChannelWatch()   # the GUI may hand in its own (shared with its idle check)
         self.map_tried = 0.0
         self.geom: dict | None = None
         self.geom_misses = 0
@@ -4519,6 +4607,12 @@ class Monitor:
             t0 = time.perf_counter()
             try:
                 full = grab_full_screen()
+                if self.cfg.get("channel_prompt") and self.chan_watch.due():
+                    try:
+                        if self.chan_watch.feed(full):
+                            self.on_event("channel_change", None)
+                    except Exception as e:
+                        self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
                 shop_r, map_r = self.regions_for(full)
                 if shop_r is None:
                     self.step(blank, None)  # no store window anywhere: counts as closed
@@ -4687,6 +4781,17 @@ def export_prices(con, path, cfg: dict, kind: str = "market") -> int:
                         int(b[0]) if b else "", where])
             rows += 1
     return rows
+
+
+EXPORT_STAMP = "%Y-%m-%d %H-%M-%S"
+
+
+def stamped(path, when: datetime | None = None) -> str:
+    """An export's file name with the local date and time added before the
+    extension: "prices.csv" -> "prices 2026-10-13 08-11-00.csv"."""
+    p = Path(path)
+    stamp = (when or datetime.now()).strftime(EXPORT_STAMP)
+    return str(p.with_name(f"{p.stem} {stamp}{p.suffix}"))
 
 
 def _stamp() -> str:
@@ -5025,12 +5130,13 @@ def main() -> None:
     elif a.cmd == "item":
         item_history(" ".join(a.name), cfg)
     elif a.cmd == "report":
-        report(cfg, a.out)
+        report(cfg, stamped(a.out))
     elif a.cmd == "import-ref":
         import_ref(a.csv)
     elif a.cmd == "export":
-        n = export_prices(db(), a.csv, cfg, "listings" if a.all else "market")
-        print(f"Wrote {n} rows to {a.csv}")
+        out = stamped(a.csv)
+        n = export_prices(db(), out, cfg, "listings" if a.all else "market")
+        print(f"Wrote {n} rows to {out}")
     elif a.cmd == "purge-old":
         con = db()
         # the current parser stores both OCR'd lines joined by " / "; older rows don't
@@ -5068,11 +5174,13 @@ def main() -> None:
     elif a.cmd == "import-items":
         print(f"Imported {import_items(a.file):,} item names from {a.file}")
     elif a.cmd == "export-items":
-        print(f"Exported {export_items(a.file):,} items to {a.file}")
+        out = stamped(a.file)
+        print(f"Exported {export_items(out):,} items to {out}")
     elif a.cmd == "import-maps":
         print(f"Imported {import_maps(a.file):,} maps from {a.file}")
     elif a.cmd == "export-maps":
-        print(f"Exported {export_maps(a.file):,} maps to {a.file}")
+        out = stamped(a.file)
+        print(f"Exported {export_maps(out):,} maps to {out}")
     elif a.cmd == "where":
         print(f"data folder: {DATA}\n  prices:   {PRICES_DIR}  (listings + reference prices)\n"
               f"  settings: {SETTINGS_DIR}  (settings, capture areas, alerts, ignore list, matches)\n"

@@ -619,6 +619,8 @@ class App:
         self.ignored = set(mfm.load_ignorelist())
         self.shops_today = 0
         self.logged_today = 0
+        self.chan_watch = mfm.ChannelWatch()   # change-channel dialog: seen, then gone
+        self.chan_popup = None
 
         root.title("Free Market Tracker")
         root.geometry("1300x700")
@@ -626,6 +628,9 @@ class App:
         self._build()
         self.refresh_tables()
         root.after(100, self.drain_events)
+        if self.cfg.get("channel_prompt"):
+            root.after(500, lambda: self.ask_channel(changed=False))
+        threading.Thread(target=self._channel_idle_check, daemon=True).start()
         if not mfm.ITEMS_PATH.exists():
             root.after(800, self.offer_item_list)
         elif mfm.needs_type_refresh() or mfm.needs_map_refresh():
@@ -795,6 +800,7 @@ class App:
         self.stop_event = threading.Event()
         self.monitor = mfm.Monitor(self.cfg, lambda k, p: self.events.put((k, p)),
                                    self.channel())
+        self.monitor.chan_watch = self.chan_watch
         self.worker = threading.Thread(target=self.monitor.run, args=(self.stop_event,), daemon=True)
         self.worker.start()
         self.start_btn.config(text="■  Stop monitoring")
@@ -816,6 +822,92 @@ class App:
         if self.monitor:
             self.monitor.request_split()
             self._set_status("Next shop: the current visit was ended (Ctrl+N).")
+
+    # ------------------------------------------------------------------ channel prompt
+    def _channel_idle_check(self):
+        """Background thread: while not monitoring, look for the game's
+        change-channel dialog about once a second (monitoring does the same
+        check on its own screenshots)."""
+        import time
+
+        while True:
+            time.sleep(1.0)
+            try:
+                if not self.cfg.get("channel_prompt") or (self.worker and self.worker.is_alive()):
+                    continue
+                # Wayland screenshots go through a screenshot tool (too heavy to run
+                # every second); macOS needs Screen Recording permission first
+                if mfm.session_type() not in ("windows", "x11", "macos") or not mfm.mac_screen_access():
+                    continue
+                if self.chan_watch.feed(mfm.grab_full_screen()):
+                    self.events.put(("channel_change", None))
+            except Exception:
+                time.sleep(5)
+
+    def on_channel_change(self, _p=None):
+        self.ask_channel(changed=True)
+
+    def ask_channel(self, changed: bool = True):
+        """Pop-up channel picker: at launch, and after the game's change-channel
+        dialog has come and gone. Picking a channel fills in the Channel box."""
+        head = ("Channel change detected. Which channel are you on now?" if changed
+                else "Which channel are you on?")
+        if self.chan_popup is not None and self.chan_popup.winfo_exists():
+            self.chan_popup.head.config(text=head)
+            self.chan_popup.deiconify()
+            self.chan_popup.lift()
+            self.chan_popup.focus_force()
+            self.root.bell()
+            return
+        cur = self.channel()
+        win = tk.Toplevel(self.root)
+        self.chan_popup = win
+        win.title("Channel")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)          # over the game, even with this window behind it
+        win.head = ttk.Label(win, text=head, style="Bold.TLabel", padding=(14, 12, 14, 8))
+        win.head.pack(anchor="w")
+
+        def pick(ch):
+            ch = mfm.parse_channel(ch)
+            if not ch or not ch.isdigit():
+                self.root.bell()
+                return
+            self.channel_var.set(ch)
+            self._set_status(f"Channel set to {mfm.channel_label(ch)}.")
+            win.destroy()
+
+        grid = ttk.Frame(win, padding=(14, 0, 14, 4))
+        grid.pack()
+        for n in range(1, 101):
+            b = tk.Button(grid, text=str(n), width=3, padx=2, pady=1, relief="groove",
+                          command=lambda n=n: pick(str(n)))
+            if cur == str(n):
+                b.config(background="#1e88e5", foreground="white", activebackground="#1565c0",
+                         activeforeground="white")
+            b.grid(row=(n - 1) // 10, column=(n - 1) % 10, padx=1, pady=1)
+        bottom = ttk.Frame(win, padding=(14, 8, 14, 12))
+        bottom.pack(fill="x")
+        ttk.Label(bottom, text="Or type it:").pack(side="left")
+        typed = tk.StringVar()
+        ok = (win.register(lambda p: p == "" or (p.isdigit() and p[0] != "0" and int(p) <= 100)), "%P")
+        e = ttk.Entry(bottom, textvariable=typed, width=5, validate="key", validatecommand=ok)
+        e.pack(side="left", padx=6)
+        e.bind("<Return>", lambda ev: pick(typed.get()))
+        ttk.Button(bottom, text="OK", command=lambda: pick(typed.get())).pack(side="left")
+        skip = ttk.Button(bottom, text=f"Keep {mfm.channel_label(cur)}" if cur else "Skip", command=win.destroy)
+        skip.pack(side="right")
+        tip("Close without changing the channel (turn these pop-ups off in Settings).", skip)
+        win.bind("<Escape>", lambda ev: win.destroy())
+        win.update_idletasks()
+        # centred over the main window
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        win.lift()
+        win.focus_force()
+        e.focus_set()
+        self.root.bell()
 
     def _channel_changed(self, *_):
         if self.monitor:
@@ -1945,7 +2037,7 @@ class App:
             types.insert(0, ("ZIP: the whole list plus every item icon", "*.zip"))
         ext = types[0][1][1:]
         path = filedialog.asksaveasfilename(
-            parent=parent, title=f"Export {what}", initialfile=default + ext,
+            parent=parent, title=f"Export {what}", initialfile=mfm.stamped(default + ext),
             defaultextension=ext, filetypes=types)
         if not path:
             return
@@ -2390,8 +2482,7 @@ class App:
         )).pack(anchor="w", padx=14, pady=2)
 
         def go():
-            default = f"mfm-{'market-prices' if kind.get() == 'market' else 'sightings'}-" \
-                      f"{datetime.now():%Y-%m-%d}.csv"
+            default = mfm.stamped(f"mfm {'market prices' if kind.get() == 'market' else 'sightings'}.csv")
             path = filedialog.asksaveasfilename(parent=win, title="Export prices", defaultextension=".csv",
                                                 initialfile=default, filetypes=[("CSV", "*.csv")])
             if not path:
@@ -2620,6 +2711,13 @@ class App:
         cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
         tip("Keeps a picture of every screen read in the data folder, to check what the app saw. "
             "Uses disk space; leave off normally.", cb)
+        chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", False))
+        cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
+                             variable=chan_prompt)
+        cb.grid(row=len(fields), column=2, sticky="w", padx=(0, 12), pady=4)
+        tip("Shows a channel picker when the app opens, and each time you change channel in the "
+            "game (once the game's Change Channel window has closed). The channel you pick is "
+            "saved with the listings you see.", cb)
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
         cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
                              variable=outliers_on)
@@ -2647,6 +2745,7 @@ class App:
                     return
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
+            self.cfg["channel_prompt"] = chan_prompt.get()
             self.cfg["outliers_on"] = outliers_on.get()
             mfm.save_config(self.cfg)
             self.refresh_tables()

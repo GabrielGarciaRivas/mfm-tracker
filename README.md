@@ -135,6 +135,14 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
    can be entered). It stays set for every shop you open until you change it, and is saved
    with each listing, since the channel isn't shown anywhere the tool can read.
 
+   To be asked instead, tick **Settings → Ask for the channel at launch and after a
+   channel change**. A channel picker (1–100, or type it) then opens when the app starts,
+   and again each time you change channel in the game: the app watches for the game's
+   **CHANGE CHANNEL** and **CANCEL** buttons side by side, and once that window has
+   closed (about 2 seconds without it) asks which channel you're on. **Keep chN** closes
+   it unchanged (e.g. if you cancelled). It works while monitoring and while not; on
+   Wayland only while monitoring.
+
 The panel on the right shows what it found ("Shop area: auto, found at …") and a preview
 of exactly what's being read.
 
@@ -538,6 +546,11 @@ worth asking the site owner.
   computer, or after clearing your data) as reference prices.
 - **Every sighting**: date, item, price, sold or for sale, shop, seller (player), map, channel.
   Its times are UTC (`first_seen_utc`, `last_seen_utc`, `sold_at_utc`).
+
+Every export (prices, item and map lists, and `mfm.py report`) adds your local date and
+time to the file name, as `YYYY-MM-DD HH-MM-SS`: `mfm market prices 2026-10-13
+08-11-00.csv`, `mfm item list 2026-10-13 08-11-00.zip`. On the command line the time
+goes onto the name you give (`export prices.csv` → `prices 2026-10-13 08-11-00.csv`).
 
 ## Errors
 

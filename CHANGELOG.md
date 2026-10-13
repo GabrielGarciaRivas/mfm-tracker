@@ -2,7 +2,23 @@
 
 Versions are `YYMM.minor.hotfix`.
 
-## 2610.11.003 — 2026-10-13
+## 2610.12.001 — 2026-10-13
+
+### New
+- **Channel change prompt** (Settings → *Ask for the channel at launch and after a
+  channel change*, off by default). When it's on, a channel picker opens:
+  - when the app starts;
+  - each time you change channel in the game. The app spots the game's
+    **CHANGE CHANNEL** and **CANCEL** buttons side by side, and asks once that window
+    has closed, not while it's open.
+
+  Pick a channel (1–100) or type it. **Keep chN** closes the picker unchanged, e.g.
+  if you cancelled. It works while monitoring and while not; on Wayland only while
+  monitoring.
+- **Exports are timestamped**: every export's file name gets your local date and time,
+  `YYYY-MM-DD HH-MM-SS`. That covers prices, the item and map lists, and the command
+  line's `export`, `export-items`, `export-maps` and `report`. For example,
+  `mfm market prices 2026-10-13 08-11-00.csv`.
 
 ### Fixed
 - **Free Market map names read as junk** ("Hidden Streat Lz: Rem aihlea ned…",
