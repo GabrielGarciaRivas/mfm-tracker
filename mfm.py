@@ -109,6 +109,7 @@ CONFIG_PATH = SETTINGS_DIR / "config.json"
 SETTINGS_FILES = {   # what "reset personal settings" can clear
     "settings": ("Settings and capture areas", ["config.json"]),
     "alerts": ("Watched items and listings", ["watchlist.json", "watched_listings.json"]),
+    "inventory": ("My inventory", ["inventory.json"]),
     "ignored": ("Ignore list", ["ignorelist.json"]),
     "matches": ("Manual matches (remembered corrections)", ["aliases.json"]),
     "kept": ("Names kept as they are (Review tab)", ["kept_names.json"]),
@@ -156,7 +157,8 @@ DEFAULT_CONFIG = {
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
-    "channel_count": 20,       # channels shown in the channel picker (1-100)
+    "channel_count": 18,       # channels shown in the channel picker (1-100)
+    "inventory_region": None,  # the item inventory window; None = find it automatically
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
@@ -1839,6 +1841,385 @@ class ChannelWatch:
                 return True
         return False
 
+
+# --------------------------------------------------------------------------- item inventory
+# The game's ITEM INVENTORY window: two red buttons and a blue X at the top right of its
+# title bar, a gold coin and MESOS at the bottom, and a grid of beige item slots. Its
+# size follows the buttons, so it's found the same way at any game resolution.
+
+INV_SLOT_BG = (225, 223, 213)
+
+
+def _rgb_mask(img: Image.Image, lo: tuple, hi: tuple) -> Image.Image:
+    from PIL import ImageChops
+
+    r, g, b = img.convert("RGB").split()
+    mul = ImageChops.multiply
+
+    def band(ch, a, z):
+        return ch.point(lambda v: 255 if a <= v <= z else 0)
+    return mul(mul(band(r, lo[0], hi[0]), band(g, lo[1], hi[1])), band(b, lo[2], hi[2]))
+
+
+def find_inventory(full: Image.Image) -> list | None:
+    """The ITEM INVENTORY window: [left, top, width, height], or None."""
+    img = full.convert("RGB")
+    W, H = img.size
+    sc = 2 if W > 1200 else 1
+    small = img.resize((W // sc, H // sc), Image.NEAREST)
+    reds = [tuple(v * sc for v in b) for b in _blobs(_rgb_mask(small, (170, 0, 0), (255, 120, 120)),
+                                                     min_w=max(3, 6 // sc), min_h=max(3, 6 // sc))]
+    reds = [b for b in reds if 6 <= b[3] - b[1] <= 60 and 0.7 <= (b[2] - b[0]) / (b[3] - b[1]) <= 1.4]
+    px = img.load()
+    gold_mask = None
+    found = []
+    for a in reds:
+        h = a[3] - a[1]
+        for b in reds:
+            p = b[0] - a[0]
+            if not (h * 1.05 <= p <= h * 1.8 and abs(b[1] - a[1]) <= h * 0.25):
+                continue
+            # the blue X button just right of them: mostly blue (its white X splits
+            # it into pieces, so the spot is checked rather than one blue blob)
+            c = (b[0] + p, b[1], b[0] + p + (b[2] - b[0]), b[3])
+            pts = [(x, y) for y in range(max(0, c[1]), min(H, c[3]), max(1, h // 6))
+                   for x in range(max(0, c[0]), min(W, c[2]), max(1, h // 6))]
+            blue = sum(1 for x, y in pts if px[x, y][2] >= 160 and px[x, y][2] - px[x, y][0] >= 60)
+            if not pts or blue < 0.3 * len(pts):
+                continue
+            if sc > 1:
+                # measure the buttons again at full size (the half-size picture is off by a pixel)
+                zx0, zy0 = max(0, a[0] - h), max(0, a[1] - h)
+                zone_img = img.crop((zx0, zy0, min(W, c[2] + h), min(H, c[3] + h)))
+                fr = sorted((bb for bb in _blobs(_rgb_mask(zone_img, (170, 0, 0), (255, 120, 120)), 3, 3)
+                             if 0.7 <= (bb[2] - bb[0]) / max(1, bb[3] - bb[1]) <= 1.4
+                             and bb[3] - bb[1] >= 0.6 * h and abs(bb[1] + zy0 - a[1]) <= 0.4 * h),
+                            key=lambda t: t[0])
+                if len(fr) >= 2:
+                    a = (fr[0][0] + zx0, fr[0][1] + zy0, fr[0][2] + zx0, fr[0][3] + zy0)
+                    b = (fr[1][0] + zx0, fr[1][1] + zy0, fr[1][2] + zx0, fr[1][3] + zy0)
+                    p = b[0] - a[0]
+                    c = (b[0] + p, b[1], b[0] + p + (b[2] - b[0]), b[3])
+            left = int(a[0] - 12.85 * p)
+            top = int(a[1] - 0.4 * p)
+            right = int(c[2] + 0.55 * p)
+            bottom = int(top + 22.25 * p)
+            if left < -p or right > W + p:
+                continue
+            # the left edge, measured: the title bar's white strip runs from the
+            # buttons to the window's border (just above the buttons there's no text)
+            best = None
+            for yy in range(max(0, a[1] - max(2, int(0.35 * p))), a[1]):
+                x, gap = a[0] - 2, 0
+                while x > 0 and gap <= 1:
+                    gap = 0 if min(px[x, yy]) >= 200 else gap + 1
+                    x -= 1
+                run = a[0] - 2 - (x + gap + 1)
+                if best is None or run > best[0]:
+                    best = (run, x + gap + 1)
+            if best and abs(best[1] - left) <= 2.5 * p:
+                left = best[1] - int(round(0.28 * p))   # the frame left of the white strip
+            # the gold coin at the bottom left (only the item inventory has the mesos bar)
+            if gold_mask is None:
+                gold_mask = _rgb_mask(img, (200, 150, 0), (255, 235, 100))
+            zone = (max(0, left - p), max(0, bottom - int(4 * p)), max(1, min(W, left + int(4 * p))),
+                    min(H, bottom + int(2 * p)))
+            if zone[2] <= zone[0] or zone[3] <= zone[1]:
+                continue
+            # the coin sits about 1 button-width in from the left edge, near the bottom
+            coins = [g for g in _blobs(gold_mask.crop(zone), min_w=max(3, p // 4), min_h=max(3, p // 4))
+                     if 0.6 <= (g[2] - g[0]) / max(1, g[3] - g[1]) <= 1.6
+                     and 0.3 * p <= (g[0] + g[2]) / 2 + zone[0] - left <= 2.2 * p
+                     and 0.4 * p <= g[3] - g[1] <= 1.2 * p]
+            if not coins:
+                continue
+            coin = min(coins, key=lambda g: abs(g[3] + zone[1] + 0.6 * p - bottom))
+            bottom = zone[1] + coin[3] + int(0.6 * p)
+            left, top = max(0, left), max(0, top)
+            found.append([left, top, min(W, right) - left, min(H, bottom) - top])
+    return found[0] if found else None
+
+
+def inventory_tab(win: Image.Image) -> int | None:
+    """Which tab is open (0 = Equip, 1 = Use, 2 = Set Up, 3 = Etc, 4 = Cash, ...): the
+    red one in the tab row."""
+    W, H = win.size
+    row = win.convert("RGB").crop((0, int(H * 0.09), W, int(H * 0.125)))
+    m = _rgb_mask(row, (170, 0, 0), (255, 140, 160))
+    cols = [x for x in range(W) if any(m.getpixel((x, y)) for y in range(0, row.height, 2))]
+    if not cols:
+        return None
+    mid = (cols[0] + cols[-1]) / 2
+    return int(mid / (W / 6))
+
+
+def inventory_slots(win: Image.Image) -> list[tuple]:
+    """Item slots of the inventory window, in reading order: (left, top, right, bottom)."""
+    W, H = win.size
+    beige = _rgb_mask(win, tuple(v - 10 for v in INV_SLOT_BG), tuple(v + 10 for v in INV_SLOT_BG))
+    blobs = [b for b in _blobs(beige, min_w=8, min_h=8) if b[1] > H * 0.12]
+    if not blobs:
+        return []
+    sizes = sorted(max(b[2] - b[0], b[3] - b[1]) for b in blobs)
+    size = sizes[len(sizes) * 3 // 4]
+    full = [b for b in blobs if b[2] - b[0] >= size * 0.85 and b[3] - b[1] >= size * 0.85]
+
+    def clusters(vals):
+        out = []
+        for v in sorted(vals):
+            if out and v - out[-1][-1] <= size * 0.3:
+                out[-1].append(v)
+            else:
+                out.append([v])
+        return [sorted(c)[len(c) // 2] for c in out]
+    xs, ys = clusters(b[0] for b in full), clusters(b[1] for b in full)
+    if not xs or not ys:
+        return []
+
+    def fill(vals, limit):
+        # columns/rows hidden behind icons everywhere: fill the gaps by the grid pitch
+        if len(vals) < 2:
+            return vals
+        pitch = min(b - a for a, b in zip(vals, vals[1:]))
+        out = [vals[0]]
+        for v in vals[1:]:
+            while v - out[-1] > pitch * 1.5:
+                out.append(out[-1] + pitch)
+            out.append(v)
+        while out[-1] + pitch + size <= limit:
+            out.append(out[-1] + pitch)
+        return out
+    xs, ys = fill(xs, W), fill(ys, H * 0.93)
+    return [(x, y, x + size, y + size) for y in ys for x in xs]
+
+
+def _is_shadow(p, bg) -> bool:
+    ratios = [p[i] / max(1, bg[i]) for i in range(3)]
+    return max(ratios) - min(ratios) < 0.1 and 0.5 < sum(ratios) / 3 < 0.97
+
+
+def _icon_mask(img: Image.Image, bg=None, skip_count=False):
+    """Foreground pixels of an icon: opaque ones for an icon with transparency, else
+    the ones that are neither the background colour nor its shadow. With
+    skip_count, the white stack-count digits at the bottom left are left out."""
+    rgba = img.convert("RGBA")
+    W, H = rgba.size
+    px = rgba.load()
+    has_alpha = any(px[x, y][3] < 250 for x, y in ((0, 0), (W - 1, 0), (0, H - 1), (W - 1, H - 1)))
+    if bg is None and not has_alpha:
+        corners = [px[x, y][:3] for x, y in ((1, 1), (W - 2, 1), (1, H - 2), (W - 2, H - 2))]
+        bg = max(set(corners), key=corners.count)
+    mask = [[False] * W for _ in range(H)]
+    for y in range(H):
+        for x in range(W):
+            p = px[x, y]
+            if has_alpha:
+                on = p[3] >= 128
+            else:
+                on = sum(abs(p[i] - bg[i]) for i in range(3)) > 45 and not _is_shadow(p, bg)
+            if on and skip_count and x < W * 0.42 and y > H * 0.55:
+                # count digits: white with a dark outline
+                if min(p[:3]) >= 225 or max(p[:3]) <= 70:
+                    on = False
+            mask[y][x] = on
+    return rgba, mask
+
+
+ICON_GRID = 12
+
+
+def icon_signature(img: Image.Image, bg=None, skip_count=False):
+    """A small description of an icon for matching: its shape on a 12x12 grid, the
+    average colour of each cell, its aspect ratio and overall colour. None if blank."""
+    rgba, mask = _icon_mask(img, bg, skip_count)
+    W, H = rgba.size
+    ys = [y for y in range(H) if any(mask[y])]
+    xs = [x for x in range(W) if any(mask[y][x] for y in range(H))]
+    if len(xs) < 3 or len(ys) < 3:
+        return None
+    x0, x1, y0, y1 = xs[0], xs[-1] + 1, ys[0], ys[-1] + 1
+    px = rgba.load()
+    n = ICON_GRID
+    cells = []
+    tot = [0, 0, 0]
+    cnt = 0
+    for cy in range(n):
+        for cx in range(n):
+            ax, bx = x0 + (x1 - x0) * cx // n, x0 + max((x1 - x0) * (cx + 1) // n, (x1 - x0) * cx // n + 1)
+            ay, by = y0 + (y1 - y0) * cy // n, y0 + max((y1 - y0) * (cy + 1) // n, (y1 - y0) * cy // n + 1)
+            s = [0, 0, 0]
+            k = a = 0
+            for y in range(ay, min(by, y1)):
+                for x in range(ax, min(bx, x1)):
+                    a += 1
+                    if mask[y][x]:
+                        p = px[x, y]
+                        s[0] += p[0]; s[1] += p[1]; s[2] += p[2]
+                        k += 1
+            if k * 2 >= max(1, a):
+                c = (s[0] // k, s[1] // k, s[2] // k)
+                cells.append(c)
+                tot[0] += c[0]; tot[1] += c[1]; tot[2] += c[2]
+                cnt += 1
+            else:
+                cells.append(None)
+    if not cnt:
+        return None
+    return {"cells": cells, "aspect": (x1 - x0) / (y1 - y0),
+            "mean": (tot[0] / cnt, tot[1] / cnt, tot[2] / cnt), "fill": cnt / (n * n)}
+
+
+def signature_distance(a, b) -> float:
+    """0 = the same picture; higher = less alike."""
+    shape = color = 0.0
+    both = 0
+    for p, q in zip(a["cells"], b["cells"]):
+        if (p is None) != (q is None):
+            shape += 1
+        elif p is not None:
+            both += 1
+            color += (abs(p[0] - q[0]) + abs(p[1] - q[1]) + abs(p[2] - q[2])) / 765
+    n = len(a["cells"])
+    aspect = abs(a["aspect"] - b["aspect"]) / max(a["aspect"], b["aspect"])
+    return shape / n * 1.0 + (color / both if both else 1.0) * 1.5 + aspect * 0.5
+
+
+def slot_signature(img: Image.Image):
+    """Signature of an item drawn in a beige item slot (inventory slots, and the
+    thumbnails captured from shop rows, which use the same slot): the slot's border
+    is cut off, and its background, the icon's shadow and the count digits ignored."""
+    rgb = img.convert("RGB")
+    W, H = rgb.size
+    beige = _rgb_mask(rgb, tuple(v - 12 for v in INV_SLOT_BG), tuple(v + 12 for v in INV_SLOT_BG))
+    box = beige.getbbox()
+    if box and (box[2] - box[0]) >= W * 0.5 and (box[3] - box[1]) >= H * 0.5:
+        x0, y0, x1, y1 = box
+    else:
+        x0, y0, x1, y1 = 0, 0, W, H
+    m = max(1, int(round((x1 - x0) * 0.05)))
+    inner = rgb.crop((x0 + m, y0 + m, x1 - m, y1 - m))
+    if box is None:
+        return icon_signature(inner, skip_count=True)
+    return icon_signature(inner, bg=INV_SLOT_BG, skip_count=True)
+
+
+class IconMatcher:
+    """Matches icons cut from the screen against every icon the app has: the
+    official ones (downloaded with Update) and the ones captured from shops."""
+
+    def __init__(self, con):
+        import io
+
+        keys = {}
+        for item, key in _icon_keys().items():
+            keys.setdefault(str(key), []).append(item)
+        known = _dict().names if has_item_list() else None
+        self.refs = []          # (item, signature, official)
+        seen = set()
+        for key, png in con.execute("SELECT icon_key, png FROM cache.meowdb_icons"):
+            items = keys.get(str(key))
+            if not items:
+                continue
+            try:
+                sig = icon_signature(Image.open(io.BytesIO(png)))
+            except Exception:
+                sig = None
+            if sig:
+                for item in items:
+                    if known is None or item in known or len(items) == 1:
+                        self.refs.append((item, sig, True))
+                        seen.add(item)
+        for item, png, faded in con.execute("SELECT item, png, faded FROM cache.icons"):
+            if item in seen or faded:
+                continue
+            try:
+                sig = slot_signature(Image.open(io.BytesIO(png)))
+            except Exception:
+                sig = None
+            if sig:
+                self.refs.append((item, sig, False))
+
+    def match(self, sig, top: int = 3) -> list[tuple[str, float]]:
+        """The closest items to a signature, best first: [(item, distance)]."""
+        if sig is None or not self.refs:
+            return []
+        m = sig["mean"]
+        coarse = sorted(self.refs, key=lambda r: abs(r[1]["mean"][0] - m[0]) + abs(r[1]["mean"][1] - m[1])
+                        + abs(r[1]["mean"][2] - m[2]) + 120 * abs(r[1]["aspect"] - sig["aspect"]))[:250]
+        scored = {}
+        for item, ref, official in coarse:
+            d = signature_distance(sig, ref) - (0.02 if official else 0)
+            if item not in scored or d < scored[item]:
+                scored[item] = d
+        return sorted(scored.items(), key=lambda t: t[1])[:top]
+
+
+INV_MATCH_OK = 0.55       # a match closer than this is shown as found
+
+
+def read_slot_count(slot: Image.Image, cfg: dict) -> int:
+    """The stack count at a slot's bottom left (1 when it can't be read)."""
+    import pytesseract
+
+    W, H = slot.size
+    part = slot.crop((0, int(H * 0.5), int(W * 0.6), H))
+    setup_tesseract(cfg)
+    try:
+        text = pytesseract.image_to_string(white_text_mask(part, up=4, thr=215),
+                                           config="--psm 7 -c tessedit_char_whitelist=0123456789")
+    except Exception:
+        return 1
+    digits = re.sub(r"\D", "", text)
+    return int(digits) if digits and 0 < int(digits) <= 9999 else 1
+
+
+def scan_inventory(win: Image.Image, matcher: IconMatcher, cfg: dict, read_counts: bool = True) -> list[dict]:
+    """The items in an inventory window: [{"slot", "item", "score", "qty", "icon"}] for
+    every slot with something in it; "item" is None when no icon is close enough."""
+    out = []
+    for i, (x0, y0, x1, y1) in enumerate(inventory_slots(win)):
+        slot = win.crop((x0, y0, x1, y1))
+        sig = slot_signature(slot)
+        if sig is None or sig["fill"] < 0.04:
+            continue
+        best = matcher.match(sig)
+        item, dist = (best[0] if best else (None, 9.9))
+        out.append({"slot": i, "item": item if dist <= INV_MATCH_OK else None, "guess": item,
+                    "score": max(0.0, 1 - dist), "qty": read_slot_count(slot, cfg) if read_counts else 1,
+                    "icon": slot})
+    return out
+
+
+# My Inventory: [{"item", "qty", "added" (UTC)}]
+INVENTORY_PATH = SETTINGS_DIR / "inventory.json"
+
+
+def load_inventory() -> list[dict]:
+    return _load_json(INVENTORY_PATH, [])
+
+
+def save_inventory(inv: list[dict]) -> None:
+    INVENTORY_PATH.write_text(json.dumps(inv, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def inventory_stats(con, item: str, cfg: dict) -> dict:
+    """What one owned item is worth: market price, the range of normal prices seen
+    (within the market window), how many sightings there are, how many sold in the
+    last 24 hours, and the average of the last 3 sale prices."""
+    mkt, _ = market_rate(con, item, cfg)
+    bounds = outlier_bounds(con, item, cfg)
+    prices = [p for (p,) in con.execute(
+        "SELECT price FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
+        (item, utc_ago(days=cfg["history_days"]))) if not is_outlier(p, bounds)]
+    points = con.execute("SELECT COUNT(*) FROM listings WHERE item = ?", (item,)).fetchone()[0]
+    sold24 = con.execute("SELECT COUNT(*) FROM listings WHERE item = ? AND COALESCE(sold, 0) = 1 "
+                         "AND COALESCE(sold_ts, last_seen, ts) >= ?", (item, utc_ago(hours=24))).fetchone()[0]
+    last3 = [p for (p,) in con.execute(
+        "SELECT price FROM listings WHERE item = ? AND COALESCE(sold, 0) = 1 "
+        "ORDER BY COALESCE(sold_ts, last_seen, ts) DESC LIMIT 3", (item,))]
+    return {"market": mkt, "low": min(prices) if prices else None, "high": max(prices) if prices else None,
+            "points": points, "sold24": sold24,
+            "last3": int(round(sum(last3) / len(last3))) if last3 else None, "last3_n": len(last3)}
 
 def is_auto(region, full_size) -> bool:
     """Use automatic detection when no area is set, or when the saved area is

@@ -1,0 +1,29 @@
+name: Inventory icon check
+
+# Matches item icons from tests/fixtures against the official icons (downloads the
+# item list and every icon from NiaMeowDB, about 10 minutes). Run it by hand from
+# the Actions tab; the result is shown as an annotation on the run.
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+          pip install -r requirements.txt
+      - name: Check
+        shell: bash
+        run: |
+          set +e
+          python tests/inventory_check.py
+          rc=$?
+          msg="$(tail -60 result.txt 2>/dev/null | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
+          echo "::notice title=Inventory icon check::$msg"
+          exit $rc
