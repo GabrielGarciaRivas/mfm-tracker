@@ -1951,7 +1951,7 @@ def _meow_record(it: dict) -> dict:
     lvl = it.get("levelReq")
     return {"name": it.get("name"), "displayName": it.get("displayName"), "iconKey": it.get("iconKey"),
             "subtype": it.get("displaySubtype") or it.get("subtype"), "type": it.get("type"),
-            "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
+            "levelReq": int(lvl) if str("" if lvl is None else lvl).isdigit() else None,
             "reqJob": stats.get("reqJob") or None,
             "npcSell": int(stats["price"]) if str(stats.get("price", "")).isdigit() else None,
             "sources": [str(x) for x in (it.get("sources") or []) if x]}
@@ -2424,7 +2424,7 @@ def osms_extras() -> dict:
         job = str(it.get("req_job_label") or "").strip()
         items[name] = {"id": gid, "subtype": _osms_subtype(it),
                        "type": _OSMS_TYPES.get(str(it.get("category") or "").lower(), it.get("category")),
-                       "levelReq": int(lvl) if str(lvl or "").isdigit() else None,
+                       "levelReq": int(lvl) if str("" if lvl is None else lvl).isdigit() else None,
                        "reqJob": None if job.lower() in ("", "all", "any", "none") else job,
                        "sources": [],
                        "npcSell": int(it["price"]) if str(it.get("price") or "").isdigit() else None}
