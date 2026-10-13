@@ -25,8 +25,11 @@ print(f"reference icons: {len(matcher.refs)}")
 
 lines = []
 true_d, wrong_d = [], []
+import json  # noqa: E402
+
+names = json.loads((FIX / "shop_icons" / "index.json").read_text(encoding="utf-8"))
 for f in sorted((FIX / "shop_icons").glob("*.png")):
-    item = f.stem
+    item = names.get(f.name, f.stem)   # file names can't hold every character (":")
     if not mfm.is_known_item(item):
         continue
     top = matcher.match_slot(Image.open(f), top=200)
