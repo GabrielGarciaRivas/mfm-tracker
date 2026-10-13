@@ -748,19 +748,17 @@ class App:
         # Items tab
         items = ttk.Frame(self.nb, padding=6)
         self.nb.add(items, text="  Items  ")
-        ttk.Label(items, text="Cheapest listing still for sale (seen in the last 24 h) and where, "
-                              "plus what items list for vs. actually sell for. "
-                              "Delete removes a bad OCR read; "
-                              + ("Option+click or Cmd+Option+drag" if MAC else "Alt+click or Ctrl+Alt+drag")
-                              + " picks several rows."
+        ttk.Label(items, text="Every item you've seen: the cheapest listing for sale (last 24 hours) and "
+                              "what it lists and sells for. Delete removes a bad read; "
+                              + ("Option+click" if MAC else "Alt+click")
+                              + " selects several rows."
                   ).pack(anchor="w")
         legend = ttk.Frame(items)
         legend.pack(anchor="w", pady=(2, 6))
         self.legend_icon = ImageTk.PhotoImage(self._legend_badge())
         ttk.Label(legend, image=self.legend_icon).pack(side="left")
         ttk.Label(legend, foreground="#666",
-                  text=" = not matched to any item in the database (check the spelling, or it may be new). "
-                       "The Review tab lists them all with suggested matches."
+                  text=" = name not in the item list. Fix it in the Review tab."
                   ).pack(side="left")
         self._build_item_filter(items)
         self.items = make_tree(items, ("item", "best", "best_shop", "best_player", "best_map", "best_channel",
@@ -796,10 +794,8 @@ class App:
         if not mfm.mac_screen_access(ask=True):
             messagebox.showwarning(
                 "Screen Recording permission needed",
-                "macOS only lets Free Market Tracker see the game after you allow it:\n\n"
-                "System Settings > Privacy & Security > Screen Recording > turn on "
-                "Free Market Tracker.\n\nThen quit and reopen the app (macOS applies the "
-                "permission on the next start).")
+                "Allow Free Market Tracker in System Settings > Privacy & Security > "
+                "Screen Recording, then quit and reopen the app.")
             return
         self.stop_event = threading.Event()
         self.monitor = mfm.Monitor(self.cfg, lambda k, p: self.events.put((k, p)),
@@ -1090,17 +1086,15 @@ class App:
         hint = ""
         low = msg.lower()
         if "readonly" in low or "read-only" in low or "permission denied" in low:
-            hint = ("The price database can't be written to. Check that the data folder isn't "
-                    "read-only and that you have write permission:\n" + str(mfm.DATA))
+            hint = "Prices can't be saved. Check that you can write to the data folder:\n" + str(mfm.DATA)
         elif "disk" in low and ("full" in low or "space" in low):
-            hint = "The disk is full: free some space so prices can be saved."
+            hint = "The disk is full. Free some space."
         elif "database is locked" in low:
-            hint = "The price database is busy (another copy of the tracker open?). Close the other one."
+            hint = "Another copy of the app may be open. Close it."
         elif "certificate" in low:
-            hint = ("The secure connection couldn't be checked (certificate). This is usually the "
-                    "app, not your internet: please report it, with the details above.")
+            hint = "Secure connection failed (certificate). Please report this, with the details above."
         elif any(k in low for k in ("urlopen", "timed out", "name resolution", "connection", "http error")):
-            hint = "Check your internet connection; you can retry later from Settings."
+            hint = "Check your internet connection, then try again from Settings."
         key = (title, msg)
         now = _t.monotonic()
         last = self._error_times.get(key)
@@ -1188,9 +1182,8 @@ class App:
             size = 0
         if size > mfm.DB_WARN_BYTES:
             self.size_warn.config(text=(
-                f"⚠  Your price database is {size / 1048576:,.0f} MB and getting large. It's "
-                "recommended to archive and/or delete some data (click here: Settings → Data "
-                "retention)."))
+                f"⚠  Your price database is {size / 1048576:,.0f} MB. Click here to archive or "
+                "delete old data."))
             if not self.size_warn.winfo_ismapped():
                 self.size_warn.pack(fill="x", padx=10, pady=(0, 6), before=self.nb)
         elif self.size_warn.winfo_ismapped():
@@ -1367,17 +1360,17 @@ class App:
         lab("Category")
         self.f_type_cb = ttk.Combobox(bar, textvariable=self.f_type, state="readonly", width=7)
         self.f_type_cb.pack(side="left", padx=(4, 6))
-        tip("Equip, Use, Etc, Setup or Cash, as in NiaMeowDB's item database.", self.f_type_cb)
+        tip("Equip, Use, Etc, Setup or Cash.", self.f_type_cb)
         self.f_sub_cb = ttk.Combobox(bar, textvariable=self.f_sub, state="readonly", width=14)
         self.f_sub_cb.pack(side="left", padx=(0, 10))
-        tip("The kind of item within the category (Shoes, Scroll, Ore, ...).", self.f_sub_cb)
+        tip("The kind of item (Shoes, Scroll, Ore, ...).", self.f_sub_cb)
         lab("Class")
         self.f_job_cb = ttk.Combobox(bar, textvariable=self.f_job, state="readonly", width=9)
         self.f_job_cb.pack(side="left", padx=(4, 2))
         tip("Items that need this class.", self.f_job_cb)
         cb = ttk.Checkbutton(bar, text="+ all-class", variable=self.f_allclass)
         cb.pack(side="left", padx=(0, 10))
-        tip("With a class picked, also show items any class can use.", cb)
+        tip("Also show items every class can use.", cb)
         lab("Level")
         ok = (self.root.register(lambda v: v == "" or (v.isdigit() and int(v) <= 250)), "%P")
         for var, t in ((self.f_lmin, "Lowest required level"), (self.f_lmax, "Highest required level")):
@@ -1389,7 +1382,7 @@ class App:
                 lab("–", padx=(3, 0))
         cb = ttk.Checkbutton(bar, text="Sold by NPCs", variable=self.f_npc)
         cb.pack(side="left", padx=(10, 0))
-        tip("Only items an NPC shop sells (handy to spot overpriced listings).", cb)
+        tip("Only items an NPC shop sells.", cb)
         b = ttk.Button(bar, text="Clear", command=self.clear_item_filter)
         b.pack(side="left", padx=(10, 0))
         self.f_count = ttk.Label(bar, foreground="#666")
@@ -1448,8 +1441,8 @@ class App:
     def _build_alerts_tab(self):
         tab = ttk.Frame(self.nb, padding=6)
         self.nb.add(tab, text="  Alerts  ")
-        ttk.Label(tab, text="Get a ping, and a green outline on the icon, when one of these is for "
-                            "sale in a shop you open. Leave the max price empty to be alerted at any price."
+        ttk.Label(tab, text="Get a ping when one of these items is for sale. Leave the max price "
+                            "empty for any price."
                   ).pack(anchor="w", pady=(0, 6))
         add = ttk.Frame(tab)
         add.pack(fill="x")
@@ -1628,11 +1621,8 @@ class App:
         self.review_tab = tab
         self.nb.add(tab, text="  Review  ")
         ttk.Label(tab, wraplength=1040, justify="left", text=(
-            "Item names that don't match anything in the item database (the red ! badge), with the "
-            "closest database item. Enter = accept the suggestion · M = match by hand · "
-            "K = keep the name as it is (e.g. an item newer than your list) · Delete = delete "
-            "its listings (junk reads). Works on several selected rows at once; the next row is "
-            "selected after each action.")).pack(anchor="w", pady=(0, 6))
+            "Names not in the item list, with the closest item. Enter = accept · M = pick an "
+            "item · K = keep the name · Delete = delete its listings.")).pack(anchor="w", pady=(0, 6))
         self.review = make_tree(tab, ("item", "suggest", "score", "count", "time", "raw"))
         self.review.frame.pack(fill="both", expand=True)
         self.review.tag_configure("good", foreground="#145c2c")
@@ -1804,9 +1794,8 @@ class App:
     def _build_ignore_tab(self):
         tab = ttk.Frame(self.nb, padding=6)
         self.nb.add(tab, text="  Ignored  ")
-        ttk.Label(tab, text="Items here never count as deals: no bell, no green highlight, and they're "
-                            "hidden from the Deals tab (tick \"Show ignored\" there to see them). They're "
-                            "still logged, and an alert you've set on one still fires."
+        ttk.Label(tab, text="Items here are never shown as deals. Their prices are still logged, "
+                            "and alerts on them still work."
                   , wraplength=1000, justify="left").pack(anchor="w", pady=(0, 6))
         add = ttk.Frame(tab)
         add.pack(fill="x")
@@ -1884,7 +1873,7 @@ class App:
     def test_sound(self):
         if not mfm.play_sound(self.cfg.get("alert_sound") or None):
             self.root.bell()
-            self._set_status("No audio player found (pw-play / paplay / aplay); used the system bell.")
+            self._set_status("No sound player found; used the system bell instead.")
 
     def choose_sound(self):
         path = filedialog.askopenfilename(title="Alert sound (.wav)",
@@ -2158,16 +2147,14 @@ class App:
         b = ttk.Button(top, text="Update",
                        command=lambda: self.download_meowdb(rows["items"], force=True, then=refresh))
         b.pack(side="left")
-        tip("Gets new items and map changes from NiaMeowDB (meowdb.com), and the backup lists from "
-            "OSMS Data Explorer. Quick: only what changed is downloaded.", b)
+        tip("Downloads new items and maps.", b)
         b = ttk.Button(top, text="Full refresh",
                        command=lambda: self.download_meowdb(rows["items"], full=True, force=True, then=refresh))
         b.pack(side="left", padx=6)
-        tip("Downloads the whole item and map lists again. Only needed if something looks out "
-            "of date or wrong.", b)
+        tip("Downloads the whole item and map lists again.", b)
         ttk.Label(top, foreground="#666", wraplength=wrap - 300, justify="left", text=(
-            "Both lists come from NiaMeowDB, with OSMS Data Explorer as a backup. Update only asks "
-            "for what's new; Full refresh downloads everything again.")).pack(side="left", padx=(10, 0))
+            "Item and map lists from NiaMeowDB, with OSMS Data Explorer as a backup.")
+                  ).pack(side="left", padx=(10, 0))
         search_icons = tk.BooleanVar(value=self.cfg.get("search_icons", True))
 
         def toggle_search_icons():
@@ -2179,22 +2166,18 @@ class App:
             self.cfg["download_all_icons"] = all_icons.get()
             mfm.save_config(self.cfg)
         cb = ttk.Checkbutton(box, variable=all_icons, command=toggle_icons, text=(
-            "Update also downloads every item icon (the first time takes about 10 minutes in the "
-            "background, then only new items' icons)"))
+            "Update also downloads every item icon (about 10 minutes the first time)"))
         cb.pack(anchor="w", pady=(2, 0))
-        tip("With this off, icons are only downloaded for items you actually come across.", cb)
+        tip("When off, icons are downloaded only for items you see.", cb)
         sections = [
             ("items", "Item list", status_items,
-             "Corrects the OCR's spelling of item names, lists the items you can pick in "
-             "Alerts, Ignored, Match and the Review tab, links each item to its NiaMeowDB page, shows icons, "
-             "and gives each item's category, level, class and NPC buy / sell prices.",
-             "Files: cache/items.txt (names), meowdb_items.json (database copy: id, name, "
-             "category, icon), item_ids.json, item_types.json, item_icons.json, npc_shops.json "
-             "(NPC shop prices); icons in cache/icons.db"),
+             "Corrects misread item names and gives each item its icon, category, level, class "
+             "and NPC prices.",
+             "Files in cache/: items.txt, meowdb_items.json, item_ids.json, item_types.json, "
+             "item_icons.json, npc_shops.json, icons.db"),
             ("maps", "Map list", status_maps,
-             "Corrects misread map names from the minimap, e.g. 'Free Marker <8>' → "
-             "'Free Market <8>'.",
-             "File: cache/maps.json (id, name, street)"),
+             "Corrects misread map names.",
+             "File in cache/: maps.json"),
         ]
         for i, (kind, title, fn, purpose, files) in enumerate(sections):
             f = ttk.Frame(box)
@@ -2212,8 +2195,7 @@ class App:
                 cb = ttk.Checkbutton(f, text="Show icons in item search", variable=search_icons,
                                      command=toggle_search_icons)
                 cb.pack(anchor="w", pady=(2, 0))
-                tip("Shows each item's picture next to its name when you search for items in "
-                    "Alerts, Ignored and Match.", cb)
+                tip("Shows item pictures in item search.", cb)
 
             def imp(kind=kind):
                 if self._import_game_data(kind, parent):
@@ -2223,41 +2205,35 @@ class App:
             be = ttk.Button(b, text="Export…", command=lambda kind=kind: self._export_game_data(kind, parent))
             be.pack(side="left", padx=(6, 0))
             noun = "item list" if kind == "items" else "map list"
-            tip(f"Replaces the {noun} with one from a file, e.g. an export from another PC.", bi)
+            tip(f"Loads the {noun} from a file.", bi)
             tip(f"Saves the {noun} to a file"
-                + (" (choose .zip to include every icon)" if kind == "items" else "")
-                + ", to back it up or copy it to another PC.", be)
+                + (" (.zip includes every icon)." if kind == "items" else "."), be)
         bk = ttk.Frame(box)
         bk.pack(fill="x", pady=(10, 0))
         bk_title = ttk.Label(bk, text="Backup source", style="Bold.TLabel")
         bk_title.pack(side="left")
         rows["osms"] = ttk.Label(bk, text=status_osms(), foreground="#1f6f3a")
         rows["osms"].pack(side="left", padx=(10, 0))
-        tip("OSMS Data Explorer (osmsdataexplorer.com) is used only where NiaMeowDB has nothing: "
-            "items and maps missing from its lists, and icons it can't supply. Updated with the "
-            "Update button (checked weekly). Files: cache/osms_items.json, cache/osms_maps.json; "
-            "included in an item .zip export.", bk_title, rows["osms"])
+        tip("Items, maps and icons that NiaMeowDB doesn't have. Files in cache/: "
+            "osms_items.json, osms_maps.json.", bk_title, rows["osms"])
         ttk.Label(box, **grey, text=(
-            "Export: .json/.csv restores all the files above exactly (here or on another PC), "
-            "an item .zip adds every icon, .txt is names only.")).pack(anchor="w", pady=(10, 0))
+            "Export as .json or .csv for a full copy, .zip to include icons, .txt for names only."
+            )).pack(anchor="w", pady=(10, 0))
         return box
 
     def offer_item_list(self):
         if messagebox.askyesno(
                 "Item names",
-                "Download the MapleStory Classic item list from NiaMeowDB (meowdb.com)?\n\n"
-                "It's used to fix OCR misspellings ('Reppae Hat' -> 'Reggae Hat') and to show "
-                "official item icons. About 11 small requests. You can do this later from "
-                "Settings."):
+                "Download the MapleStory Classic item and map lists?\n\n"
+                "They correct misread names and add item icons. You can also do this later "
+                "in Settings."):
             self.download_meowdb()
 
     def offer_type_refresh(self):
         if messagebox.askyesno(
                 "Update item list",
-                "Re-download the item and map lists from NiaMeowDB (meowdb.com)? This version also "
-                "saves each item's category, required level and class (for the Items tab's filters) "
-                "and the map list, which is used to correct misread map names like "
-                "'Free Marker <8>'."):
+                "Download the item and map lists again? This version needs them for the Items "
+                "filters and NPC prices."):
             self.download_meowdb()
 
     def download_meowdb(self, label=None, full=False, force=False, then=None):
@@ -2288,8 +2264,7 @@ class App:
             if meow_error is not None:
                 say(f"meowdb download failed: {meow_error}   {osms_msg}")
                 self.events.put(("download_error", str(meow_error) + (
-                    "\n\nThe backup source (OSMS Data Explorer) was updated, so items and maps "
-                    "meowdb is missing are still covered." if not osms_msg.startswith("Backup source not") else "")))
+                    "\n\nThe backup lists were updated." if not osms_msg.startswith("Backup source not") else "")))
                 return
             try:
                 if self.cfg.get("download_all_icons", True):
@@ -2540,14 +2515,13 @@ class App:
         win.transient(self.root)
         win.resizable(False, False)
         kind = tk.StringVar(value="market")
-        ttk.Label(win, text="Export as a CSV file (opens in Excel, LibreOffice, Google Sheets):",
+        ttk.Label(win, text="Export a CSV file (opens in any spreadsheet app):",
                   padding=(14, 12, 14, 6)).pack(anchor="w")
         ttk.Radiobutton(win, variable=kind, value="market", text=(
-            "Market prices, one row per item: market price and where it came from, listed and "
-            "sold medians, cheapest listing.\nThe first columns are item,price,source, so it can be "
-            "imported again with Import prices.")).pack(anchor="w", padx=14, pady=2)
+            "Market prices: one row per item. Can be loaded again with Import prices."
+            )).pack(anchor="w", padx=14, pady=2)
         ttk.Radiobutton(win, variable=kind, value="listings", text=(
-            "Every sighting: date, item, price, sold or for sale, shop, player, map, channel."
+            "Every sighting: one row per listing seen."
         )).pack(anchor="w", padx=14, pady=2)
 
         def go():
@@ -2579,12 +2553,10 @@ class App:
         r = self.con.execute("SELECT COUNT(*) FROM reference").fetchone()[0]
         if not self._confirm_twice(
                 parent, "Clear pricing data",
-                f"Delete ALL pricing data?\n\n• {n:,} logged listings (every shop, sold and for sale)\n"
-                f"• {r:,} imported reference prices\n\nYour settings, alerts, ignore list, manual matches "
-                "and item icons are kept.",
-                "Are you sure? This is the second and last confirmation.\n\n"
-                f"All {n + r:,} price records will be deleted. A backup copy is saved in the "
-                "data folder's 'backups' folder first, but the app itself can't undo this."):
+                f"Delete all pricing data?\n\n• {n:,} listings\n• {r:,} imported prices\n\n"
+                "Settings, alerts and icons are kept.",
+                f"Are you sure? All {n + r:,} prices will be deleted.\n\n"
+                "A backup is saved in the data folder's backups folder."):
             return
         if self.stop_event and self.worker and self.worker.is_alive():
             self.stop()
@@ -2616,9 +2588,7 @@ class App:
             names = "\n".join("• " + mfm.SETTINGS_FILES[k][0] for k in parts)
             if not self._confirm_twice(
                     win, "Reset personal settings", f"Reset and delete:\n\n{names}?",
-                    "Are you sure? This is the second and last confirmation.\n\nA backup copy is "
-                    "saved in the data folder's 'backups' folder first, but the app itself can't "
-                    "undo this."):
+                    "Are you sure?\n\nA backup is saved in the data folder's backups folder."):
                 return
             backup = mfm.reset_settings(parts)
             self.cfg = mfm.load_config()
@@ -2663,27 +2633,20 @@ class App:
             ("outlier_floor_pct", "Outliers: floor, % below median", 5, 99, 5),
         ]
         tips = {
-            "deal_threshold_pct": "How far below the market price a listing must be to count as a "
-                                  "DEAL (and how far above to count as HIGH).",
-            "interval_seconds": "How often the screen is read while monitoring. Lower is quicker to "
-                                "catch rows; higher uses less CPU. A read that takes longer than "
-                                "this starts the next one straight away.",
-            "confirm_frames": "How many identical reads a row needs before it's saved. Higher "
-                              "avoids misreads; lower saves rows faster while scrolling.",
-            "unmatched_extra_frames": "Names that aren't in the item database are read this many "
-                                      "more times before they're saved, to rule out a misread.",
-            "close_frames": "How many reads in a row without a shop mean the shop was closed.",
-            "history_days": "How many days of your own sightings make up an item's market price.",
-            "upscale": "How much the screen text is enlarged before it's read. Raise it if small "
-                       "text is misread; higher is slower.",
-            "min_sightings": "An item needs this many sightings (within the market window) before "
-                             "it's judged: before your sightings give it a market price, so before "
-                             "listings are flagged DEAL or HIGH, and before unusual prices are set "
-                             "aside as outliers. Imported reference prices count straight away.",
-            "outlier_ceiling_pct": "Prices this far above the item's usual price are ignored for "
-                                   "its market price (troll listings, typos).",
-            "outlier_floor_pct": "Prices this far below the item's usual price don't change its "
-                                 "market price (they still show as deals).",
+            "deal_threshold_pct": "How far below (DEAL) or above (HIGH) the market price a listing "
+                                  "must be.",
+            "interval_seconds": "How often the screen is read. Higher uses less CPU.",
+            "confirm_frames": "How many matching reads a listing needs before it's saved.",
+            "unmatched_extra_frames": "Extra reads for names not in the item list, before they're "
+                                      "saved.",
+            "close_frames": "Reads without a shop before the shop counts as closed.",
+            "history_days": "How many days of sightings make the market price.",
+            "upscale": "Raise it if small text is misread. Higher is slower.",
+            "min_sightings": "Sightings an item needs before it gets a market price, DEAL / HIGH "
+                             "and outliers.",
+            "outlier_ceiling_pct": "Prices this far above usual are left out of the market price.",
+            "outlier_floor_pct": "Prices this far below usual are left out of the market price "
+                                 "(still shown as deals).",
         }
         vars_ = {}
         for i, (key, label, lo, hi, step) in enumerate(fields):
@@ -2705,18 +2668,16 @@ class App:
         sk = ttk.Spinbox(r1, from_=1, to=3650, increment=1, width=6, textvariable=keep_var)
         sk.pack(side="left", padx=6)
         ttk.Label(r1, text="days").pack(side="left")
-        tip("Listings not seen for this many days are archived and/or deleted (see below). "
-            "Items you still see in shops keep their listings.", lk, sk)
+        tip("Listings not seen for this many days are cleaned up.", lk, sk)
         mode_var = tk.StringVar(value=self.cfg.get("retention", "archive"))
         rm = ttk.Frame(ret)
         rm.pack(anchor="w", pady=(0, 2))
         ttk.Label(rm, text="Then:").pack(side="left")
         for val, text, t in (
                 ("archive", "Archive, then delete",
-                 "Copies old listings into the archive file first, then removes them from your "
-                 "price database. Nothing is lost; the archive keeps growing."),
+                 "Moves old listings to the archive file."),
                 ("delete", "Delete", "Removes old listings for good."),
-                ("keep", "Keep everything", "Never removes anything (the database keeps growing).")):
+                ("keep", "Keep everything", "Never removes anything.")):
             rb = ttk.Radiobutton(rm, text=text, value=val, variable=mode_var)
             rb.pack(side="left", padx=(8, 0))
             tip(t, rb)
@@ -2734,8 +2695,7 @@ class App:
                 arch_var.set(d)
         bb = ttk.Button(r2, text="Browse…", command=browse)
         bb.pack(side="left", padx=(6, 0))
-        tip(f"Where {mfm.ARCHIVE_NAME} is kept (one file, added to on every cleanup). "
-            "Any folder works, e.g. another drive.", ea, bb)
+        tip(f"The folder for {mfm.ARCHIVE_NAME}.", ea, bb)
         r3 = ttk.Frame(ret)
         r3.pack(fill="x", pady=(3, 0))
         size_lbl = ttk.Label(r3, foreground="#666")
@@ -2773,8 +2733,7 @@ class App:
                 self.run_retention(cfg=c, done=show_size)
         bc = ttk.Button(r3, text="Clean up now", command=clean_now)
         bc.pack(side="left")
-        tip("Archives and/or deletes listings older than the days above right away (uses this "
-            "form's choices; with Keep everything selected it archives).", bc)
+        tip("Cleans up old listings now.", bc)
         size_lbl.pack(side="left", padx=(8, 0))
         keep_var.trace_add("write", lambda *a: show_size())
         show_size()
@@ -2782,16 +2741,13 @@ class App:
         save_caps = tk.BooleanVar(value=self.cfg.get("save_captures", False))
         cb = ttk.Checkbutton(win, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
         cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
-        tip("Keeps a picture of every screen read in the data folder, to check what the app saw. "
-            "Uses disk space; leave off normally.", cb)
+        tip("Saves a picture of every screen read, for troubleshooting. Leave off normally.", cb)
         # ---- channel picker (under data retention)
         chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", True))
         cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
                              variable=chan_prompt)
         cb.grid(row=5, column=2, sticky="w", padx=(0, 12), pady=4)
-        tip("Shows the channel picker when the app opens, and each time you change channel in the "
-            "game (once the game's Change Channel window has closed). The channel you pick is "
-            "saved with the listings you see.", cb)
+        tip("Asks for your channel when the app opens and after you change channel in the game.", cb)
         rc = ttk.Frame(win)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
         chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
@@ -2799,16 +2755,14 @@ class App:
         lc.pack(side="left")
         sc = ttk.Spinbox(rc, from_=1, to=100, increment=1, width=6, textvariable=chan_count)
         sc.pack(side="left", padx=8)
-        tip("How many channel buttons the picker shows (1-100), e.g. your world's channel count. "
-            "Any channel up to 100 can still be typed in.", lc, sc)
+        tip("How many channel buttons the picker shows.", lc, sc)
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
         cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
                              variable=outliers_on)
         cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
-        tip("Leaves out absurd prices when working out an item's market price, once it has enough "
-            "sightings.", cb)
+        tip("Leaves troll prices and misreads out of the market price.", cb)
         ttk.Label(win, foreground="#777", justify="left", text=(
-            "Measured from the item's median price.\n200% ceiling = more than 3x the median;\n"
+            "200% ceiling = more than 3x the usual price.\n"
             "75% floor = less than 1/4 of it.")).grid(row=len(fields) - 2, column=2, rowspan=2,
                                                        sticky="nw", padx=(0, 12))
 
@@ -2823,8 +2777,8 @@ class App:
             if c["retention"] != "keep" and c["keep_days"] < int(self.cfg.get("history_days", 14)):
                 if not messagebox.askyesno(
                         "Data retention", f"Keeping listings for {c['keep_days']} days is shorter than "
-                        f"the market price window ({self.cfg.get('history_days', 14)} days), so market "
-                        "prices will use less data.\n\nSave anyway?", parent=win):
+                        f"the market price window ({self.cfg.get('history_days', 14)} days).\n\n"
+                        "Save anyway?", parent=win):
                     return
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
@@ -2848,9 +2802,9 @@ class App:
             self._set_status("Shop and map areas will be found automatically.")
         b = ttk.Button(win, text="Auto Detection", command=reset_auto)
         b.grid(row=len(fields) + 1, column=0, sticky="w", padx=12, pady=(8, 0))
-        tip("Go back to finding the shop and minimap automatically.", b)
+        tip("Find the shop and minimap automatically again.", b)
         ttk.Label(win, foreground="#666", wraplength=620, justify="left", text=(
-            "Forgets manually captured areas and uses auto detection for Shop and Map areas."
+            "Forgets the shop and map areas you drew and finds them automatically."
             )).grid(row=len(fields) + 1, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=(8, 0))
         self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
                                         padx=12, pady=(12, 0))
@@ -2864,18 +2818,17 @@ class App:
         b2.pack(side="left", padx=6)
         b3 = ttk.Button(danger, text="Open data folder", command=self.open_data_folder)
         b3.pack(side="left")
-        tip("Deletes every price you've recorded (asks twice, and keeps a backup first).", b1)
-        tip("Lets you pick what to clear: settings, alerts, ignore list, manual matches (asks "
-            "twice, keeps a backup). Prices are kept.", b2)
-        tip("Opens the folder with your prices, settings, backups and downloaded game data.", b3)
+        tip("Deletes all your prices (a backup is kept).", b1)
+        tip("Choose settings, alerts or other lists to reset. Prices are kept.", b2)
+        tip("Opens the folder with your prices and settings.", b3)
         b6 = ttk.Button(bottom, text="About", command=lambda: self.about(win))
-        tip("Version and credits: the data sources and open-source software this app is built on.", b6)
+        tip("Version and credits.", b6)
         b4 = ttk.Button(bottom, text="Cancel", command=win.destroy)
         b4.pack(side="right", anchor="s")
         b5 = ttk.Button(bottom, text="Save", command=save)
         b5.pack(side="right", anchor="s", padx=6)
         b6.pack(side="right", anchor="s", padx=(0, 12))
-        tip("Saves the numbers and checkboxes above. (Game data options take effect right away.)", b5)
+        tip("Saves your settings.", b5)
 
     def about(self, parent=None):
         import webbrowser
@@ -2980,9 +2933,8 @@ class App:
         c = tk.Canvas(win, background="white", highlightthickness=0, height=260)
         c.pack(fill="both", expand=True, padx=12, pady=10)
         hint = ttk.Label(win, padding=(12, 0), justify="left", text=(
-            "Sightings, cheapest first. Right-click a listing to change its price or channel, "
-            "or to delete it; pick several with " + ("Option+click" if MAC else "Alt+click")
-            + " to change them together. Double-click changes the price."))
+            "Right-click a sighting to change its price or channel, or delete it. "
+            + ("Option+click" if MAC else "Alt+click") + " selects several."))
         hint.pack(anchor="w", fill="x")
         hint.bind("<Configure>", lambda e: hint.config(wraplength=max(e.width - 24, 200)))
         table = make_tree(win, ("each", "status", "shop", "player", "map", "channel", "time"))
@@ -3011,7 +2963,7 @@ class App:
             legend.config(text="dots = for sale    grey squares = sold    dashed line = market"
                           + ("    hollow orange = outlier (ignored)" if any(out) else "")
                           + (f"\nnormal range {mfm.fmt(bounds[0])} – {mfm.fmt(bounds[1])}; "
-                             "prices outside it are ignored for the market rate" if bounds else ""))
+                             "prices outside it are left out of the market price" if bounds else ""))
             keep = set(table.selection())
             table.delete(*table.get_children())
             for ts, each, shop, seller, mp, channel, qty, sold, lid in sorted(rows, key=lambda r: (r[7], r[1])):

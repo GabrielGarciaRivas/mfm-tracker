@@ -373,10 +373,8 @@ def grab_full_screen() -> Image.Image:
             LAST_SCREEN_SIZE[:] = img.size
             return img
     sys.exit(
-        "No Wayland screenshot tool found. Install one:\n"
-        "  sudo pacman -S grim          (Hyprland/Sway)\n"
-        "  sudo pacman -S spectacle     (KDE)\n"
-        "  sudo pacman -S gnome-screenshot (GNOME)"
+        "No screenshot tool found. Install the one for your desktop:\n"
+        "  grim (Hyprland, Sway), spectacle (KDE) or gnome-screenshot (GNOME)"
     )
 
 
@@ -2249,8 +2247,7 @@ def update_items_meowdb(progress=None, full: bool = False, force: bool = False) 
                 # items before this page were removed or added in the middle, so the
                 # pages no longer line up with our copy: refresh fully next time
                 st["last_full"] = None
-                res.message = ("meowdb's list changed earlier in the list; "
-                               "a full refresh will run at the next check.")
+                res.message = "The whole item list will be downloaded at the next update."
             res.items_new += add([it for it in batch if int(it.get("id") or 0) > known_max], recs)
             if progress:
                 progress(len(recs))
@@ -4687,10 +4684,9 @@ def hotkey(channel, cfg) -> None:
     try:
         from pynput import keyboard
     except ImportError:
-        sys.exit("`hotkey` needs pynput, which isn't installed. On Linux it's optional because it\n"
-                 "has to be compiled: install a C compiler and your kernel headers (e.g.\n"
-                 "`sudo apt install build-essential linux-libc-dev`), then `pip install pynput`.\n"
-                 "Or use `mfm-tracker watch` / the GUI, which don't need it.")
+        sys.exit("`hotkey` needs pynput: run `pip install pynput` (on Linux, install a C compiler\n"
+                 "and kernel headers first, e.g. `sudo apt install build-essential linux-libc-dev`).\n"
+                 "Or use `mfm-tracker watch` or the app.")
 
     key_name = cfg["hotkey"].lower()
     target = getattr(keyboard.Key, key_name, None) or keyboard.KeyCode.from_char(key_name)
@@ -4988,7 +4984,7 @@ tr.deal td:nth-child(6){{color:var(--deal);font-weight:600}} tr.high td:nth-chil
 tr.deal svg{{color:var(--deal)}} tr.high svg{{color:var(--high)}} tr.fair svg,tr.unknown svg{{color:var(--mut)}}
 </style>
 <h1>Free Market prices</h1>
-<p>Generated {datetime.now():%Y-%m-%d %H:%M}. Cheapest listing in the last 24 hours and where it was. Deal threshold &plusmn;{cfg['deal_threshold_pct']}%. Prices are per unit.</p>
+<p>Generated {datetime.now():%Y-%m-%d %H:%M}. Cheapest listing in the last 24 hours and where it was. Deal threshold &plusmn;{cfg['deal_threshold_pct']}%.</p>
 <table><tr><th>Item</th><th class=n>Cheapest</th><th>Where</th><th class=n>Market</th><th class=n>Diff</th><th>Verdict</th>
 <th class=n>Low</th><th class=n>High</th><th class=n>Seen</th><th>Trend</th><th>Market source</th></tr>
 {''.join(rows_html)}</table>"""
@@ -5082,7 +5078,7 @@ def main() -> None:
     sp.add_argument("--full", action="store_true", help="re-download everything (rarely needed)")
     sp.add_argument("--force", action="store_true", help="check now even if checked recently")
     sp.add_argument("--icons", action="store_true",
-                    help="also download every item icon not here yet (~2 per second)")
+                    help="also download every item icon not here yet")
     sub.add_parser("fetch-icons", help="download official meowdb icons for every item you've logged")
     sp = sub.add_parser("prune", help="archive and/or delete listings older than the retention setting")
     sp.add_argument("--days", type=int, help="override keep_days")
