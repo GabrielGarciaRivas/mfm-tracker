@@ -5,6 +5,8 @@ local database, and tells you whether each listing is a **DEAL**, **fair**, or *
 compared with market rate. It only reads pixels from your screen; it never touches
 the game client, memory, or network traffic.
 
+What changed in each version: [CHANGELOG.md](CHANGELOG.md).
+
 ## The app (no install)
 
 **Windows:** `Free Market Tracker.exe`. **macOS:** `Free Market Tracker.app`. **Linux:**

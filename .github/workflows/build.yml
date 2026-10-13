@@ -96,18 +96,42 @@ jobs:
           cd out
           chmod +x "Free Market Tracker (Linux)/Free Market Tracker"
           tar -czf "Free Market Tracker (Linux).tar.gz" "Free Market Tracker (Linux)"
+      - uses: actions/checkout@v4
+        with:
+          path: src
+          sparse-checkout: CHANGELOG.md
+      - name: Release notes (downloads + this version's CHANGELOG section)
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["TAG"].lstrip("v")
+          try:
+              text = open("src/CHANGELOG.md", encoding="utf-8").read()
+          except OSError:
+              text = ""
+          m = re.search(r"^## " + re.escape(tag) + r"\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
+          notes = m.group(1).strip() if m else ""
+          downloads = """## Downloads
+          - **Windows:** `Free Market Tracker.exe`. Double-click it. The first time, SmartScreen may say "Windows protected your PC": click **More info → Run anyway** (the app isn't code-signed).
+          - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip, drag the app to Applications, then right-click it → **Open** the first time (it isn't notarized by Apple). Allow **Screen Recording** when asked, then quit and reopen the app.
+          - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker` (or run `./"Free Market Tracker"`).
+
+          Nothing else needs to be installed. See the README for how to use it.
+          """
+          downloads = "\n".join(line.strip() if line.strip().startswith(("-", "#", "Nothing")) else line
+                                for line in downloads.splitlines())
+          body = (("## What's new\n\n" + notes + "\n\n") if notes else "") + downloads
+          open("notes.md", "w", encoding="utf-8").write(body)
+          print(body)
+          PY
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           name: Free Market Tracker ${{ inputs.release_tag || github.ref_name }}
-          body: |
-            ## Downloads
-            - **Windows:** `Free Market Tracker.exe`. Double-click it. The first time, SmartScreen may say "Windows protected your PC": click **More info → Run anyway** (the app isn't code-signed).
-            - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip, drag the app to Applications, then right-click it → **Open** the first time (it isn't notarized by Apple). Allow **Screen Recording** when asked, then quit and reopen the app.
-            - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker` (or run `./"Free Market Tracker"`).
-
-            Nothing else needs to be installed. See the README for how to use it.
+          body_path: notes.md
           files: |
             out/**/Free Market Tracker.exe
             out/**/Free Market Tracker (macOS).zip
