@@ -9,6 +9,7 @@ it's in.
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 import queue
 import threading
@@ -119,31 +120,39 @@ def apply_fonts(root) -> str:
     return fam
 
 COLS = ("item", "each", "market", "diff", "verdict")
-HEAD = {"item": "Item", "qty": "Qty", "each": "Price / ea", "market": "Market",
-        "diff": "Diff", "verdict": "Verdict", "shop": "Shop name", "map": "Map", "channel": "Channel",
-        "best_shop": "Cheapest at", "best_map": "Map", "best_channel": "Channel",
+HEAD = {"item": "Item", "each": "Price", "market": "Market",
+        "diff": "Diff", "verdict": "Verdict", "shop": "Shop", "player": "Player", "map": "Map",
+        "channel": "Channel", "best_shop": "Shop", "best_player": "Player", "best_map": "Map",
+        "best_channel": "Channel",
         "time": "Time", "low": "Low", "high": "High", "seen": "Seen",
         "source": "Source", "best": "Cheapest", "best_where": "Cheapest at",
         "status": "Status", "listed_med": "Listed med.", "sold_med": "Sold med.",
         "listed_n": "Listed", "sold_n": "Sold", "total": "Bundle price",
-        "max_each": "Max price / ea", "last_price": "Last price",
+        "max_each": "Max price", "last_price": "Last price",
         "saved": "Saved",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
-WIDTH = {"item": 170, "qty": 45, "each": 90, "market": 90, "diff": 55, "verdict": 65,
-         "shop": 165, "map": 262, "channel": 66, "best_shop": 165, "best_map": 262, "best_channel": 66,
+WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
+         "shop": 140, "player": 100, "map": 265, "channel": 72,
+         "best_shop": 140, "best_player": 100, "best_map": 265, "best_channel": 72,
          "time": 126, "low": 95, "high": 95, "seen": 50, "source": 110,
-         "best": 90, "best_where": 230, "status": 70, "listed_med": 95, "sold_med": 90,
+         "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100,
          "saved": 110, "suggest": 260, "score": 60, "count": 65, "raw": 300}
-NUMERIC = {"qty", "each", "market", "diff", "low", "high", "seen", "best", "listed_med",
+NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price"}
 CENTER = {"channel", "best_channel"}
 
 
 def shop_text(shop, seller) -> str:
-    """Shop name column: "Title (Seller)"."""
+    """ "Title (Seller)", for one-line summaries (status bar, recent shops)."""
     return mfm.ShopFrame([], shop or "", seller or "").shop
+
+
+def split_shop(text: str) -> tuple[str, str]:
+    """ "Title (Seller)" (saved by older versions) -> ("Title", "Seller")."""
+    m = re.fullmatch(r"(.*?)\s*\(([^()]*)\)\s*", text or "")
+    return (m.group(1), m.group(2)) if m else (text or "", "")
 
 
 def where_text(shop, seller, mp, channel) -> str:
@@ -714,7 +723,7 @@ class App:
         self.show_outliers = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Show outliers", variable=self.show_outliers,
                         command=self.refresh_tables).pack(side="right", padx=10)
-        self.deals = make_tree(deals, COLS + ("status", "shop", "map", "channel", "time"))
+        self.deals = make_tree(deals, COLS + ("status", "shop", "player", "map", "channel", "time"))
         self.deals.frame.pack(fill="both", expand=True)
         self.deals.bind("<Double-1>", lambda e: self.open_history(self.deals))
 
@@ -735,7 +744,8 @@ class App:
                   text=" = not matched to any item in the database (check the spelling, or it may be new). "
                        "The Review tab lists them all with suggested matches."
                   ).pack(side="left")
-        self.items = make_tree(items, ("item", "best", "best_shop", "best_map", "best_channel", "listed_med", "listed_n",
+        self.items = make_tree(items, ("item", "best", "best_shop", "best_player", "best_map", "best_channel",
+                                       "listed_med", "listed_n",
                                        "sold_med", "sold_n", "market", "source"))
         self.items.frame.pack(fill="both", expand=True)
         self.items.bind("<Double-1>", lambda e: self.open_history(self.items))
@@ -813,8 +823,11 @@ class App:
     def on_session(self, p):
         self.live.delete(*self.live.get_children())
         self.scopes = {k: v for k, v in self.scopes.items() if k[0] != str(self.live)}
+        shop = (" · ".join(x for x in (p.get("title") and f"Shop: {p['title']}",
+                                        p.get("seller") and f"Player: {p['seller']}") if x)
+                or p["shop"])
         self.shop_title.config(text="  ·  ".join(x for x in (
-            p["shop"], p["map"], f"opened {p['started']:%H:%M:%S}") if x))
+            shop, p["map"], f"opened {p['started']:%H:%M:%S}") if x))
         self.last_map = p["map"] or self.last_map
         self._update_stats(None, None)
         self.shops_today += 1
@@ -854,8 +867,9 @@ class App:
                 self.root.bell()
         where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
         self._set_status(f"Alert: {s.item} for {mfm.fmt(s.each)} each at {where}")
-        w["last_found"] = {"each": s.each, "shop": s.shop, "map": s.map, "channel": s.channel,
-                           "time": s.first_seen}
+        title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
+        w["last_found"] = {"each": s.each, "shop": title, "player": player, "map": s.map,
+                           "channel": s.channel, "time": s.first_seen}
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         if self.cfg.get("alert_raise", True):
@@ -868,7 +882,8 @@ class App:
     def on_closed(self, p):
         n = p["count"]
         deals = sum(1 for k in self.live.get_children() if "deal" in self.live.item(k, "tags"))
-        self.recent.insert(0, f"{datetime.now():%H:%M}  {p['shop']}"
+        label = " · ".join(x for x in (p.get("title"), p.get("seller")) if x) or p["shop"]
+        self.recent.insert(0, f"{datetime.now():%H:%M}  {label}"
                               + (f" @ {p['map']}" if p["map"] else "") + f"  — {n} items"
                               + (f", {p['sold']} sold" if p.get("sold") else "")
                               + (f", {deals} deal{'s' if deals != 1 else ''}" if deals else ""))
@@ -1071,7 +1086,8 @@ class App:
         self.refresh_alerts()
         self.refresh_ignored()
         self.refresh_review()
-        row_key = lambda t, k: tuple(t.set(k, c) for c in ("item", "each", "status", "shop", "map", "channel"))
+        row_key = lambda t, k: tuple(t.set(k, c) for c in ("item", "each", "status", "shop", "player", "map",
+                                                           "channel"))
         restore_deals = self._keep_selection(self.deals, row_key)
         restore_items = self._keep_selection(self.items, lambda t, k: t.set(k, "item"))
         try:
@@ -1088,7 +1104,7 @@ class App:
         scored = []
         bounds: dict[str, object] = {}
         for item, price, qty, shop, seller, mp, channel, sold, ts in rows:
-            each = price / max(qty, 1)
+            each = price
             mkt, _ = mfm.market_rate(con, item, cfg)
             if item not in bounds:
                 bounds[item] = mfm.outlier_bounds(con, item, cfg)
@@ -1100,7 +1116,7 @@ class App:
             if item in self.ignored and not self.show_ignored.get():
                 continue
             scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
-                           (shop_text(shop, seller), mp or "", channel or ""), ts, price, shop, seller))
+                           (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller))
         scored.sort()
         self.deals.delete(*self.deals.get_children())
         self.scopes = {k: v for k, v in self.scopes.items() if k[0] != str(self.deals)}
@@ -1130,7 +1146,7 @@ class App:
             found = bool(b) and bool(mfm.watch_match(self.watch, item, b[0]))
             self.items.insert("", "end", image=self.icon_for(item, found=found),
                               tags=(tag,) + (("watch",) if found else ()), values=(
-                item, mfm.fmt(b[0]) if b else "-", shop_text(b[1], b[2]) if b else "",
+                item, mfm.fmt(b[0]) if b else "-", (b[1] or "") if b else "", (b[2] or "") if b else "",
                 (b[3] or "") if b else "", (b[4] or "") if b else "",
                 mfm.fmt(st["listed_median"]), st["listed_n"],
                 mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt), src))
@@ -1149,14 +1165,14 @@ class App:
         self.alert_entry = ItemSearch(add, self, width=42, on_return=lambda: self.alert_max_entry.focus_set())
         self.alert_entry.pack(side="left", padx=4)
         self.alert_item = self.alert_entry.var
-        ttk.Label(add, text="Max price / ea:").pack(side="left", padx=(10, 0))
+        ttk.Label(add, text="Max price:").pack(side="left", padx=(10, 0))
         self.alert_max = tk.StringVar()
         self.alert_max_entry = ttk.Entry(add, textvariable=self.alert_max, width=12)
         self.alert_max_entry.pack(side="left", padx=4)
         self.alert_max_entry.bind("<Return>", lambda e: self.add_alert_from_form())
         ttk.Button(add, text="Add alert", command=self.add_alert_from_form).pack(side="left", padx=4)
 
-        self.alerts = make_tree(tab, ("item", "max_each", "last_price", "shop", "map", "channel", "time"))
+        self.alerts = make_tree(tab, ("item", "max_each", "last_price", "shop", "player", "map", "channel", "time"))
         self.alerts.frame.pack(fill="both", expand=True, pady=6)
         self.alerts.bind("<Double-1>", lambda e: self.open_history(self.alerts))
         self._list_menu(self.alerts, [
@@ -1196,7 +1212,10 @@ class App:
             self.alerts.insert("", "end", image=self.icon_for(w["item"], found=bool(lf)), values=(
                 w["item"], mfm.fmt(w["max_each"]) if w.get("max_each") not in (None, "") else "any",
                 mfm.fmt(lf["each"]) if lf else "not seen yet",
-                lf.get("shop") or "", lf.get("map") or "", lf.get("channel") or "",
+                *((lf.get("shop") or "", lf.get("player") or "") if "player" in lf
+                  else split_shop(lf.get("shop") or "")),
+                (lf.get("map") if ": " in (lf.get("map") or "") else mfm.snap_map(lf.get("map") or "")),
+                lf.get("channel") or "",
                 mfm.local_time(lf["time"]) if lf.get("time") else ""))
         restore()
         snd = self.cfg.get("alert_sound")
@@ -1267,7 +1286,7 @@ class App:
             cur = mfm.fmt(w["max_each"]) if w and w.get("max_each") not in (None, "") else ""
         raw = ask_value(self.root, "Max price",
                         (f"Alert me when '{items[0]}' is for sale at or below:" if len(items) == 1 else
-                         f"Max price per item for these {len(items)} alerts:")
+                         f"Max price for these {len(items)} alerts:")
                         + "\n(e.g. 45000, 45,000 or 45k; empty = any price)", cur,
                         check=lambda t: not t.strip() or (mfm.parse_price(t) or 0) > 0)
         if raw is None:
@@ -1299,7 +1318,7 @@ class App:
         from tkinter import simpledialog
         what = f"'{items[0]}'" if len(items) == 1 else f"any of these {len(items)} items"
         raw = simpledialog.askstring("Alert", f"Alert me when {what} is for sale.\n\n"
-                                     "Max price per item (leave empty for any price"
+                                     "Max price (leave empty for any price"
                                      + (", applies to each" if len(items) > 1 else "") + "):",
                                      parent=self.root)
         if raw is None:
@@ -1876,7 +1895,7 @@ class App:
             ("items", "Item list", status_items,
              "Corrects the OCR's spelling of item names, lists the items you can pick in "
              "Alerts, Ignored, Match and the Review tab, links each item to its NiaMeowDB page, shows icons, "
-             "and tells which items are throwing stars (always priced as quantity 1).",
+             "and gives each item's category.",
              "Files: cache/items.txt (names), meowdb_items.json (database copy: id, name, "
              "category, icon), item_ids.json, item_types.json, item_icons.json; "
              "icons in cache/icons.db"),
@@ -1944,7 +1963,7 @@ class App:
         if messagebox.askyesno(
                 "Update item list",
                 "Re-download the item and map lists from NiaMeowDB (meowdb.com)? This version also "
-                "saves item categories (throwing stars always count as quantity 1) and the map list, "
+                "saves item categories and the map list, "
                 "which is used to "
                 "correct misread map names like 'Free Marker <8>'."):
             self.download_meowdb()
@@ -2236,7 +2255,7 @@ class App:
             "sold medians, cheapest listing.\nThe first columns are item,price,source, so it can be "
             "imported again with Import prices.")).pack(anchor="w", padx=14, pady=2)
         ttk.Radiobutton(win, variable=kind, value="listings", text=(
-            "Every sighting: date, item, quantity, price, sold or for sale, shop, seller, map, channel."
+            "Every sighting: date, item, price, sold or for sale, shop, player, map, channel."
         )).pack(anchor="w", padx=14, pady=2)
 
         def go():
@@ -2625,7 +2644,7 @@ class App:
             return
         win = tk.Toplevel(self.root)
         win.title(item)
-        win.geometry("760x640")
+        win.geometry("1000x660")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
         head.pack(fill="x")
         ttk.Label(head, text="  " + item, image=self.icon_for(item, 48), compound="left",
@@ -2647,7 +2666,7 @@ class App:
             + " to change them together. Double-click changes the price."))
         hint.pack(anchor="w", fill="x")
         hint.bind("<Configure>", lambda e: hint.config(wraplength=max(e.width - 24, 200)))
-        table = make_tree(win, ("each", "status", "shop", "map", "channel", "time"))
+        table = make_tree(win, ("each", "status", "shop", "player", "map", "channel", "time"))
         table.column("#0", width=0, minwidth=0)   # one item: no per-row icon needed
         table.column("status", width=130)
         table.frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
@@ -2656,7 +2675,7 @@ class App:
         def load():
             """(Re)read the item's listings and refresh every part of the window."""
             rows = self.con.execute(
-                "SELECT COALESCE(sold_ts, ts), price*1.0/MAX(qty, 1), shop, seller, map, channel, qty, "
+                "SELECT COALESCE(sold_ts, ts), price, shop, seller, map, channel, qty, "
                 "COALESCE(sold, 0), id FROM listings WHERE item = ? ORDER BY COALESCE(sold_ts, ts)",
                 (item,)).fetchall()
             if not rows:
@@ -2683,7 +2702,7 @@ class App:
                 table.insert("", "end", iid=str(lid), tags=(tag,), values=(
                     mfm.fmt(each), "outlier" if v == "OUTLIER" else ("sold" if sold else "for sale")
                     + (" (very low)" if low else ""),
-                    shop_text(shop, seller), mp or "", channel or "", mfm.local_time(ts)))
+                    shop or "", seller or "", mp or "", channel or "", mfm.local_time(ts)))
             table.selection_set([k for k in keep if table.exists(k)])
             draw()
 
@@ -2701,8 +2720,8 @@ class App:
                 return
             cur = table.set(str(ids[0]), "each") if len(ids) == 1 else ""
             raw = ask_value(win, "Change price",
-                            ("New price per item for this listing" if len(ids) == 1 else
-                             f"New price per item for these {len(ids)} listings")
+                            ("New price for this listing" if len(ids) == 1 else
+                             f"New price for these {len(ids)} listings")
                             + " (e.g. 45000, 45,000 or 45k):", cur,
                             check=lambda t: (mfm.parse_price(t) or 0) > 0)
             if raw is None:

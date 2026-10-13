@@ -85,8 +85,8 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.8.000"
-CODENAME = "fullmaps"
+VERSION = "2610.9.000"
+CODENAME = "noqty"
 
 DATA = data_dir()
 # Three kinds of data, kept apart so each can be exported, backed up or cleared
@@ -296,6 +296,10 @@ def db() -> sqlite3.Connection:
                      ("sold", "INTEGER DEFAULT 0"), ("last_seen", "TEXT"), ("sold_ts", "TEXT")):
         if col not in cols:  # upgrade older databases in place
             con.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
+    if con.execute("SELECT 1 FROM listings WHERE qty != 1 LIMIT 1").fetchone():
+        # 2610.9: no more quantities: a listing's price is the meso amount shown
+        con.execute("UPDATE listings SET qty = 1 WHERE qty != 1")
+        con.commit()
     if con.execute("PRAGMA main.user_version").fetchone()[0] < 2:
         # 2610.8: map names are "Area: Zone" ("Hidden Street: Free Market <2>"); give the
         # zone-only names saved before their area, once a map list is available to look it up
@@ -606,19 +610,20 @@ class ShopFrame:
         return self.title or self.seller
 
 
-# "1 for 39,999 mesos" -- tolerant of OCR gluing words ("1for"), 0/o swaps, and
-# a mangled or missing "mesos"
+# "1 for 39,999 mesos" -- the price is the number before "mesos"; whatever comes
+# before "for" (a quantity) is ignored. Tolerant of OCR gluing words ("1for"),
+# 0/o swaps, a garbled quantity, and a mangled or missing "mesos"
 # The price must be followed by "mesos" (or a misread like "rnesos") or the end of
 # the line. A faded "4,000" often OCRs as "4{HH}"; without this, "4" would pass.
 PRICE_LINE_RE = re.compile(
-    r"(?<![A-Za-z])([\dlIL|]{1,4})\s*[il|'‘]?\s*f[o0ce]r\s*(\d[\d,.]*\d|\d)(?![\d,.]*\d)"
+    r"(?<![A-Za-z])([\dlILSsOoBZ|]{1,5})?\s*[il|'‘]?\s*f[o0ce]r\s*(\d[\d,.]*\d|\d)(?![\d,.]*\d)"
     r"(?=\s*(?:(?:m|rn)[a-z0-9]{2,6}\b|$))", re.I)
 
 
 def qty_of(m) -> int:
-    """Quantity from a price-line match; OCR sometimes reads a 1 as l, I, L or |."""
-    q = m.group(1).translate(str.maketrans({"l": "1", "I": "1", "L": "1", "|": "1"}))
-    return int(q) if q.isdigit() else 1
+    """Quantities aren't used: a listing's price is the meso amount shown, whatever
+    "XX for" says. Kept as 1 so older code paths and databases stay compatible."""
+    return 1
 MESO_BOX_RE = re.compile(r"^\d{1,3}(?:[,.]\d{3})+$|^\d{4,}$")
 JUNK_TOKEN_RE = re.compile(r"^[\W_]*\w?[\W_]+$|^[\W_]+$")
 # short tokens with bracket-ish characters are icon / scrollbar crumbs: "[J", "&)", "(4)"
@@ -1445,8 +1450,6 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     listings = [l for _, l in sorted(found, key=lambda t: t[0])]
     for l in listings:
         l.item = resolve_name(l.item, l.icon, l.sold)
-        if l.qty != 1 and is_throwing_star(l.item):
-            l.qty = 1   # "699 for 222,222" is one set of stars for 222,222
     frame = ShopFrame(listings, geom=geom, hidden=len(skipped))
     if with_title and listings:
         frame.title = read_title(img, cfg)
@@ -3359,7 +3362,8 @@ def _dict() -> "_Dictionary":
 
 # ---- watchlist alerts ---------------------------------------------------------
 WATCH_PATH = SETTINGS_DIR / "watchlist.json"
-# [{"item", "max_each" (or null), "last_found": {"each", "shop", "map", "channel", "time" (UTC)}}]
+# [{"item", "max_each" (or null),
+#   "last_found": {"each", "shop", "player", "map", "channel", "time" (UTC)}}]
 PING_PATH = CACHE_DIR / "ping.wav"
 
 
@@ -3482,8 +3486,8 @@ def outlier_bounds(con, item: str, cfg: dict) -> tuple[float, float] | None:
     if not cfg.get("outliers_on", True):
         return None
     since = utc_ago(days=cfg["history_days"])
-    unit = [p / max(q, 1) for p, q in con.execute(
-        "SELECT price, qty FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
+    unit = [p for (p,) in con.execute(
+        "SELECT price FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
         (item, since))]
     if len(unit) < max(3, int(cfg.get("outlier_min_n", 5))):
         return None
@@ -3507,7 +3511,7 @@ def price_stats(con, item: str, cfg: dict, bounds="auto") -> dict:
     for price, qty, is_sold in con.execute(
             "SELECT price, qty, COALESCE(sold, 0) FROM listings "
             "WHERE item = ? AND COALESCE(last_seen, ts) >= ?", (item, since)):
-        each = price / max(qty, 1)
+        each = price
         if is_outlier(each, bounds):
             out += 1
             continue
@@ -3522,7 +3526,7 @@ def price_stats(con, item: str, cfg: dict, bounds="auto") -> dict:
 
 
 def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
-    """What an item is worth, per unit, in order of preference:
+    """What an item is worth, in order of preference:
     1. a reference price you imported (e.g. from meso.watch)
     2. the median price it has actually SOLD for (2+ sales seen)
     3. the median of everything seen, listed and sold (3+ sightings)"""
@@ -3535,9 +3539,9 @@ def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     if st["sold_n"] >= 2:
         return st["sold_median"], f"median of {st['sold_n']} sold{skipped}"
     since = utc_ago(days=cfg["history_days"])
-    unit = [e for e in (p / max(q, 1) for p, q in con.execute(
-        "SELECT price, qty FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
-        (item, since))) if not is_outlier(e, bounds)]
+    unit = [p for (p,) in con.execute(
+        "SELECT price FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
+        (item, since)) if not is_outlier(p, bounds)]
     if len(unit) >= 3:
         return int(statistics.median(unit)), f"median of {len(unit)} seen{skipped}"
     return None, "not enough data"
@@ -3572,9 +3576,9 @@ def cheapest(con, hours: int = 24, cfg: dict | None = None) -> dict[str, tuple]:
     best: dict[str, tuple] = {}
     bounds: dict[str, object] = {}
     for item, each, shop, seller, mp, channel, ts in con.execute(
-            "SELECT item, price*1.0/qty, shop, seller, map, channel, COALESCE(last_seen, ts) "
+            "SELECT item, price, shop, seller, map, channel, COALESCE(last_seen, ts) "
             "FROM listings WHERE COALESCE(last_seen, ts) >= ? AND COALESCE(sold, 0) = 0 "
-            "ORDER BY price*1.0/qty, COALESCE(last_seen, ts) DESC", (since,)):
+            "ORDER BY price, COALESCE(last_seen, ts) DESC", (since,)):
         if item in best:
             continue
         if cfg is not None:
@@ -3616,7 +3620,7 @@ def _same_shop(row_title, row_seller, row_map, title, seller, mp) -> bool:
 
 def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, session, ts: str) -> str:
     """Save a sighting, unless it's already in the database. Returns "new", "seen"
-    (already logged: same item, quantity, price, shop name, player name and map
+    (already logged: same item, price, shop name, player name and map
     within the last 24 hours, whatever the channel; only its last-seen time is
     updated) or "sold" (it was logged for sale within the last 7 days and is
     faded now: that row is marked sold instead of adding a second one)."""
@@ -3754,11 +3758,11 @@ def delete_listings(con, ids) -> int:
 
 def set_listing_price(con, ids, each: int) -> int:
     """Correct the price of listings (by id). `each` is per item, like everywhere
-    in the app; the stored bundle price follows it (qty x each)."""
+    in the app."""
     if not ids or each is None or each <= 0:
         return 0
     marks, ids = _ids_sql(ids)
-    n = con.execute(f"UPDATE listings SET price = ? * MAX(qty, 1) WHERE id IN ({marks})",
+    n = con.execute(f"UPDATE listings SET price = ?, qty = 1 WHERE id IN ({marks})",
                     [int(each)] + ids).rowcount
     con.commit()
     return n
@@ -3831,15 +3835,15 @@ def print_listings(con, listings: list[Listing], cfg: dict, header=True) -> None
     if sys.platform == "win32":
         os.system("")  # enables ANSI colours in Windows Terminal / conhost
     if header:
-        print(f"{'item':34} {'qty':>4} {'price/ea':>14} {'market':>14} {'diff':>8}  verdict")
+        print(f"{'item':34} {'price':>14} {'market':>14} {'diff':>8}  verdict")
     for l in listings:
-        each = l.price / max(l.qty, 1)
+        each = l.price
         mkt, _ = market_rate(con, l.item, cfg)
         v, pct = verdict(each, mkt, cfg["deal_threshold_pct"], outlier_bounds(con, l.item, cfg))
         diff = f"{pct:+.0f}%" if pct is not None else ""
         if l.sold:
             v, colors["SOLD"] = "SOLD", "\033[90m"
-        print(f"{colors[v]}{l.item[:34]:34} {l.qty:>4} {fmt(each):>14} {fmt(mkt):>14} {diff:>8}  {v}{reset}")
+        print(f"{colors[v]}{l.item[:34]:34} {fmt(each):>14} {fmt(mkt):>14} {diff:>8}  {v}{reset}")
 
 
 # --------------------------------------------------------------------------- modes
@@ -3868,6 +3872,8 @@ class SeenListing:
     sold: bool = False
     status: str = "new"     # new / seen (logged on an earlier visit) / sold (sold since)
     channel: str | None = None
+    title: str = ""         # the shop's own name
+    seller: str = ""        # the player selling
 
 
 class Monitor:
@@ -3946,6 +3952,7 @@ class Monitor:
                 self.on_event("error", f"map read failed: {e}")
         self._read_header(img)
         self.on_event("session", {"id": self.session_id, "shop": self.shop_name(),
+                                  "title": self.title or "", "seller": self.seller or "",
                                   "map": self.map, "started": datetime.now()})
 
     def _read_header(self, img: Image.Image):
@@ -3976,6 +3983,7 @@ class Monitor:
             self.con.commit()
         if self.session_id:
             self.on_event("closed", {"id": self.session_id, "shop": self.shop_name(),
+                                     "title": self.title or "", "seller": self.seller or "",
                                      "map": self.map, "count": len(self.seen),
                                      "sold": sum(1 for s in self.seen.values() if s.sold)})
         self.session_id = None
@@ -4027,7 +4035,7 @@ class Monitor:
         self._log(key, listing)
 
     def _log(self, key: tuple, listing: Listing):
-        each = listing.price / max(listing.qty, 1)
+        each = listing.price
         mkt, _ = market_rate(self.con, listing.item, self.cfg)
         v, pct = verdict(each, mkt, self.cfg["deal_threshold_pct"],
                          outlier_bounds(self.con, listing.item, self.cfg))
@@ -4037,7 +4045,7 @@ class Monitor:
         save_icon(self.con, listing.item, listing.icon, listing.sold)
         s = SeenListing(listing.item, listing.price, listing.qty, each, mkt,
                         "SOLD" if listing.sold else v, pct, ts, self.shop_name(), self.map,
-                        listing.sold, status, self.channel)
+                        listing.sold, status, self.channel, self.title or "", self.seller or "")
         self.seen[key] = s
         self.on_event("new", s)
 
@@ -4256,7 +4264,7 @@ def deals(cfg, hours=24) -> None:
     for item, price, qty, shop, seller, mp, channel, ts in rows:
         if item in ignored:
             continue
-        each = price / max(qty, 1)
+        each = price
         mkt, src = market_rate(con, item, cfg)
         v, pct = verdict(each, mkt, cfg["deal_threshold_pct"], outlier_bounds(con, item, cfg))
         if v == "OUTLIER":
@@ -4283,7 +4291,7 @@ def item_history(name, cfg) -> None:
           f"sold median {fmt(st['sold_median'])} ({st['sold_n']})")
     for ts, price, qty, shop, seller, mp, channel, sold in rows[-40:]:
         where = location(ShopFrame([], shop or "", seller or "").shop, mp, channel)
-        print(f"  {ts}  {fmt(price / max(qty, 1)):>13}/ea  x{qty:<4} {'SOLD  ' if sold else 'listed'} {where}")
+        print(f"  {ts}  {fmt(price):>13}  {'SOLD  ' if sold else 'listed'} {where}")
     best = cheapest(con, 24 * 7, cfg).get(match)
     if best:
         each, shop, seller, mp, channel, ts = best
@@ -4325,12 +4333,12 @@ def export_prices(con, path, cfg: dict, kind: str = "market") -> int:
         w = csv.writer(f)
         if kind == "listings":
             # times in UTC (ISO 8601, "Z"), so the file means the same in any time zone
-            w.writerow(["first_seen_utc", "last_seen_utc", "item", "qty", "price", "price_each", "status",
+            w.writerow(["first_seen_utc", "last_seen_utc", "item", "price", "status",
                         "sold_at_utc", "shop", "seller", "map", "channel"])
             for ts, last, item, qty, price, sold, sold_ts, shop, seller, mp, channel in con.execute(
                     "SELECT ts, COALESCE(last_seen, ts), item, qty, price, COALESCE(sold, 0), sold_ts, "
                     "shop, seller, map, channel FROM listings ORDER BY ts"):
-                w.writerow([ts, last, item, qty, price, round(price / max(qty, 1)),
+                w.writerow([ts, last, item, price,
                             "sold" if sold else "for sale", sold_ts or "", shop or "", seller or "",
                             mp or "", channel or ""])
                 rows += 1
@@ -4482,7 +4490,7 @@ def report(cfg, out="report.html") -> None:
         obs = con.execute(
             "SELECT ts, price, qty FROM listings WHERE item = ? ORDER BY ts", (item,)
         ).fetchall()
-        each = [p / max(q, 1) for _, p, q in obs]
+        each = [p for _, p, _q in obs]
         mkt, src = market_rate(con, item, cfg)
         b = best.get(item)
         v, pct = verdict(b[0] if b else each[-1], mkt, cfg["deal_threshold_pct"])

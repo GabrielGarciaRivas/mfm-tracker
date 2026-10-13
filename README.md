@@ -149,9 +149,11 @@ e.g. `111 (liormm) · Free Market <2> · ch2`.
 - Every item gets a **thumbnail**, captured from the store window the first time it's
   seen (and replaced if the first one came from a faded, sold row). Icons show in all
   tables and the history window, and are stored in the database.
-- Prices are compared **per unit**: "699 for 222,222 mesos" is 317 each (Price / ea).
-- Where a listing is shows in three columns: **Shop name** (title and player), **Map** and
-  **Channel** (centered). The **Time** column shows your computer's local time as
+- A listing's **Price** is the meso amount shown before "mesos". Whatever comes before
+  "for" (a quantity) is ignored: "699 for 222,222 mesos" is a price of 222,222. Databases
+  from older versions, which divided by the quantity, are converted once.
+- Where a listing is shows in four columns: **Shop** (the shop's name), **Player** (who's
+  selling), **Map** and **Channel** (centered). The **Time** column shows your computer's local time as
   YYYY-MM-DD HH:MM; times are
   saved in UTC, so the database stays correct if you move it to another computer or time
   zone (older records are converted once, from this computer's time zone).
@@ -176,13 +178,13 @@ Get a **ping** and a **green outline** around the item's icon when something you
 is for sale in a shop you open.
 
 - **Alerts** tab: type an item (suggestions, with icons, come from the item database), optionally a
-  **max price each**, and click **Add alert**. Leave the max price empty to be alerted at
+  **max price**, and click **Add alert**. Leave the max price empty to be alerted at
   any price. Or right-click any item in Live, Deals or Items → **Alert me when this is
   listed…**
 - When a matching listing shows up while monitoring, the tracker plays a ping, shows
   the price and shop/map in the status bar, brings its window to the front, and
-  records where it was: the Alerts tab shows each alert's **Last price**, **Shop name**,
-  **Map**, **Channel** and **Time**. Several matches at once give one ping.
+  records where it was: the Alerts tab shows each alert's **Last price**, **Shop**,
+  **Player**, **Map**, **Channel** and **Time**. Several matches at once give one ping.
 - Matching rows in Live, Deals and Items get a green outline on the icon and bold text.
 - Sold (faded) listings and listings above your max price never alert.
 - **Choose sound…** picks your own `.wav`; **Test sound** plays it. The sound is played
@@ -257,7 +259,7 @@ are the preferred basis for the market rate:
 3. the median of everything seen.
 
 Coming back to a shop doesn't double-count. Before a listing is saved, it's checked
-against the last 24 hours: if the same item, quantity and price was logged in a shop
+against the last 24 hours: if the same item and price was logged in a shop
 with the same shop name, player name and map, it's shown in Live (marked
 **already logged** in the Saved column, greyed) but not added again; only its "last
 seen" time is updated. Small OCR slips in the shop or player name ("lynn" / "Iynn")
@@ -321,7 +323,7 @@ Item names, ids and icons come from [NiaMeowDB](https://meowdb.com/msclassic/ite
 data mined from MapleStory Classic World. It's used only where NiaMeowDB has nothing:
 - **items** missing from meowdb's list (compared by the game's own item id, which meowdb
   uses as the icon key, and by name), so their names are spell-checked too, with their
-  category (throwing stars count as quantity 1);
+  category;
 - **maps** missing from meowdb's map list (it has every map, with street and region), so
   misread names on any map can be corrected;
 - **icons** meowdb doesn't have: when meowdb answers "not found" for an icon, the backup
@@ -424,10 +426,6 @@ line: `mfm.py osms [--force]`; `mfm.py meowdb` updates it too.
   "Free Market <2>") get their area added once.
 - **Look up on meowdb** (right-click in Items, or the button in an item's history window)
   opens the item's meowdb page.
-- **Throwing stars** (anything meowdb categorises as a throwing star, including ones
-  like Icicle and Wooden Top) are always logged with **quantity 1**: "699 for 222,222"
-  means one set of stars for 222,222. If you downloaded the list before this version,
-  the GUI offers to re-download it so the categories are saved.
 
 ### Scroll grades from icon colour
 Long scroll names are cut off by the game ("Overall Armor LUK Scroll:…"), and the visible
@@ -465,7 +463,7 @@ aren't your prices), how many entries each has and where it came from:
 
 | list | used for | files (in the data folder's `cache/`) |
 |---|---|---|
-| **Item list** | spelling correction of item names; the item search in Alerts, Ignored, Match and Review; meowdb links and icons; throwing stars (always quantity 1) | `items.txt` (names), `meowdb_items.json` (meowdb copy: id, name, category, icon), `item_ids.json`, `item_types.json`, `item_icons.json` |
+| **Item list** | spelling correction of item names; the item search in Alerts, Ignored, Match and Review; meowdb links and icons; item categories | `items.txt` (names), `meowdb_items.json` (meowdb copy: id, name, category, icon), `item_ids.json`, `item_types.json`, `item_icons.json` |
 | **Map list** | correcting misread minimap names (`Free Marker <8>` → `Free Market <8>`) | `maps.json` (id, name, street) |
 | **Backup source** | items, maps and icons meowdb doesn't have (OSMS Data Explorer) | `osms_items.json`, `osms_maps.json` (included in an item .zip export) |
 
@@ -495,7 +493,7 @@ Each has **Import…** and **Export…** (command line: `import-items`, `export-
 
 For each item, "market" is:
 1. your imported reference price, if you have one, otherwise
-2. the median per-unit price of your own logs over the last 14 days (needs 3+ sightings).
+2. the median price of your own logs over the last 14 days (needs 3+ sightings).
 
 meso.watch's robots.txt disallows automated access, so this tool doesn't scrape it.
 To use its numbers, copy the prices you care about into a CSV like
@@ -515,7 +513,7 @@ worth asking the site owner.
   listed and sold medians, outliers ignored, and the cheapest listing still for sale.
   Its first columns are `item,price,source`, so it can be imported again (on another
   computer, or after clearing your data) as reference prices.
-- **Every sighting**: date, item, quantity, price, sold or for sale, shop, seller, map, channel.
+- **Every sighting**: date, item, price, sold or for sale, shop, seller (player), map, channel.
   Its times are UTC (`first_seen_utc`, `last_seen_utc`, `sold_at_utc`).
 
 ## Errors
@@ -606,7 +604,7 @@ short explanation), or edit `settings/config.json`:
 | `outlier_floor_pct` | 75 | more than this % below the median is an outlier |
 
 ## Tips for good OCR
-- Icons, quantity badges, buttons and the scrollbar are ignored automatically.
+- Icons and their number badges, buttons and the scrollbar are ignored automatically.
 - If names come out garbled, set `save_captures: true` and look at what's being read.
 - The first sighting of an item locks in its spelling; later OCR typos snap to it.
   Importing reference prices with the correct names gives a clean starting list.
