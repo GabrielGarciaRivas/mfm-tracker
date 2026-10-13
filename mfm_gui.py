@@ -675,10 +675,14 @@ class App:
         self.channel_var.trace_add("write", self._channel_changed)
         # pick 1-100 from the list or type it; anything else can't be entered
         ok = (self.root.register(lambda p: p == "" or (p.isdigit() and p[0] != "0" and int(p) <= 100)), "%P")
-        self.channel_box = ttk.Combobox(bar, textvariable=self.channel_var, width=5, height=15,
-                                        values=[str(n) for n in range(1, 101)],
+        # the arrow (or Down / Alt+Down) opens the channel picker instead of a list
+        self.channel_box = ttk.Combobox(bar, textvariable=self.channel_var, width=5,
+                                        values=(), postcommand=self._channel_box_posted,
                                         validate="key", validatecommand=ok)
         self.channel_box.pack(side="left")
+        self.channel_box.bind("<Button-1>", self._channel_box_click)
+        for key in ("<Down>", "<Alt-Down>", "<F4>"):
+            self.channel_box.bind(key, lambda e: (self.open_channel_picker(), "break")[1])
         # rarely needed now that shop changes are detected on every frame
         self.root.bind_all("<Control-n>", lambda e: self.next_shop())
         if MAC:
@@ -847,26 +851,63 @@ class App:
     def on_channel_change(self, _p=None):
         self.ask_channel(changed=True)
 
-    def ask_channel(self, changed: bool = True):
-        """Pop-up channel picker: at launch, and after the game's change-channel
-        dialog has come and gone. Picking a channel fills in the Channel box."""
+    def _channel_box_click(self, e):
+        """Clicking the Channel box's arrow opens the picker; clicking the text
+        still lets you type."""
+        el = str(self.channel_box.identify(e.x, e.y))
+        if "arrow" in el or e.x >= self.channel_box.winfo_width() - 22:
+            self.open_channel_picker()
+            return "break"
+        return None
+
+    def _channel_box_posted(self):
+        """Fallback if the theme posts the (empty) list anyway: close it, open the picker."""
+        self.root.after_idle(lambda: (self.channel_box.tk.call("ttk::combobox::Unpost", self.channel_box),
+                                      self.open_channel_picker()))
+
+    def open_channel_picker(self):
+        """The channel picker as the Channel box's drop-down."""
+        if self.chan_popup is not None and self.chan_popup.winfo_exists():
+            if self.chan_popup.mode == "dropdown":
+                self.chan_popup.destroy()          # a second click on the arrow closes it
+                return
+        self.ask_channel(changed=False, dropdown=True)
+
+    def ask_channel(self, changed: bool = True, dropdown: bool = False):
+        """Channel picker: a prompt at launch and after the game's change-channel
+        dialog has come and gone, or the Channel box's drop-down. Picking a
+        channel fills in the Channel box."""
         head = ("Channel change detected. Which channel are you on now?" if changed
                 else "Which channel are you on?")
-        if self.chan_popup is not None and self.chan_popup.winfo_exists():
-            self.chan_popup.head.config(text=head)
-            self.chan_popup.deiconify()
-            self.chan_popup.lift()
-            self.chan_popup.focus_force()
-            self.root.bell()
-            return
+        win = self.chan_popup
+        if win is not None and win.winfo_exists():
+            if win.mode == "prompt":
+                if not dropdown:                 # another change while it's open
+                    win.head.config(text=head)
+                    self.root.bell()
+                win.deiconify()
+                win.lift()
+                win.focus_force()
+                return
+            win.destroy()                         # an open drop-down gives way to the prompt
         cur = self.channel()
+        count = max(1, min(100, int(self.cfg.get("channel_count", 100) or 100)))
         win = tk.Toplevel(self.root)
         self.chan_popup = win
-        win.title("Channel")
+        win.mode = "dropdown" if dropdown else "prompt"
         win.resizable(False, False)
-        win.attributes("-topmost", True)          # over the game, even with this window behind it
-        win.head = ttk.Label(win, text=head, style="Bold.TLabel", padding=(14, 12, 14, 8))
-        win.head.pack(anchor="w")
+        if dropdown:
+            win.overrideredirect(True)            # a plain panel under the box, like a list
+            win.configure(background="#888")
+            body = ttk.Frame(win, padding=(8, 8, 8, 6))
+            body.pack(padx=1, pady=1)
+        else:
+            win.title("Channel")
+            win.attributes("-topmost", True)      # over the game, even with this window behind it
+            body = ttk.Frame(win)
+            body.pack()
+            win.head = ttk.Label(body, text=head, style="Bold.TLabel", padding=(14, 12, 14, 8))
+            win.head.pack(anchor="w")
 
         def pick(ch):
             ch = mfm.parse_channel(ch)
@@ -877,16 +918,17 @@ class App:
             self._set_status(f"Channel set to {mfm.channel_label(ch)}.")
             win.destroy()
 
-        grid = ttk.Frame(win, padding=(14, 0, 14, 4))
+        cols = 8
+        grid = ttk.Frame(body, padding=(0, 0, 0, 4) if dropdown else (14, 0, 14, 4))
         grid.pack()
-        for n in range(1, 101):
-            b = tk.Button(grid, text=str(n), width=3, padx=2, pady=1, relief="groove",
+        for n in range(1, count + 1):
+            b = tk.Button(grid, text=str(n), width=5, padx=2, pady=2, relief="groove",
                           command=lambda n=n: pick(str(n)))
             if cur == str(n):
                 b.config(background="#1e88e5", foreground="white", activebackground="#1565c0",
                          activeforeground="white")
-            b.grid(row=(n - 1) // 10, column=(n - 1) % 10, padx=1, pady=1)
-        bottom = ttk.Frame(win, padding=(14, 8, 14, 12))
+            b.grid(row=(n - 1) // cols, column=(n - 1) % cols, padx=1, pady=1)
+        bottom = ttk.Frame(body, padding=(0, 6, 0, 0) if dropdown else (14, 8, 14, 12))
         bottom.pack(fill="x")
         ttk.Label(bottom, text="Or type it:").pack(side="left")
         typed = tk.StringVar()
@@ -895,11 +937,38 @@ class App:
         e.pack(side="left", padx=6)
         e.bind("<Return>", lambda ev: pick(typed.get()))
         ttk.Button(bottom, text="OK", command=lambda: pick(typed.get())).pack(side="left")
-        skip = ttk.Button(bottom, text=f"Keep {mfm.channel_label(cur)}" if cur else "Skip", command=win.destroy)
-        skip.pack(side="right")
-        tip("Close without changing the channel (turn these pop-ups off in Settings).", skip)
+        if dropdown:
+            clear = ttk.Button(bottom, text="Clear", command=lambda: (self.channel_var.set(""), win.destroy()))
+            clear.pack(side="right")
+            tip("Leave the channel empty (listings are saved without one).", clear)
+        else:
+            skip = ttk.Button(bottom, text=f"Keep {mfm.channel_label(cur)}" if cur else "Skip",
+                              command=win.destroy)
+            skip.pack(side="right")
+            tip("Close without changing the channel (turn these pop-ups off in Settings).", skip)
         win.bind("<Escape>", lambda ev: win.destroy())
         win.update_idletasks()
+        if dropdown:
+            # right under the Channel box, kept on screen
+            x = self.channel_box.winfo_rootx()
+            y = self.channel_box.winfo_rooty() + self.channel_box.winfo_height() + 2
+            x = max(0, min(x, win.winfo_screenwidth() - win.winfo_reqwidth()))
+            win.geometry(f"+{x}+{y}")
+
+            def outside(ev):
+                # like a drop-down list: a click anywhere else closes it
+                x0, y0 = win.winfo_rootx(), win.winfo_rooty()
+                if not (x0 <= ev.x_root < x0 + win.winfo_width() and y0 <= ev.y_root < y0 + win.winfo_height()):
+                    win.destroy()
+            win.bind("<ButtonPress>", outside)
+            try:
+                win.wait_visibility()
+                win.grab_set()
+            except tk.TclError:
+                pass
+            win.lift()
+            e.focus_set()
+            return
         # centred over the main window
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
@@ -2622,10 +2691,10 @@ class App:
             tip(tips[key], lbl, spin)
             vars_[key] = (v, type(mfm.DEFAULT_CONFIG[key]))
         # ---- data retention (top right)
-        ret = ttk.LabelFrame(win, text=" Data retention ", padding=(10, 4, 10, 8))
-        ret.grid(row=0, column=2, rowspan=7, sticky="nwe", padx=(0, 12), pady=(6, 0))
+        ret = ttk.LabelFrame(win, text=" Data retention ", padding=(10, 2, 10, 4))
+        ret.grid(row=0, column=2, rowspan=5, sticky="nwe", padx=(0, 12), pady=(4, 0))
         r1 = ttk.Frame(ret)
-        r1.pack(anchor="w", pady=(0, 4))
+        r1.pack(anchor="w", pady=(0, 2))
         keep_var = tk.StringVar(value=str(self.cfg.get("keep_days", 30)))
         lk = ttk.Label(r1, text="Keep listings for")
         lk.pack(side="left")
@@ -2636,7 +2705,7 @@ class App:
             "Items you still see in shops keep their listings.", lk, sk)
         mode_var = tk.StringVar(value=self.cfg.get("retention", "archive"))
         rm = ttk.Frame(ret)
-        rm.pack(anchor="w", pady=(0, 4))
+        rm.pack(anchor="w", pady=(0, 2))
         ttk.Label(rm, text="Then:").pack(side="left")
         for val, text, t in (
                 ("archive", "Archive, then delete",
@@ -2664,7 +2733,7 @@ class App:
         tip(f"Where {mfm.ARCHIVE_NAME} is kept (one file, added to on every cleanup). "
             "Any folder works, e.g. another drive.", ea, bb)
         r3 = ttk.Frame(ret)
-        r3.pack(fill="x", pady=(6, 0))
+        r3.pack(fill="x", pady=(3, 0))
         size_lbl = ttk.Label(r3, foreground="#666")
 
         def ret_cfg():
@@ -2711,13 +2780,23 @@ class App:
         cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
         tip("Keeps a picture of every screen read in the data folder, to check what the app saw. "
             "Uses disk space; leave off normally.", cb)
+        # ---- channel picker (under data retention)
         chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", False))
         cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
                              variable=chan_prompt)
-        cb.grid(row=len(fields), column=2, sticky="w", padx=(0, 12), pady=4)
-        tip("Shows a channel picker when the app opens, and each time you change channel in the "
+        cb.grid(row=5, column=2, sticky="w", padx=(0, 12), pady=4)
+        tip("Shows the channel picker when the app opens, and each time you change channel in the "
             "game (once the game's Change Channel window has closed). The channel you pick is "
             "saved with the listings you see.", cb)
+        rc = ttk.Frame(win)
+        rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
+        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 100)))
+        lc = ttk.Label(rc, text="Channels in the channel picker")
+        lc.pack(side="left")
+        sc = ttk.Spinbox(rc, from_=1, to=100, increment=1, width=6, textvariable=chan_count)
+        sc.pack(side="left", padx=8)
+        tip("How many channel buttons the picker shows (1-100), e.g. your world's channel count. "
+            "Any channel up to 100 can still be typed in.", lc, sc)
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
         cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
                              variable=outliers_on)
@@ -2746,6 +2825,12 @@ class App:
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
             self.cfg["channel_prompt"] = chan_prompt.get()
+            try:
+                self.cfg["channel_count"] = max(1, min(100, int(float(chan_count.get()))))
+            except ValueError:
+                messagebox.showerror("Invalid value", "Channels in the channel picker: a number from 1 to 100.",
+                                     parent=win)
+                return
             self.cfg["outliers_on"] = outliers_on.get()
             mfm.save_config(self.cfg)
             self.refresh_tables()

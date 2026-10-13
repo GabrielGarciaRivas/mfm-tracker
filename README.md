@@ -131,8 +131,11 @@ Give Terminal (or whichever app runs the script) Screen Recording permission.
    two lines, the area on top and the zone below, and both are read: the map is saved as
    **"Area: Zone"**, e.g. "Kerning City Subway: Line 1 <Area 1>" or "Hidden Street: Free
    Market <2>". The area's icon left of the name is blanked out before reading.
-3. Pick your channel in **Channel** (1–100: choose it from the list or type it; nothing else
-   can be entered). It stays set for every shop you open until you change it, and is saved
+3. Pick your channel in **Channel**: its arrow (or the Down key) opens the **channel
+   picker**, a grid of channel buttons 8 wide, or type the number in the box (1–100;
+   nothing else can be entered). **Settings → Channels in the channel picker** sets how
+   many buttons it shows (1–100, e.g. your world's channel count); any channel up to 100
+   can still be typed. It stays set for every shop you open until you change it, and is saved
    with each listing, since the channel isn't shown anywhere the tool can read.
 
    To be asked instead, tick **Settings → Ask for the channel at launch and after a

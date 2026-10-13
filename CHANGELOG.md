@@ -15,6 +15,10 @@ Versions are `YYMM.minor.hotfix`.
   Pick a channel (1–100) or type it. **Keep chN** closes the picker unchanged, e.g.
   if you cancelled. It works while monitoring and while not; on Wayland only while
   monitoring.
+- **Channel picker on the main screen**: the Channel box's arrow opens the same picker
+  as a drop-down instead of a long list. It's 8 channels wide with wider buttons;
+  click a channel, type one, or **Clear**. Settings → **Channels in the channel picker**
+  sets how many it shows (1–100, default 100).
 - **Exports are timestamped**: every export's file name gets your local date and time,
   `YYYY-MM-DD HH-MM-SS`. That covers prices, the item and map lists, and the command
   line's `export`, `export-items`, `export-maps` and `report`. For example,
