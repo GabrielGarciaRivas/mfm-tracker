@@ -1,0 +1,53 @@
+name: Linux distro check
+
+# Checks the Linux instructions in README.md on the major distros, in their
+# official containers: installing from source with each distro's packages, and
+# running the released app. Run it by hand from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release whose Linux app to test (blank = latest)"
+        required: false
+        default: ""
+
+jobs:
+  distro:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Ubuntu 22.04",          image: "ubuntu:22.04",                     family: apt,    app: true }
+          - { name: "Ubuntu 24.04",          image: "ubuntu:24.04",                     family: apt,    app: true }
+          - { name: "Debian 12",             image: "debian:12",                        family: apt,    app: true }
+          - { name: "Debian 13",             image: "debian:13",                        family: apt,    app: true }
+          - { name: "Linux Mint 22",         image: "linuxmintd/mint22-amd64",          family: apt,    app: true }
+          - { name: "Fedora 41",             image: "fedora:41",                        family: dnf,    app: true }
+          - { name: "Fedora 42",             image: "fedora:42",                        family: dnf,    app: true }
+          - { name: "Rocky Linux 9",         image: "rockylinux/rockylinux:9",          family: el,     app: true }
+          - { name: "AlmaLinux 10",          image: "almalinux:10",                     family: el,     app: true }
+          - { name: "openSUSE Tumbleweed",   image: "opensuse/tumbleweed",              family: zypper, app: true }
+          - { name: "openSUSE Leap 15.6",    image: "opensuse/leap:15.6",               family: zypper, app: true }
+          - { name: "Arch Linux",            image: "archlinux:latest",                 family: pacman, app: true }
+          - { name: "Manjaro",               image: "manjarolinux/base",                family: pacman, app: true }
+          - { name: "Void Linux",            image: "ghcr.io/void-linux/void-glibc-full", family: xbps, app: true }
+          - { name: "Alpine 3.22 (musl)",    image: "alpine:3.22",                      family: apk,    app: false }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the released Linux app
+        if: matrix.app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          gh release download $tag -R "${{ github.repository }}" -p "*Linux*.tar.gz" -D rel
+          tar xzf rel/*.tar.gz -C rel
+          app="$(find rel -type f -name 'Free Market Tracker' | head -1)"
+          chmod +x "$app"
+          echo "APP=/w/$app" >> "$GITHUB_ENV"
+      - name: Check ${{ matrix.name }}
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
+            sh packaging/ci/distro_check.sh "${{ matrix.family }}" "${APP:-}"
