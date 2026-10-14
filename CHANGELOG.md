@@ -1,5 +1,16 @@
 # Changelog
 
+## 2610.15.002 — 2026-10-14
+
+### Fixed
+- Megaphones were listed again as the chat scrolled, when a name was read a little
+  differently.
+- Player names in megaphones are read more accurately, and match names the app has
+  seen before.
+
+### Changed
+- Megaphones are kept for 24 hours, then deleted. Set how long in the Megaphones tab.
+
 ## 2610.15.001 — 2026-10-14
 
 ### New

@@ -132,7 +132,8 @@ shows what's being read.
 - Long megaphones that wrap onto more lines are read in full. Repeated symbols at the end
   (like @@@@@@) are left out.
 
-Right-click a megaphone to copy its message or player name, or delete it. If the chat
+Megaphones are kept for 24 hours and then deleted; change this with the box at the top of
+the tab. Right-click a megaphone to copy its message or player name, or delete it. If the chat
 window isn't found, click **Chat area** and draw a box around the chat messages.
 
 ## Notes

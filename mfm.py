@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.15.001"
+VERSION = "2610.15.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -159,6 +159,7 @@ DEFAULT_CONFIG = {
     "channel_count": 20,       # channels shown in the channel picker (1-100)
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
+    "megaphone_hours": 24,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
@@ -295,8 +296,10 @@ def db() -> sqlite3.Connection:
         );
         """
     )
-    if "color" not in {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}:
-        con.execute("ALTER TABLE megaphones ADD COLUMN color TEXT")
+    mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
+    for col in ("color", "votes"):
+        if col not in mcols:
+            con.execute(f"ALTER TABLE megaphones ADD COLUMN {col} TEXT")
     cols = {r[1] for r in con.execute("PRAGMA table_info(listings)")}
     if con.execute("PRAGMA main.user_version").fetchone()[0] < 1 and "ts" in cols:
         # versions before 2610.1 saved local times without a zone: convert to UTC once
@@ -5685,6 +5688,8 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
         return None
     hhmm, name, message = parsed
     hhmm = _read_chat_time(left, u * 3) or hhmm
+    # names are letters and digits only; the font's g is often read as q
+    name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
     for im in extra:
         t = _drop_junk([(w, c) for w, x, c in _ocr_words(_chat_text(im))])
         message = _join_wrapped(message, t)
@@ -5692,39 +5697,90 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
             "message": fix_megaphone_words(clean_megaphone(message), con)}
 
 
+def _player_names(con) -> dict[str, str]:
+    """Player names already known (megaphones and shop sellers), by their folded
+    spelling: a misread like "Locki024" for "Lock1024" folds to the same."""
+    counts: dict[str, int] = {}
+    for name, n in con.execute("SELECT player, COUNT(*) FROM megaphones WHERE player IS NOT NULL GROUP BY player"):
+        counts[name] = counts.get(name, 0) + n
+    for name, n in con.execute("SELECT seller, COUNT(*) FROM listings WHERE seller IS NOT NULL AND seller != '' "
+                               "GROUP BY seller"):
+        counts[name] = counts.get(name, 0) + 3 * n     # shop names are read from a clear box
+    out: dict[str, tuple[int, str]] = {}
+    for name, n in counts.items():
+        k = fold(name)
+        if k not in out or n > out[k][0]:
+            out[k] = (n, name)
+    return {k: v[1] for k, v in out.items()}
+
+
+def _vote(votes: dict, value: str) -> str:
+    """Count one more read of `value`; returns the most-read value so far."""
+    votes[value] = votes.get(value, 0) + 1
+    return max(votes, key=lambda v: (votes[v], len(v)))
+
+
 def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
-    """Store megaphones that aren't stored yet; returns how many are new. One already
-    stored (same player and time, nearly the same message) keeps the longer read."""
+    """Store megaphones that aren't stored yet; returns how many are new.
+
+    The same megaphone is read again every second while it's on screen (and moves up
+    as the chat scrolls), sometimes with a letter read differently. A read within two
+    minutes of a stored one, with nearly the same message and the same player (as
+    far as the spelling goes) or channel, is that one: it counts as another read,
+    and the player name and message read most often win."""
     new = 0
     seen = utc_now()
+    names = _player_names(con)
     for f in found:
-        if not f.get("player") or not f.get("message"):
+        player = re.sub(r"[^A-Za-z0-9]", "", f.get("player") or "")
+        if len(player) < 2 or not f.get("message"):
             continue
+        player = names.get(fold(player), player)
         ts = chat_time_utc(f["time"], now)
-        kind = megaphone_kind(f["message"])
+        t = datetime.strptime(ts, UTC_FMT)
+        lo, hi = ((t + timedelta(minutes=d)).strftime(UTC_FMT) for d in (-2, 2))
         norm = re.sub(r"\W+", "", f["message"].lower())
         same = None
-        for mid, msg in con.execute("SELECT id, message FROM megaphones WHERE lower(player) = lower(?) "
-                                    "AND ts = ?", (f["player"], ts)).fetchall():
-            old = re.sub(r"\W+", "", msg.lower())
-            if old == norm or difflib.SequenceMatcher(None, old, norm).ratio() >= 0.8 \
-                    or old.startswith(norm) or norm.startswith(old):
-                same = (mid, msg)
+        for row in con.execute("SELECT id, player, channel, message, votes FROM megaphones "
+                               "WHERE ts BETWEEN ? AND ?", (lo, hi)).fetchall():
+            mid, p0, ch0, msg0, votes = row
+            old = re.sub(r"\W+", "", (msg0 or "").lower())
+            alike_msg = old == norm or old.startswith(norm) or norm.startswith(old) or \
+                difflib.SequenceMatcher(None, old, norm).ratio() >= 0.85
+            alike_name = fold(p0 or "") == fold(player) or \
+                difflib.SequenceMatcher(None, fold(p0 or ""), fold(player)).ratio() >= 0.75
+            same_ch = bool(ch0 and f.get("channel") and ch0 == f.get("channel"))
+            if alike_msg and (alike_name or same_ch):
+                same = row
                 break
         if same:
-            if len(f["message"]) > len(same[1]):
-                con.execute("UPDATE megaphones SET message = ?, kind = ? WHERE id = ?",
-                            (f["message"], kind, same[0]))
-            if f.get("channel"):
-                con.execute("UPDATE megaphones SET channel = ? WHERE id = ? AND channel IS NULL",
-                            (f["channel"], same[0]))
+            mid, p0, ch0, msg0, votes = same
+            try:
+                v = json.loads(votes) if votes else {}
+            except ValueError:
+                v = {}
+            v.setdefault("player", {p0: 1} if p0 else {})
+            v.setdefault("message", {msg0: 1} if msg0 else {})
+            best_p = _vote(v["player"], player)
+            best_m = _vote(v["message"], f["message"])
+            con.execute("UPDATE megaphones SET player = ?, message = ?, kind = ?, votes = ?, "
+                        "channel = COALESCE(channel, ?) WHERE id = ?",
+                        (best_p, best_m, megaphone_kind(best_m), json.dumps(v), f.get("channel"), mid))
             continue
-        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (ts, seen, f["player"], f.get("channel"), f["message"], kind, f.get("color")))
+        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color, votes) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (ts, seen, player, f.get("channel"), f["message"], megaphone_kind(f["message"]),
+                     f.get("color"), json.dumps({"player": {player: 1}, "message": {f["message"]: 1}})))
         new += 1
     con.commit()
     return new
+
+
+def purge_megaphones(con, hours: float) -> int:
+    """Delete megaphones older than `hours`."""
+    n = con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(hours=hours),)).rowcount
+    con.commit()
+    return n
 
 
 class MegaphoneWatch:
@@ -5769,6 +5825,7 @@ class MegaphoneWatch:
                 got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=self.channel(),
                                       marks=marks)
                 n = save_megaphones(con, got) if got else 0
+                purge_megaphones(con, self.cfg.get("megaphone_hours", 24))
             finally:
                 con.close()
             self.on_event("chat_frame", {"image": img, "marks": marks, "count": len(got)})
@@ -6391,8 +6448,6 @@ def apply_retention(con, cfg: dict) -> tuple[int, Path | None]:
     mode = cfg.get("retention", "archive")
     if mode not in ("archive", "delete"):
         return 0, None
-    con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(days=cfg.get("keep_days", 30)),))
-    con.commit()
     return prune_old(con, cfg.get("keep_days", 30), archive_dir(cfg) if mode == "archive" else None)
 
 
