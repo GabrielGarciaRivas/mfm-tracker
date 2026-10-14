@@ -2,3 +2,4 @@ build/
 dist/
 __pycache__/
 *.spec
+mfm_google_client.py

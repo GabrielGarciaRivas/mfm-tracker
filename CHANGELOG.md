@@ -1,5 +1,13 @@
 # Changelog
 
+## 2610.16.001 — 2026-10-14
+
+### New
+- **Shared Database:** share prices with other players through a Google spreadsheet.
+  Everyone who can edit it sees each other's sightings as they're logged. Only items
+  from the item list are shared. A green dot next to the button means it's connected
+  and syncing; red means it isn't.
+
 ## 2610.15.003 — 2026-10-14
 
 ### Changed

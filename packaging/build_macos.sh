@@ -71,7 +71,7 @@ iconutil -c icns "$ICONSET" -o "$WORK/icon.icns"
   --icon "$WORK/icon.icns" \
   --osx-bundle-identifier io.github.mfm-tracker.free-market-tracker \
   --paths "$ROOT" \
-  --hidden-import mfm --hidden-import mfm_gui \
+  --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared --hidden-import mfm_google_client \
   --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk \
   --collect-data spellchecker --collect-data certifi --hidden-import certifi \
   --exclude-module pynput \

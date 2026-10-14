@@ -60,6 +60,7 @@ from PIL import Image, ImageOps
 # Running as the packaged "Free Market Tracker" app (PyInstaller): Python and
 # Tesseract are unpacked to a temporary folder (sys._MEIPASS).
 FROZEN = bool(getattr(sys, "frozen", False))
+SHARE_NEW = False   # a Shared Database is connected: new sightings are added to it too
 BUNDLE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 if FROZEN and sys.platform.startswith("linux"):
     # The app's own libraries were found via LD_LIBRARY_PATH when it started
@@ -87,7 +88,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.15.003"
+VERSION = "2610.16.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -327,7 +328,9 @@ def db() -> sqlite3.Connection:
         cols = {r[1] for r in con.execute("PRAGMA table_info(listings)")}
     for col, typ in (("session", "TEXT"), ("seller", "TEXT"), ("map", "TEXT"), ("channel", "TEXT"),
                      ("sold", "INTEGER DEFAULT 0"), ("last_seen", "TEXT"), ("sold_ts", "TEXT"),
-                     ("notes", "TEXT")):
+                     ("notes", "TEXT"),
+                     # Shared Database (mfm_shared): id in the sheet, state, row, synced values
+                     ("uid", "TEXT"), ("shared", "INTEGER"), ("shared_row", "INTEGER"), ("shared_sig", "TEXT")):
         if col not in cols:  # upgrade older databases in place
             con.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
     if con.execute("SELECT 1 FROM listings WHERE qty != 1 LIMIT 1").fetchone():
@@ -4936,9 +4939,10 @@ def log_listing(con, l: Listing, title: str, seller: str, mp: str, channel, sess
             return done("sold", rid)
     cur = con.execute(
         "INSERT INTO listings (ts, item, price, qty, shop, seller, map, channel, raw, session, "
-        "sold, last_seen, sold_ts, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "sold, last_seen, sold_ts, notes, shared) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (ts, l.item, l.price, l.qty, title, seller, mp, channel, l.raw, session,
-         int(l.sold), ts, ts if l.sold else None, carried_notes(con, l.item, title, seller, l.price)))
+         int(l.sold), ts, ts if l.sold else None, carried_notes(con, l.item, title, seller, l.price),
+         0 if SHARE_NEW else None))
     con.commit()
     return done("new", cur.lastrowid)
 
