@@ -1640,6 +1640,15 @@ class App:
         ttk.Label(top, text="hours, newest first. Read from the chat window while monitoring.").pack(side="left")
         self.mega_status = ttk.Label(top, foreground="#666")
         self.mega_status.pack(side="right")
+        # right: what the OCR sees (the chat window, megaphones outlined)
+        side = ttk.Frame(tab, padding=(10, 0, 0, 0), width=300)
+        side.pack(side="right", fill="y")
+        side.pack_propagate(False)
+        ttk.Label(side, text="What the OCR sees").pack(anchor="w")
+        self.mega_preview = ttk.Label(side, relief="solid", anchor="center", text="no capture yet")
+        self.mega_preview.pack(fill="x", pady=(2, 8), ipady=4)
+        self.mega_seen = ttk.Label(side, justify="left", foreground="#555", wraplength=280)
+        self.mega_seen.pack(anchor="w")
         panes = ttk.PanedWindow(tab, orient="vertical")
         panes.pack(fill="both", expand=True)
         self.mega_trees = {}
@@ -1679,6 +1688,19 @@ class App:
     def on_megaphones(self, n):
         self.refresh_megaphones()
 
+    def on_chat_frame(self, p):
+        from PIL import ImageDraw
+
+        img = p["image"].convert("RGB").copy()
+        d = ImageDraw.Draw(img)
+        for box, color in p["marks"]:
+            d.rectangle((box[0] + 1, box[1], box[2] - 1, box[3] - 1), outline="#e53935", width=2)
+        img.thumbnail((280, 400))
+        self.mega_preview_img = ImageTk.PhotoImage(img)
+        self.mega_preview.config(image=self.mega_preview_img, text="")
+        n = len(p["marks"])
+        self.mega_seen.config(text=f"Megaphones on screen: {n}\nOutlined in red: the lines being read.")
+
     def refresh_megaphones(self):
         if not hasattr(self, "mega_trees"):
             return
@@ -1687,14 +1709,24 @@ class App:
         except (tk.TclError, ValueError):
             hours = 24
         rows = self.con.execute(
-            "SELECT id, ts, player, channel, message, kind FROM megaphones WHERE ts >= ? "
+            "SELECT id, ts, player, channel, message, kind, color FROM megaphones WHERE ts >= ? "
             "AND kind IS NOT NULL ORDER BY ts DESC, id DESC", (mfm.utc_ago(hours=hours),)).fetchall()
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())
-            for mid, ts, player, ch, msg, k in rows:
-                if k in (kind, "both"):
-                    t.insert("", "end", iid=str(mid), values=(mfm.local_time(ts), player, ch or "", msg))
+            for mid, ts, player, ch, msg, k, color in rows:
+                if k not in (kind, "both"):
+                    continue
+                tags = ()
+                if color and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                    tag = "mc" + color[1:].lower()
+                    if tag not in getattr(t, "color_tags", set()):
+                        r_, g_, b_ = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+                        dark = 0.299 * r_ + 0.587 * g_ + 0.114 * b_ < 140
+                        t.tag_configure(tag, background=color, foreground="white" if dark else "black")
+                        t.color_tags = getattr(t, "color_tags", set()) | {tag}
+                    tags = (tag,)
+                t.insert("", "end", iid=str(mid), tags=tags, values=(mfm.local_time(ts), player, ch or "", msg))
             restore()
 
     def _copy_megaphone(self, tree, col):

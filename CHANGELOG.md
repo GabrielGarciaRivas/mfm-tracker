@@ -1,5 +1,17 @@
 # Changelog
 
+## 2610.15.001 — 2026-10-14
+
+### New
+- **Megaphones in every colour:** pink, teal and yellow megaphones, and the blue ones
+  from your own channel (they get the channel from the Channel box).
+- Megaphones show in their in-game colour.
+- **What the OCR sees** in the Megaphones tab: the chat window, with the megaphones
+  being read outlined.
+
+### Fixed
+- The chat window wasn't found while you were typing in the chat bar.
+
 ## 2610.14.001 — 2026-10-14
 
 ### New

@@ -119,10 +119,12 @@ listing, ignore, match to the right item, delete a bad read, or look the item up
 
 ## Megaphones
 
-While monitoring, the app also reads your chat window for megaphones: the coloured chat
-lines with a channel badge after the player's name. Ones that are buying or selling are
-listed in the **Megaphones** tab, **Selling** on top and **Buying** below, with the time
-(in your local time), player, channel and message.
+While monitoring, the app also reads your chat window for megaphones: the pink, teal,
+yellow and blue chat lines. Ones that are buying or selling are listed in the
+**Megaphones** tab, **Selling** on top and **Buying** below, in their in-game colour, with
+the time (in your local time), player, channel and message. Blue megaphones are from your
+own channel, so they get the channel from the **Channel** box. The panel on the right
+shows what's being read.
 
 - Selling: S>, WTS, sell, selling, have, trade, trading.
 - Buying: B>, WTB, buy, buying, looking for, LF, need, want.

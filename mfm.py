@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.14.001"
+VERSION = "2610.15.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -283,7 +283,8 @@ def db() -> sqlite3.Connection:
             player TEXT,
             channel TEXT,
             message TEXT,
-            kind TEXT
+            kind TEXT,
+            color TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_megaphones_ts ON megaphones(ts);
         CREATE TABLE IF NOT EXISTS reference (
@@ -294,6 +295,8 @@ def db() -> sqlite3.Connection:
         );
         """
     )
+    if "color" not in {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}:
+        con.execute("ALTER TABLE megaphones ADD COLUMN color TEXT")
     cols = {r[1] for r in con.execute("PRAGMA table_info(listings)")}
     if con.execute("PRAGMA main.user_version").fetchone()[0] < 1 and "ts" in cols:
         # versions before 2610.1 saved local times without a zone: convert to UTC once
@@ -5196,13 +5199,15 @@ def find_chat(full: Image.Image) -> list | None:
         if not (10 <= h <= 70 and 2.5 <= w / h <= 9):
             continue
         ym = (b[1] + b[3]) // 2
-        # the white chat bar right of the button
+        # the white chat bar right of the button (the typing box in it may hold text
+        # or have a dark outline: its rows just above the box are plain white)
         xs = range(min(W - 1, b[2] + 3), min(W, b[2] + 3 + 8 * h), 2)
-        if not xs or sum(1 for x in xs if min(px[x, ym]) >= 225) < 0.6 * len(xs):
+        rows = range(max(0, b[1] - int(0.3 * h)), min(H, ym + 1))
+        if not xs or max(sum(1 for x in xs if min(px[x, y]) >= 225) for y in rows) < 0.6 * len(xs):
             continue
         # its far end: the light-blue minimize button
-        cyan = next((x for x in range(b[2] + 3, W) if px[x, ym][2] >= 190 and 120 <= px[x, ym][1] <= 215
-                     and px[x, ym][0] <= 90), None)
+        cyan = next((x for x in range(b[2] + 3, W) if px[x, ym][2] >= 190 and 120 <= px[x, ym][1] <= 240
+                     and px[x, ym][0] <= 110), None)
         if cyan is None:
             continue
         # the bottom of the messages: up from the button, past the white bar
@@ -5226,6 +5231,7 @@ def find_chat(full: Image.Image) -> list | None:
         left = max(0, b[0] - int(0.2 * h))
         if bot - top < h or edge - left < 6 * h:
             continue
+        find_chat.unit = h          # about one chat line's height
         return [left, top, edge - left, bot - top + 1]
     return None
 
@@ -5522,90 +5528,168 @@ def _fix_chat_times(rows: list[dict]) -> None:
             r["time"] = prev or nxt
 
 
-def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None) -> list[dict]:
-    """Megaphones in a crop of the chat messages: [{time, player, channel, message}]."""
-    import hashlib
-    import pytesseract
+# The colours megaphones are shown on (pink, teal, yellow; the blue-grey ones are
+# megaphones in your own channel, without a channel badge). The game draws them
+# see-through, so the colour on screen shifts a little with what's behind.
+MEGAPHONE_COLORS = {
+    "pink": (220, 170, 188),
+    "teal": (90, 217, 196),
+    "yellow": (232, 184, 12),
+    "blue": (165, 185, 200),
+}
 
+
+def _megaphone_color(c: tuple) -> str | None:
+    best = min(MEGAPHONE_COLORS, key=lambda k: max(abs(a - b) for a, b in zip(c, MEGAPHONE_COLORS[k])))
+    return best if max(abs(a - b) for a, b in zip(c, MEGAPHONE_COLORS[best])) <= 45 else None
+
+
+def _line_look(line: Image.Image) -> tuple[tuple, float]:
+    """A chat line's colour, and how much of it is that plain colour (0-1)."""
+    core = line.crop((0, int(0.15 * line.height), line.width, int(0.85 * line.height)))
+    bg = _median_color(core)
+    px = core.load()
+    W, H = core.size
+    pts = [(x, y) for y in range(0, H, 2) for x in range(0, W, 3)]
+    near = sum(1 for x, y in pts if max(abs(a - c) for a, c in zip(px[x, y], bg)) < 30)
+    return bg, near / max(1, len(pts))
+
+
+def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None, unit: float | None = None,
+                    channel: str | None = None, marks: list | None = None) -> list[dict]:
+    """Megaphones in a crop of the chat messages: [{time, player, channel, message,
+    color}]. `unit` is about one line's height (from find_chat); `channel` is used for
+    megaphones without a channel badge (the ones in your own channel). The boxes of
+    the lines read are added to `marks` as (box, color name)."""
     chat = chat.convert("RGB")
     W, H = chat.size
     badges = chat_badges(chat)
-    if not badges:
+    if badges:
+        bh = sorted(b[3] - b[1] for b in badges)[len(badges) // 2]
+        pitch = 1.38 * bh
+        gaps = sorted(b2[1] - b1[1] for b1, b2 in zip(badges, badges[1:]) if 0.8 * pitch <= b2[1] - b1[1] <= 1.2 * pitch)
+        if gaps:
+            pitch = gaps[len(gaps) // 2]
+        phase = sorted(((b[1] + b[3]) / 2 - pitch / 2) % pitch for b in badges)[len(badges) // 2]
+    elif unit:
+        pitch = 1.035 * unit
+        # line tops: where a megaphone colour starts, going down the middle of the chat
+        tops = []
+        px = chat.load()
+        prev = None
+        for y in range(H):
+            c = _megaphone_color(px[W // 2, y]) if max(px[W // 2, y]) >= 120 else None
+            row_ok = c is not None and sum(1 for x in range(int(0.1 * W), int(0.9 * W), max(1, W // 40))
+                                           if _megaphone_color(px[x, y]) == c) >= 20
+            cur = c if row_ok else None
+            if cur and cur != prev:
+                tops.append(y % pitch)
+            prev = cur
+        if not tops:
+            return []
+        phase = sorted(tops)[len(tops) // 2]
+    else:
         return []
-    bh = sorted(b[3] - b[1] for b in badges)[len(badges) // 2]
-    u = bh / 0.75                       # about one line
-    pitch = 1.38 * bh
-    gaps = sorted(b2[1] - b1[1] for b1, b2 in zip(badges, badges[1:]) if 0.8 * pitch <= b2[1] - b1[1] <= 1.2 * pitch)
-    if gaps:
-        pitch = gaps[len(gaps) // 2]
+    u = pitch / 1.035
     right = W - int(0.3 * u)
-    setup_tesseract(cfg)
+    slack = int(0.15 * pitch)
     memo = memo if memo is not None else {}
-    out = []
-    for b in badges:
-        cy = (b[1] + b[3]) / 2
-        y0 = int(round(cy - pitch / 2))
+    setup_tesseract(cfg)
+
+    # the lines on screen, top to bottom
+    lines = []
+    k = -1
+    while True:
+        y0 = int(round(phase + k * pitch))
         y1 = y0 + int(round(pitch))
-        slack = int(0.15 * pitch)
+        k += 1
+        if y0 >= H:
+            break
         if y0 < -slack or y1 > H + slack:
-            continue                    # cut off at the top or bottom
+            continue
         y0, y1 = max(0, y0), min(H, y1)
         row = chat.crop((0, y0, right, y1))
-        bg = _median_color(chat.crop((b[2], y0, right, y1)))
+        bg, plain = _line_look(row)
+        badge = next((b for b in badges if y0 <= (b[1] + b[3]) / 2 < y1), None)
+        color = _megaphone_color(bg)
+        if not (badge or (color and plain >= 0.55)):
+            lines.append(None)
+            continue
         lx0, lx1 = _line_span(row, bg, u)
-        # wrapped lines below: same colour, no time at the start, no badge
+        starts = _has_text(row.crop((lx0 + 1, int(0.25 * row.height), lx0 + int(1.0 * u),
+                                     int(0.8 * row.height))), bg)
+        lines.append({"box": (0, y0, right, y1), "row": row, "bg": bg, "color": color, "badge": badge,
+                      "span": (lx0, lx1), "starts": starts})
+
+    out = []
+    for i, ln in enumerate(lines):
+        if not ln or not ln["starts"]:
+            continue
+        # wrapped lines below: same colour, no time at the start
         extra = []
-        k = 1
-        while True:
-            ny0 = int(round(cy - pitch / 2 + k * pitch))
-            ny1 = ny0 + int(round(pitch))
-            if ny1 > H + slack or any(ny0 <= (c[1] + c[3]) / 2 < ny1 for c in badges):
+        for nxt in lines[i + 1:]:
+            if not nxt or nxt["starts"] or nxt["badge"] or \
+                    max(abs(a - c) for a, c in zip(nxt["bg"], ln["bg"])) > 45:
                 break
-            ny1 = min(H, ny1)
-            nrow = chat.crop((0, ny0, right, ny1))
-            nbg = _median_color(nrow)
-            if max(abs(a - c) for a, c in zip(nbg, bg)) > 45:
+            body = _text_band(nxt["row"].crop((nxt["span"][0] + 1, 0, nxt["span"][1], nxt["row"].height)))
+            if not _has_text(body, nxt["bg"]):
                 break
-            nx0, nx1 = _line_span(nrow, nbg, u)
-            if _has_text(nrow.crop((nx0 + 1, int(0.25 * nrow.height), nx0 + int(1.0 * u),
-                                    int(0.8 * nrow.height))), nbg):
-                break                   # a new line (it starts with the time)
-            body = _text_band(nrow.crop((nx0 + 1, 0, nx1, nrow.height)))
-            if not _has_text(body, nbg):
-                break
-            extra.append(body)
-            k += 1
-        # the text alone (the game shows through the line's colour)
-        key = hashlib.md5(b"".join(_chat_text(im, 1).point(lambda v: 255 if v > 128 else 0).tobytes()
-                                   for im in [row] + extra) + str(b[0] - lx0).encode()).hexdigest()
+            extra.append((nxt, body))
+        row, b, (lx0, lx1) = ln["row"], ln["badge"], ln["span"]
+        color_name = ln["color"] or "badge"
+        if marks is not None:
+            box = ln["box"]
+            marks.append(((box[0], box[1], box[2], (extra[-1][0]["box"][3] if extra else box[3])), color_name))
+        key = hashlib_md5(b"".join(_chat_text(im, 1).point(lambda v: 255 if v > 128 else 0).tobytes()
+                                   for im in [row] + [e for _, e in extra])
+                          + str((b[0] - lx0) if b else -1).encode())
         if key not in memo:
-            left = _chat_text(_text_band(row.crop((lx0 + 1, 0, b[0] - 1, row.height))))
-            msg = _chat_text(_text_band(row.crop((b[2] + 1, 0, lx1, row.height))))
-            gap = int(2 * u)
-            line = Image.new("L", (left.width + gap + msg.width, max(left.height, msg.height)), 255)
-            line.paste(left, (0, 0))
-            line.paste(msg, (left.width + gap, 0))
-            words = _ocr_words(line)
-            split = left.width + gap // 2
-            head = " ".join(w for w, x, c in words if x < split)
-            tail = _drop_junk([(w, c) for w, x, c in words if x >= split])
-            parsed = parse_chat_line(head + " : " + tail)
-            if parsed:
-                hhmm, name, message = parsed
-                hhmm = _read_chat_time(left, u * 3) or hhmm
-                for im in extra:
-                    t = _drop_junk([(w, c) for w, x, c in _ocr_words(_chat_text(im))])
-                    message = _join_wrapped(message, t)
-                memo[key] = {"time": hhmm, "player": name, "channel": badge_channel(chat, b),
-                             "message": fix_megaphone_words(clean_megaphone(message), con)}
-            else:
-                memo[key] = None
+            memo[key] = _read_megaphone_line(row, b, lx0, lx1, u, [e for _, e in extra], chat, con)
         if memo[key]:
-            out.append(dict(memo[key]))
+            m = dict(memo[key])
+            if not m["channel"]:
+                m["channel"] = channel
+            m["color"] = "#%02x%02x%02x" % (MEGAPHONE_COLORS[ln["color"]] if ln["color"] else ln["bg"])
+            out.append(m)
     if len(memo) > 2000:
         memo.clear()
     _fix_chat_times(out)
     return out
+
+
+def hashlib_md5(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.md5(data).hexdigest()
+
+
+def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
+    """OCR one megaphone (its first line `row`, its badge `b` or None, and the
+    wrapped lines below it)."""
+    if b:
+        left = _chat_text(_text_band(row.crop((lx0 + 1, 0, b[0] - 1, row.height))))
+        msg = _chat_text(_text_band(row.crop((b[2] + 1, 0, lx1, row.height))))
+        gap = int(2 * u)
+        line = Image.new("L", (left.width + gap + msg.width, max(left.height, msg.height)), 255)
+        line.paste(left, (0, 0))
+        line.paste(msg, (left.width + gap, 0))
+        words = _ocr_words(line)
+        split = left.width + gap // 2
+        head = " ".join(w for w, x, c in words if x < split)
+        tail = _drop_junk([(w, c) for w, x, c in words if x >= split])
+        parsed = parse_chat_line(head + " : " + tail)
+    else:
+        left = _chat_text(_text_band(row.crop((lx0 + 1, 0, lx1, row.height))))
+        parsed = parse_chat_line(_drop_junk([(w, c) for w, x, c in _ocr_words(left)]))
+    if not parsed:
+        return None
+    hhmm, name, message = parsed
+    hhmm = _read_chat_time(left, u * 3) or hhmm
+    for im in extra:
+        t = _drop_junk([(w, c) for w, x, c in _ocr_words(_chat_text(im))])
+        message = _join_wrapped(message, t)
+    return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
+            "message": fix_megaphone_words(clean_megaphone(message), con)}
 
 
 def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
@@ -5631,9 +5715,13 @@ def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
             if len(f["message"]) > len(same[1]):
                 con.execute("UPDATE megaphones SET message = ?, kind = ? WHERE id = ?",
                             (f["message"], kind, same[0]))
+            if f.get("channel"):
+                con.execute("UPDATE megaphones SET channel = ? WHERE id = ? AND channel IS NULL",
+                            (f["channel"], same[0]))
             continue
-        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind) VALUES (?,?,?,?,?,?)",
-                    (ts, seen, f["player"], f.get("channel"), f["message"], kind))
+        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (ts, seen, f["player"], f.get("channel"), f["message"], kind, f.get("color")))
         new += 1
     con.commit()
     return new
@@ -5643,10 +5731,10 @@ class MegaphoneWatch:
     """While monitoring: about once a second, reads the chat window for megaphones in
     the background (so shop reading isn't slowed down) and saves new ones."""
 
-    def __init__(self, cfg: dict, on_event, every: float = 1.0):
+    def __init__(self, cfg: dict, on_event, every: float = 1.0, channel=lambda: None):
         import threading
 
-        self.cfg, self.on_event, self.every = cfg, on_event, every
+        self.cfg, self.on_event, self.every, self.channel = cfg, on_event, every, channel
         self.last = 0.0
         self.busy = threading.Event()
         self.memo: dict = {}
@@ -5664,21 +5752,26 @@ class MegaphoneWatch:
 
     def _work(self, full):
         try:
-            region = self.cfg.get("chat_region")
+            region, unit = self.cfg.get("chat_region"), None
             if not region or is_auto(region, full.size):
                 region = find_chat(full)
+                unit = getattr(find_chat, "unit", None)
             found = region is not None
             if found != self.found:
                 self.found = found
                 self.on_event("chat", {"found": found})
             if not region:
                 return
+            img = crop(full, region)
+            marks: list = []
             con = db()
             try:
-                got = read_megaphones(crop(full, region), self.cfg, self.memo, con)
+                got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=self.channel(),
+                                      marks=marks)
                 n = save_megaphones(con, got) if got else 0
             finally:
                 con.close()
+            self.on_event("chat_frame", {"image": img, "marks": marks, "count": len(got)})
             if n:
                 self.on_event("megaphones", n)
         except Exception as e:
@@ -5733,7 +5826,7 @@ class Monitor:
         self.layout: Layout | None = None
         self.map_fresh = False   # minimap measured since the last visit ended
         self.chan_watch = ChannelWatch()   # the GUI may hand in its own (shared with its idle check)
-        self.megaphones = MegaphoneWatch(cfg, self.on_event)
+        self.megaphones = MegaphoneWatch(cfg, self.on_event, channel=lambda: self.channel)
         self.map_tried = 0.0
         self.geom: dict | None = None
         self.geom_misses = 0
