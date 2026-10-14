@@ -153,29 +153,37 @@ still logged and watched items still get alerts. Right-click any item → **Igno
 
 ## My Inventory
 
-Keep track of what the items you own are worth.
+Keep track of what the items you own are worth. Click **My Inventory** at the far right of
+the tab row.
 
-1. Click **Add items…**. A window opens that reads your **Item Inventory** in the game
-   (open it with the I key). Your items show up as you switch between its tabs.
-2. Icons that couldn't be matched are highlighted: press **Enter** to accept the suggested
-   item, **M** to pick one yourself, or **Delete** to remove the row. Your choice is
-   remembered next time.
-3. Select the items you want and click **Add**. **Add by name…** puts any other item in
-   the list by typing its name.
+**Adding items**
+- **Add by name…:** type an item's name and how many you have.
+- **Auto Detect (beta):** reads your **Item Inventory** in the game (open it with the I
+  key). Your items show up as you switch between its tabs. Icons that couldn't be matched
+  are highlighted: press **Enter** to accept the suggested item, **M** to pick one yourself,
+  or **Delete** to remove the row; your choice is remembered next time. Select the items
+  you want and click **Add**. If your inventory isn't found, click **Inventory area** and
+  draw a box around it (**Settings → Auto Detection** goes back to finding it). Matching
+  works best with all item icons downloaded (Settings → Game data → Update).
 
-If your inventory isn't found, click **Inventory area** and draw a box around it.
-**Settings → Auto Detection** goes back to finding it automatically.
+**Editing:** click a highlighted row's **Qty**, **List price** or **Notes** to type in it,
+or right-click the row. **List price** is the price you're selling it for.
+
+**Selling:** select items and click **Sold** (or right-click → **Mark as sold…**). If you
+have more than one of an item, you're asked how many sold. Sold items are faded, their sale
+is added to your prices, and their list price counts toward **Realized profit**. To undo,
+select them and click **Unsell** (or right-click → **Unmark as sold…**).
 
 For each item, the tab shows its market price, the range of prices seen, how many
 sightings there are, how many sold in the last 24 hours, and the average of its last 3
-sales. **Net worth** at the bottom adds them up:
-- **Possible range:** the lowest and highest prices of all your items.
+sales. **Net worth** at the bottom adds them up, with the 3% meso tax taken off:
+- **Possible range:** the lowest and highest prices of the items you own.
 - **Estimated value (market prices)** and **(last 3 sales)**.
+- **Listed items value:** the list prices of the items you own.
+- **Realized profit:** what your sold items sold for.
 
-To change how many you have, double-click its **Qty** or use **Quantity…** (in the Add
-items window too, before adding). Right-click an item to see its history, change the
-quantity or remove it. Matching works
-best with all item icons downloaded (Settings → Game data → Update).
+**Export…** and **Import…** save and load My Inventory as a CSV file. **Clear My
+Inventory…** deletes it all (it asks first and keeps a backup).
 
 ## Market price
 
@@ -238,7 +246,8 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 | Folder | Contents |
 |---|---|
 | `prices/` | your prices (`prices.db`) |
-| `settings/` | settings, watched items and listings, my inventory, ignore list, manual matches |
+| `inventory/` | My Inventory (`inventory.db`) |
+| `settings/` | settings, watched items and listings, ignore list, manual matches |
 | `cache/` | downloaded item and map lists, icons |
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |

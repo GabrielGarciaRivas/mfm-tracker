@@ -109,7 +109,6 @@ CONFIG_PATH = SETTINGS_DIR / "config.json"
 SETTINGS_FILES = {   # what "reset personal settings" can clear
     "settings": ("Settings and capture areas", ["config.json"]),
     "alerts": ("Watched items and listings", ["watchlist.json", "watched_listings.json"]),
-    "inventory": ("My inventory", ["inventory.json"]),
     "ignored": ("Ignore list", ["ignorelist.json"]),
     "matches": ("Manual matches (remembered corrections)", ["aliases.json"]),
     "kept": ("Names kept as they are (Review tab)", ["kept_names.json"]),
@@ -2412,16 +2411,180 @@ def scan_inventory(win: Image.Image, matcher: IconMatcher, cfg: dict, read_count
     return out
 
 
-# My Inventory: [{"item", "qty", "added" (UTC)}]
-INVENTORY_PATH = SETTINGS_DIR / "inventory.json"
+# My Inventory: the items you own, in their own database (inventory/inventory.db).
+INVENTORY_DIR = DATA / "inventory"
+INVENTORY_DB_PATH = INVENTORY_DIR / "inventory.db"
+INVENTORY_PATH = SETTINGS_DIR / "inventory.json"      # kept by 2610.13.001 builds; moved in once
+MESO_TAX = 0.03                                       # the Free Market's fee on every sale
+INV_FIELDS = ("item", "qty", "notes", "list_price", "sold", "sold_at", "sold_ids", "added")
 
 
-def load_inventory() -> list[dict]:
-    return _load_json(INVENTORY_PATH, [])
+def inventory_db():
+    """The My Inventory database (created on first use)."""
+    INVENTORY_DIR.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(INVENTORY_DB_PATH)
+    con.execute("""CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY, item TEXT NOT NULL, qty INTEGER NOT NULL DEFAULT 1,
+        notes TEXT, list_price INTEGER, sold INTEGER NOT NULL DEFAULT 0, sold_at TEXT,
+        sold_ids TEXT, added TEXT)""")
+    if INVENTORY_PATH.exists():
+        # the list kept in settings/inventory.json by the first builds: moved in once
+        try:
+            old = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+            for e in old:
+                con.execute("INSERT INTO items (item, qty, added) VALUES (?,?,?)",
+                            (e["item"], int(e.get("qty") or 1), e.get("added") or utc_now()))
+            con.commit()
+            INVENTORY_PATH.rename(INVENTORY_PATH.with_suffix(".json.moved"))
+        except (OSError, ValueError, KeyError):
+            pass
+    return con
 
 
-def save_inventory(inv: list[dict]) -> None:
-    INVENTORY_PATH.write_text(json.dumps(inv, indent=1, ensure_ascii=False), encoding="utf-8")
+def load_inventory(con=None) -> list[dict]:
+    """Every row of My Inventory: owned items first, then sold ones."""
+    con = con or inventory_db()
+    rows = con.execute("SELECT id, " + ", ".join(INV_FIELDS) + " FROM items ORDER BY sold, id").fetchall()
+    return [dict(zip(("id",) + INV_FIELDS, r)) for r in rows]
+
+
+def add_inventory(con, item: str, qty: int = 1, notes: str | None = None, list_price: int | None = None) -> None:
+    """Add owned items. Matching unsold rows (same item, note and list price) get the quantity added."""
+    row = con.execute("SELECT id FROM items WHERE item = ? AND sold = 0 AND COALESCE(notes, '') = ? "
+                      "AND COALESCE(list_price, -1) = ?", (item, notes or "", list_price if list_price else -1)
+                      ).fetchone()
+    if row:
+        con.execute("UPDATE items SET qty = qty + ? WHERE id = ?", (qty, row[0]))
+    else:
+        con.execute("INSERT INTO items (item, qty, notes, list_price, added) VALUES (?,?,?,?,?)",
+                    (item, qty, notes or None, list_price or None, utc_now()))
+    con.commit()
+
+
+def update_inventory(con, ids, **fields) -> None:
+    """Change qty, notes or list_price of rows."""
+    ok = {k: v for k, v in fields.items() if k in ("qty", "notes", "list_price", "item")}
+    for i in ids:
+        for k, v in ok.items():
+            con.execute(f"UPDATE items SET {k} = ? WHERE id = ?", (v, i))
+    con.commit()
+
+
+def delete_inventory(con, ids) -> None:
+    con.executemany("DELETE FROM items WHERE id = ?", [(i,) for i in ids])
+    con.commit()
+
+
+def clear_inventory(con) -> Path | None:
+    """Delete everything in My Inventory, after copying the database to backups/."""
+    backup = None
+    if INVENTORY_DB_PATH.exists():
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        backup = BACKUP_DIR / f"inventory-{_stamp()}.db"
+        shutil.copy2(INVENTORY_DB_PATH, backup)
+    con.execute("DELETE FROM items")
+    con.commit()
+    return backup
+
+
+def mark_sold(con, prices_con, row_id: int, n: int | None = None, price: int | None = None) -> int:
+    """Mark n of a row as sold (all when n is None) at `price` each (else its list
+    price). Selling only some splits the row: the rest stays owned. Each one sold is
+    recorded in the price database as a confirmed sale. Returns the sold row's id."""
+    r = con.execute("SELECT item, qty, notes, list_price, sold FROM items WHERE id = ?", (row_id,)).fetchone()
+    if not r or r[4]:
+        return row_id
+    item, qty, notes, lp, _ = r
+    n = qty if n is None else max(1, min(int(n), qty))
+    price = price or lp
+    if n < qty:
+        con.execute("UPDATE items SET qty = qty - ? WHERE id = ?", (n, row_id))
+        row_id = con.execute("INSERT INTO items (item, qty, notes, list_price, added) VALUES (?,?,?,?,?)",
+                             (item, n, notes, price, utc_now())).lastrowid
+    now = utc_now()
+    ids = []
+    if price:
+        for _ in range(n):
+            ids.append(prices_con.execute(
+                "INSERT INTO listings (ts, item, price, qty, shop, seller, map, channel, raw, session, sold, "
+                "last_seen, sold_ts, notes) VALUES (?,?,?,1,?,?,?,?,?,?,1,?,?,?)",
+                (now, item, int(price), "My Inventory", "", "", None, "sold from My Inventory",
+                 "inventory", now, now, notes)).lastrowid)
+        prices_con.commit()
+    con.execute("UPDATE items SET sold = 1, sold_at = ?, list_price = ?, sold_ids = ? WHERE id = ?",
+                (now, price, json.dumps(ids), row_id))
+    con.commit()
+    return row_id
+
+
+def unmark_sold(con, prices_con, row_id: int) -> int:
+    """Undo mark_sold: the sale records are removed from the price database (any that
+    are still there) and the items are owned again, joined to a matching owned row."""
+    r = con.execute("SELECT item, qty, notes, list_price, sold, sold_ids FROM items WHERE id = ?",
+                    (row_id,)).fetchone()
+    if not r or not r[4]:
+        return 0
+    item, qty, notes, lp, _, sold_ids = r
+    try:
+        ids = [int(i) for i in json.loads(sold_ids or "[]")]
+    except (ValueError, TypeError):
+        ids = []
+    removed = 0
+    if ids:
+        removed = delete_listings(prices_con, ids)
+    other = con.execute("SELECT id FROM items WHERE item = ? AND sold = 0 AND COALESCE(notes, '') = ? "
+                        "AND COALESCE(list_price, -1) = ? AND id != ?",
+                        (item, notes or "", lp if lp else -1, row_id)).fetchone()
+    if other:
+        con.execute("UPDATE items SET qty = qty + ? WHERE id = ?", (qty, other[0]))
+        con.execute("DELETE FROM items WHERE id = ?", (row_id,))
+    else:
+        con.execute("UPDATE items SET sold = 0, sold_at = NULL, sold_ids = NULL WHERE id = ?", (row_id,))
+    con.commit()
+    return removed
+
+
+INV_CSV = ("item", "qty", "notes", "list_price", "status", "sold_at_utc", "added_utc")
+
+
+def export_inventory(con, path) -> int:
+    """My Inventory as a CSV file (opens in any spreadsheet app; can be imported again)."""
+    rows = load_inventory(con)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(INV_CSV)
+        for r in rows:
+            w.writerow([r["item"], r["qty"], r["notes"] or "", r["list_price"] or "",
+                        "sold" if r["sold"] else "owned", r["sold_at"] or "", r["added"] or ""])
+    return len(rows)
+
+
+def import_inventory(con, path, replace: bool = False) -> int:
+    """Load a My Inventory CSV (from Export): added to the list, or replacing it.
+    Sold rows come back as sold (without new sale records)."""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    if not rows or "item" not in rows[0]:
+        raise ValueError("This isn't a My Inventory file (it needs an 'item' column).")
+    if replace:
+        con.execute("DELETE FROM items")
+    n = 0
+    for r in rows:
+        item = (r.get("item") or "").strip()
+        if not item:
+            continue
+        try:
+            qty = max(1, int(float(r.get("qty") or 1)))
+        except ValueError:
+            qty = 1
+        lp = parse_price(r.get("list_price") or "") if (r.get("list_price") or "").strip() else None
+        sold = (r.get("status") or "").strip().lower() == "sold"
+        con.execute("INSERT INTO items (item, qty, notes, list_price, sold, sold_at, added) VALUES (?,?,?,?,?,?,?)",
+                    (item, qty, (r.get("notes") or "").strip() or None, lp, int(sold),
+                     (r.get("sold_at_utc") or None) if sold else None, r.get("added_utc") or utc_now()))
+        n += 1
+    con.commit()
+    return n
 
 
 def inventory_stats(con, item: str, cfg: dict) -> dict:

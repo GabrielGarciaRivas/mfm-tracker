@@ -133,7 +133,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "max_each": "Max price", "last_price": "Last price", "npc_buy": "NPC buy", "npc_sell": "NPC sell",
         "saved": "Saved", "notes": "Notes", "qty": "Qty", "range": "Price range",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
-        "match": "Match / suggestion",
+        "match": "Match / suggestion", "list_price": "List price",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -142,10 +142,10 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
-         "last3": 130, "tab": 70, "match": 230, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "last3": 130, "tab": 70, "match": 230, "list_price": 95, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
-           "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3"}
+           "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price"}
 CENTER = {"channel", "best_channel"}
 
 
@@ -620,7 +620,6 @@ class App:
         self._icon_worker = None
         self.watch = mfm.load_watchlist()
         self.watched_listings = mfm.load_watched_listings()
-        self.inventory = mfm.load_inventory()
         self._error_times: dict = {}
         root.report_callback_exception = self._tk_error
         self.ignored = set(mfm.load_ignorelist())
@@ -1558,111 +1557,400 @@ class App:
         self.refresh_watched_listings()
 
     # ------------------------------------------------------------------ my inventory
+    INV_EDITABLE = ("qty", "list_price", "notes")
+
     def _build_inventory_tab(self):
-        tab = ttk.Frame(self.nb, padding=6)
-        self.nb.add(tab, text="  My Inventory  ")
+        # My Inventory sits at the far right of the tab row: a one-tab notebook placed
+        # there, whose page is shown over the main notebook's page
+        style = ttk.Style()
+        normal_bg = style.lookup("TNotebook.Tab", "background") or "#bab5ab"
+        for name in ("Dim.TNotebook", "DimInv.TNotebook"):
+            style.configure(name, **{k: style.lookup("TNotebook", k) for k in ("background",)
+                                     if style.lookup("TNotebook", k)})
+            style.map(name + ".Tab", background=[("selected", normal_bg), ("!selected", normal_bg)],
+                      lightcolor=[("selected", "#cfcdc8"), ("!selected", "#cfcdc8")],
+                      expand=[("selected", (0, 0, 0, 0))])
+        self.inv_tabbar = ttk.Notebook(self.root, style="DimInv.TNotebook")
+        self.inv_tabbar.add(ttk.Frame(self.inv_tabbar, height=1), text="  My Inventory  ")
+        self.inv_tabbar.bind("<Button-1>", lambda e: self.show_inventory())
+        self.root.after(50, lambda: self.inv_tabbar.place(in_=self.nb, relx=1.0, x=0, y=0, anchor="ne"))
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self.hide_inventory(), add="+")
+        self.nb.bind("<ButtonRelease-1>", lambda e: self.hide_inventory()
+                     if self.nb.identify(e.x, e.y) else None, add="+")
+        self.inv_con = mfm.inventory_db()
+
+        tab = ttk.Frame(self.root, padding=6)
+        self.inv_page = tab
         top = ttk.Frame(tab)
         top.pack(fill="x", pady=(0, 6))
-        b = ttk.Button(top, text="Add items…", command=self.open_inventory_scan)
+        b = ttk.Button(top, text="Auto Detect (beta)", command=self.open_inventory_scan)
         b.pack(side="left")
-        tip("Opens a window that reads your Item Inventory in the game.", b)
-        b = ttk.Button(top, text="Quantity…", command=self.change_inventory_qty)
+        tip("Reads your Item Inventory window in the game and matches the items.", b)
+        b = ttk.Button(top, text="Add by name…", command=self.add_inventory_by_name)
         b.pack(side="left", padx=(6, 0))
-        tip("Change how many of the selected items you have (or double-click a Qty).", b)
+        tip("Add an item by typing its name.", b)
+        self.inv_sold_btn = ttk.Button(top, text="Sold", command=self.toggle_inventory_sold, width=8)
+        self.inv_sold_btn.pack(side="left", padx=(6, 0))
+        tip("Mark the selected items as sold (or, for sold items, unsell them).", self.inv_sold_btn)
         ttk.Button(top, text="Remove selected", command=self.remove_inventory).pack(side="left", padx=6)
-        ttk.Label(top, foreground="#555", text="Items you own and what they're worth, from the "
-                  "prices you've seen.").pack(side="left", padx=(10, 0))
-        self.inv_tree = make_tree(tab, ("item", "qty", "market", "range", "points", "sold24", "last3"))
-        self.inv_tree.frame.pack(fill="both", expand=True)
-        self.inv_tree.bind("<Double-1>", lambda e: (
-            self.change_inventory_qty() if self._clicked_column(self.inv_tree, e) == "qty"
-            else self.open_history(self.inv_tree)))
-        self._list_menu(self.inv_tree, [
-            ("Show history", self.open_history, True),
-            ("Change quantity…", lambda t: self.change_inventory_qty(), False),
-            None,
-            ("Remove", lambda t: self.remove_inventory(), False)])
-        self.inv_tree.bind("<Delete>", lambda e: self.remove_inventory())
-        self.inv_tree.bind("<BackSpace>", lambda e: self.remove_inventory())
-        worth = ttk.LabelFrame(tab, text=" Net worth ", padding=(10, 4, 10, 6))
+        b = ttk.Button(top, text="Clear My Inventory…", command=self.clear_inventory)
+        b.pack(side="right")
+        tip("Delete everything in My Inventory (asks first, keeps a backup).", b)
+        b = ttk.Button(top, text="Export…", command=self.export_inventory)
+        b.pack(side="right", padx=6)
+        tip("Save My Inventory as a CSV file.", b)
+        b = ttk.Button(top, text="Import…", command=self.import_inventory)
+        b.pack(side="right")
+        tip("Load a My Inventory CSV file.", b)
+
+        t = make_tree(tab, ("item", "qty", "list_price", "notes", "market", "range", "points", "sold24",
+                            "last3", "status"))
+        self.inv_tree = t
+        t.column("status", width=130)
+        t.frame.pack(fill="both", expand=True)
+        t.bind("<<TreeviewSelect>>", lambda e: self._update_sold_button(), add="+")
+        t.bind("<Delete>", lambda e: self.remove_inventory())
+        t.bind("<BackSpace>", lambda e: self.remove_inventory())
+        self._inline_editing(t, self.INV_EDITABLE, self._inv_edit_done)
+        t.bind("<Double-1>", lambda e: (self._cancel_inline(t), self.open_history(t)), add="+")
+        menu = tk.Menu(t, tearoff=False)
+
+        def popup(e):
+            row = t.identify_row(e.y)
+            if not row:
+                return
+            if row not in t.selection():
+                t.selection_set(row)
+            sel = t.selection()
+            n = len(sel)
+            sold = [k for k in sel if "sold" in t.item(k, "tags")]
+            menu.delete(0, "end")
+            menu.add_command(label="Show history", state="normal" if n == 1 else "disabled",
+                             command=lambda: self.open_history(t))
+            menu.add_separator()
+            for col, label in (("notes", "Edit note…"), ("qty", "Change quantity…"),
+                               ("list_price", "Set list price…")):
+                menu.add_command(label=label if n == 1 else f"{label[:-1]} ({n} items)…",
+                                 command=lambda c=col: self._inv_edit_dialog(c))
+            menu.add_separator()
+            if sold and len(sold) == n:
+                menu.add_command(label="Unmark as sold…", command=self.unsell_inventory)
+            else:
+                menu.add_command(label="Mark as sold…", command=self.sell_inventory)
+            menu.add_separator()
+            menu.add_command(label="Remove" if n == 1 else f"Remove ({n} items)", command=self.remove_inventory)
+            menu.tk_popup(e.x_root, e.y_root)
+        bind_right_click(t, popup)
+
+        worth = ttk.LabelFrame(tab, text=" Net worth  ·  3% meso tax included ", padding=(10, 4, 10, 6))
         worth.pack(fill="x", pady=(6, 0))
-        self.worth_range = ttk.Label(worth, style="Bold.TLabel")
-        self.worth_market = ttk.Label(worth, style="Bold.TLabel")
-        self.worth_sales = ttk.Label(worth, style="Bold.TLabel")
-        self.worth_note = ttk.Label(worth, foreground="#666")
-        for w in (self.worth_range, self.worth_market, self.worth_sales, self.worth_note):
+        left, right = ttk.Frame(worth), ttk.Frame(worth)
+        left.pack(side="left", anchor="n")
+        right.pack(side="left", anchor="n", padx=(60, 0))
+        self.worth_range = ttk.Label(left, style="Bold.TLabel")
+        self.worth_market = ttk.Label(left, style="Bold.TLabel")
+        self.worth_sales = ttk.Label(left, style="Bold.TLabel")
+        self.worth_listed = ttk.Label(right, style="Bold.TLabel")
+        self.worth_profit = ttk.Label(right, style="Bold.TLabel")
+        for w in (self.worth_range, self.worth_market, self.worth_sales):
             w.pack(anchor="w")
-        tip("The lowest and highest prices seen for each item, added up.", self.worth_range)
-        tip("Each item's market price, added up.", self.worth_market)
-        tip("The average of each item's last 3 sales, added up.", self.worth_sales)
+        for w in (self.worth_listed, self.worth_profit):
+            w.pack(anchor="w")
+        self.worth_note = ttk.Label(worth, foreground="#666")
+        self.worth_note.pack(side="right", anchor="s")
+        tip("The lowest and highest prices seen for the items you own, added up, less 3% tax.",
+            self.worth_range)
+        tip("The market price of the items you own, added up, less 3% tax.", self.worth_market)
+        tip("The average of each item's last 3 sales, added up, less 3% tax.", self.worth_sales)
+        tip("The list prices of the items you own, added up, less 3% tax.", self.worth_listed)
+        tip("What the items you marked as sold sold for, added up, less 3% tax.", self.worth_profit)
+        self.refresh_inventory()
+
+    def show_inventory(self):
+        """Bring My Inventory to the front (its tab is at the far right of the tab row)."""
+        page = self.nb.nametowidget(self.nb.select())
+        self.inv_page.place(in_=page, x=0, y=0, relwidth=1, relheight=1)
+        self.inv_page.lift()
+        self.inv_tabbar.lift()
+        self.nb.configure(style="Dim.TNotebook")
+        self.inv_tabbar.configure(style="TNotebook")
+        self.inventory_shown = True
+        self.refresh_inventory()
+
+    def hide_inventory(self):
+        if not getattr(self, "inventory_shown", False):
+            return
+        self.inv_page.place_forget()
+        self.nb.configure(style="TNotebook")
+        self.inv_tabbar.configure(style="DimInv.TNotebook")
+        self.inventory_shown = False
+
+    # -- inline editing: click a cell of a highlighted row to type in it
+    def _inline_editing(self, tree, cols, on_done):
+        state = {"before": (), "job": None}
+
+        def press(e):
+            state["before"] = tree.selection()
+
+        def release(e):
+            row, col = tree.identify_row(e.y), self._clicked_column(tree, e)
+            if not row or col not in cols or row not in state["before"] or len(tree.selection()) != 1:
+                return
+            if e.state & 0x000C:          # Ctrl / Alt / Shift: selecting, not editing
+                return
+            state["job"] = tree.after(320, lambda: self._inline_edit(tree, row, col, on_done))
+        tree.bind("<ButtonPress-1>", press, add="+")
+        tree.bind("<ButtonRelease-1>", release, add="+")
+        tree.inline_state = state
+
+    def _cancel_inline(self, tree):
+        st = getattr(tree, "inline_state", None)
+        if st and st["job"]:
+            tree.after_cancel(st["job"])
+            st["job"] = None
+
+    def _inline_edit(self, tree, row, col, on_done):
+        tree.inline_state["job"] = None
+        if not tree.exists(row):
+            return
+        box = tree.bbox(row, col)
+        if not box:
+            return
+        x, y, w, h = box
+        var = tk.StringVar(value=tree.set(row, col))
+        e = ttk.Entry(tree, textvariable=var)
+        e.place(x=x, y=y, width=max(w, 80), height=h)
+        e.focus_set()
+        e.select_range(0, "end")
+        done = {"v": False}
+
+        def finish(save):
+            if done["v"]:
+                return
+            done["v"] = True
+            val = var.get()
+            e.destroy()
+            if save:
+                on_done(tree, row, col, val)
+        e.bind("<Return>", lambda ev: finish(True))
+        e.bind("<KP_Enter>", lambda ev: finish(True))
+        e.bind("<Escape>", lambda ev: finish(False))
+        e.bind("<FocusOut>", lambda ev: finish(True))
+
+    def _inv_value(self, col, raw):
+        """A typed value for an inventory column, or raise ValueError."""
+        raw = (raw or "").strip()
+        if col == "qty":
+            if not raw.isdigit() or int(raw) < 1:
+                raise ValueError("Quantity: a whole number, 1 or more.")
+            return int(raw)
+        if col == "list_price":
+            if not raw or raw == "-":
+                return None
+            v = mfm.parse_price(raw)
+            if not v:
+                raise ValueError("List price: a number like 45000, 45,000 or 45k.")
+            return v
+        return raw or None
+
+    def _inv_edit_done(self, tree, row, col, raw):
+        try:
+            val = self._inv_value(col, raw)
+        except ValueError as e:
+            self._set_status(str(e))
+            self.root.bell()
+            return
+        mfm.update_inventory(self.inv_con, [int(row)], **{col: val})
+        self.refresh_inventory()
+
+    def _inv_edit_dialog(self, col):
+        sel = self.inv_tree.selection()
+        if not sel:
+            return
+        cur = self.inv_tree.set(sel[0], col) if len(sel) == 1 else ""
+        label = {"qty": "How many do you have?", "list_price": "List price (each; e.g. 45000 or 45k, "
+                 "empty = none):", "notes": "Note (e.g. +5 ATK, 7 slots):"}[col]
+        raw = ask_value(self.root, {"qty": "Quantity", "list_price": "List price", "notes": "Note"}[col],
+                        label, "" if cur == "-" else cur)
+        if raw is None:
+            return
+        try:
+            val = self._inv_value(col, raw)
+        except ValueError as e:
+            messagebox.showerror("Invalid value", str(e))
+            return
+        mfm.update_inventory(self.inv_con, [int(k) for k in sel], **{col: val})
         self.refresh_inventory()
 
     def refresh_inventory(self):
         if not hasattr(self, "inv_tree"):
             return
         t = self.inv_tree
-        restore = self._keep_selection(t, lambda tr, k: tr.set(k, "item"))
+        restore = self._keep_selection(t, lambda tr, k: k)
         t.delete(*t.get_children())
-        lo = hi = mkt = sales = 0
-        missing = 0
-        for e in self.inventory:
-            item, qty = e["item"], int(e.get("qty") or 1)
-            st = mfm.inventory_stats(self.con, item, self.cfg)
-            if st["low"] is not None:
-                lo += st["low"] * qty
-                hi += st["high"] * qty
-            if st["market"]:
-                mkt += st["market"] * qty
-            if st["last3"]:
-                sales += st["last3"] * qty
-            if st["low"] is None and not st["market"]:
-                missing += 1
+        lo = hi = mkt = sales = listed = profit = 0
+        missing = owned_n = 0
+        stats = {}
+        rows = mfm.load_inventory(self.inv_con)
+        for r in rows:
+            item, qty = r["item"], int(r["qty"] or 1)
+            st = stats.get(item) or stats.setdefault(item, mfm.inventory_stats(self.con, item, self.cfg))
+            lp = r["list_price"]
+            if r["sold"]:
+                profit += (lp or 0) * qty
+            else:
+                owned_n += qty
+                if st["low"] is not None:
+                    lo += st["low"] * qty
+                    hi += st["high"] * qty
+                if st["market"]:
+                    mkt += st["market"] * qty
+                if st["last3"]:
+                    sales += st["last3"] * qty
+                if lp:
+                    listed += lp * qty
+                if st["low"] is None and not st["market"]:
+                    missing += 1
             rng = (f"{mfm.fmt(st['low'])} – {mfm.fmt(st['high'])}" if st["low"] is not None
                    and st["low"] != st["high"] else mfm.fmt(st["low"]))
-            t.insert("", "end", image=self.icon_for(item), values=(
-                item, qty, mfm.fmt(st["market"]), rng, st["points"], st["sold24"],
-                mfm.fmt(st["last3"]) + (f" ({st['last3_n']})" if st["last3"] and st["last3_n"] < 3 else "")))
+            status = f"sold {mfm.local_time(r['sold_at'])[:10]}" if r["sold"] and r["sold_at"] else \
+                ("sold" if r["sold"] else "")
+            t.insert("", "end", iid=str(r["id"]), image=self.icon_for(item), tags=("sold",) if r["sold"] else (),
+                     values=(item, qty, mfm.fmt(lp), r["notes"] or "", mfm.fmt(st["market"]), rng, st["points"],
+                             st["sold24"], mfm.fmt(st["last3"]) + (f" ({st['last3_n']})" if st["last3"]
+                                                                    and st["last3_n"] < 3 else ""), status))
         restore()
-        self.worth_range.config(text=f"Possible range:  {mfm.fmt(lo)} – {mfm.fmt(hi)}")
-        self.worth_market.config(text=f"Estimated value (market prices):  {mfm.fmt(mkt)}")
-        self.worth_sales.config(text=f"Estimated value (last 3 sales):  {mfm.fmt(sales)}")
-        n = sum(int(e.get("qty") or 1) for e in self.inventory)
-        self.worth_note.config(text=f"{mfm.plural(len(self.inventory), 'item')} ({n} in total)"
-                               + (f"  ·  {missing} without price data" if missing else ""))
+        keep = 1 - mfm.MESO_TAX
+        self.worth_range.config(text=f"Possible range:  {mfm.fmt(lo * keep)} – {mfm.fmt(hi * keep)}")
+        self.worth_market.config(text=f"Estimated value (market prices):  {mfm.fmt(mkt * keep)}")
+        self.worth_sales.config(text=f"Estimated value (last 3 sales):  {mfm.fmt(sales * keep)}")
+        self.worth_listed.config(text=f"Listed items value:  {mfm.fmt(listed * keep)}")
+        self.worth_profit.config(text=f"Realized profit:  {mfm.fmt(profit * keep)}")
+        self.worth_note.config(text=f"{owned_n} owned" + (f"  ·  {missing} without price data" if missing else ""))
+        self._update_sold_button()
+
+    def _update_sold_button(self):
+        t = self.inv_tree
+        sel = t.selection()
+        all_sold = bool(sel) and all("sold" in t.item(k, "tags") for k in sel)
+        self.inv_sold_btn.config(text="Unsell" if all_sold else "Sold")
+
+    def toggle_inventory_sold(self):
+        if self.inv_sold_btn.cget("text") == "Unsell":
+            self.unsell_inventory()
+        else:
+            self.sell_inventory()
+
+    def sell_inventory(self):
+        """Mark the selected items as sold: each sale goes into the price database."""
+        t = self.inv_tree
+        ids = [k for k in t.selection() if "sold" not in t.item(k, "tags")]
+        if not ids:
+            return
+        n = None
+        if len(ids) == 1:
+            qty = int(t.set(ids[0], "qty") or 1)
+            if qty > 1:
+                raw = ask_value(self.root, "Mark as sold", f"How many of '{t.set(ids[0], 'item')}' were sold? "
+                                f"(1–{qty})", str(qty), check=lambda s: s.strip().isdigit() and 1 <= int(s) <= qty)
+                if raw is None:
+                    return
+                n = int(raw)
+        done = 0
+        for k in ids:
+            item, lp = t.set(k, "item"), mfm.parse_price(t.set(k, "list_price")) if t.set(k, "list_price") not in ("", "-") else None
+            price = lp
+            if not price:
+                mkt = t.set(k, "market")
+                raw = ask_value(self.root, "Sold for", f"What did '{item}' sell for (each)?",
+                                "" if mkt == "-" else mkt, check=lambda s: (mfm.parse_price(s) or 0) > 0)
+                if raw is None:
+                    continue
+                price = mfm.parse_price(raw)
+            mfm.mark_sold(self.inv_con, self.con, int(k), n if len(ids) == 1 else None, price)
+            done += 1
+        self.refresh_inventory()
+        self.refresh_tables()
+        if done:
+            self._set_status(f"Marked {mfm.plural(done, 'item')} as sold.")
+
+    def unsell_inventory(self):
+        t = self.inv_tree
+        ids = [k for k in t.selection() if "sold" in t.item(k, "tags")]
+        if not ids:
+            return
+        removed = sum(mfm.unmark_sold(self.inv_con, self.con, int(k)) for k in ids)
+        self.refresh_inventory()
+        self.refresh_tables()
+        self._set_status(f"Unmarked {mfm.plural(len(ids), 'item')} as sold"
+                         + (f"; {mfm.plural(removed, 'sale')} removed from the prices." if removed else "."))
+
+    def add_inventory_by_name(self):
+        name = self._choose_item(self.root, "Which item?", "")
+        if not name:
+            return
+        raw = ask_value(self.root, "Quantity", f"How many {name}?", "1",
+                        check=lambda s: s.strip().isdigit() and int(s) > 0)
+        if raw is None:
+            return
+        self.add_to_inventory([(name, int(raw))])
 
     def add_to_inventory(self, items: list[tuple[str, int]]):
         for item, qty in items:
-            e = next((e for e in self.inventory if e["item"] == item), None)
-            if e:
-                e["qty"] = int(e.get("qty") or 1) + qty
-            else:
-                self.inventory.append({"item": item, "qty": qty, "added": mfm.utc_now()})
-        mfm.save_inventory(self.inventory)
+            mfm.add_inventory(self.inv_con, item, qty)
         self.refresh_inventory()
         self._set_status(f"Added {mfm.plural(len(items), 'item')} to My Inventory.")
 
-    def change_inventory_qty(self):
-        items = [self.inv_tree.set(k, "item") for k in self.inv_tree.selection()]
-        if not items:
+    def remove_inventory(self):
+        ids = [int(k) for k in self.inv_tree.selection()]
+        if not ids:
             return
-        cur = self.inv_tree.set(self.inv_tree.selection()[0], "qty") if len(items) == 1 else ""
-        raw = ask_value(self.root, "Quantity", f"How many {'of ' + repr(items[0]) if len(items) == 1 else 'of each'}"
-                        " do you have?", cur, check=lambda s: s.strip().isdigit() and int(s) > 0)
-        if raw is None:
-            return
-        for e in self.inventory:
-            if e["item"] in items:
-                e["qty"] = int(raw)
-        mfm.save_inventory(self.inventory)
+        mfm.delete_inventory(self.inv_con, ids)
         self.refresh_inventory()
 
-    def remove_inventory(self):
-        gone = {self.inv_tree.set(k, "item") for k in self.inv_tree.selection()}
-        if not gone:
+    def clear_inventory(self):
+        n = len(mfm.load_inventory(self.inv_con))
+        if not n:
             return
-        self.inventory = [e for e in self.inventory if e["item"] not in gone]
-        mfm.save_inventory(self.inventory)
+        if not messagebox.askyesno("Clear My Inventory", f"Delete all {mfm.plural(n, 'row')} in My Inventory?\n\n"
+                                   "A backup is saved in the data folder's backups folder.",
+                                   icon="warning", default="no"):
+            return
+        backup = mfm.clear_inventory(self.inv_con)
         self.refresh_inventory()
+        self._set_status("My Inventory cleared." + (f" Backup: {backup}" if backup else ""))
+
+    def export_inventory(self):
+        path = filedialog.asksaveasfilename(title="Export My Inventory", defaultextension=".csv",
+                                            initialfile=mfm.stamped("mfm-tracker my inventory.csv"),
+                                            filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            n = mfm.export_inventory(self.inv_con, path)
+        except Exception as e:
+            self.report_error("Exporting My Inventory failed", f"{path}\n\n{e}")
+            return
+        self._set_status(f"Exported {mfm.plural(n, 'row')} to {path}")
+
+    def import_inventory(self):
+        path = filedialog.askopenfilename(title="Import My Inventory", filetypes=[("CSV", "*.csv"), ("All files", "*")])
+        if not path:
+            return
+        replace = False
+        if mfm.load_inventory(self.inv_con):
+            ans = messagebox.askyesnocancel("Import My Inventory", "Replace your current list?\n\n"
+                                            "Yes = replace it, No = add to it.")
+            if ans is None:
+                return
+            replace = ans
+        try:
+            n = mfm.import_inventory(self.inv_con, path, replace=replace)
+        except Exception as e:
+            messagebox.showerror("Import failed", str(e))
+            return
+        self.refresh_inventory()
+        self._set_status(f"Imported {mfm.plural(n, 'row')} into My Inventory.")
 
     # ------------------------------------------------------------------ add items window
     def open_inventory_scan(self):
@@ -1678,13 +1966,13 @@ class App:
             return
         win = tk.Toplevel(self.root)
         self.inv_scan = win
-        win.title("Add items from your inventory")
+        win.title("Auto Detect (beta)")
         win.geometry("920x660")
         win.minsize(760, 560)
         top = ttk.Frame(win, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
-                  "ones you want and click Add. Add by name… puts in any other item.",
+                  "ones you want and click Add.",
                   wraplength=560, justify="left").pack(side="left")
         b = ttk.Button(top, text="Inventory area", command=lambda: self.calibrate(key="inventory_region"))
         b.pack(side="right")
@@ -1728,8 +2016,6 @@ class App:
                 if not r:
                     continue
                 win.chosen[key] = name
-                if r.get("manual"):
-                    continue                     # typed in: no icon from the screen to learn
                 try:
                     mfm.learn_icon(self.con, name, r["icon"])
                     if win.state["matcher"] is not None:
@@ -1808,36 +2094,13 @@ class App:
             self.add_to_inventory(list(merged.items()))
             win.status.config(text=f"Added {mfm.plural(len(merged), 'item')} to My Inventory."
                               + (f" {unknown} unknown skipped." if unknown else ""))
-        def add_by_name():
-            name = self._choose_item(win, "Which item?", "")
-            if not name:
-                return
-            raw = ask_value(win, "Quantity", f"How many {name}?", "1",
-                            check=lambda t: t.strip().isdigit() and int(t) > 0)
-            if raw is None:
-                return
-            key = (-2, sum(1 for k in win.rows if k[0] == -2))
-            icon = mfm.load_icon(self.con, name) or Image.new("RGB", (32, 32), mfm.INV_SLOT_BG)
-            win.rows[key] = {"item": name, "guess": name, "score": 1.0, "qty": int(raw),
-                             "icon": icon, "manual": True}
-            self._inv_scan_show(win)
-            iid = json.dumps(list(key))
-            if tree.exists(iid):
-                tree.selection_add(iid)
-                tree.see(iid)
-            win.status.config(text=f"{name} is in the list. Select it and click Add.")
-
         bottom = ttk.Frame(win, padding=(12, 4, 12, 12))
         bottom.pack(fill="x")
         ttk.Button(bottom, text="Select all", command=lambda: tree.selection_set(tree.get_children())
                    ).pack(side="left")
-        b = ttk.Button(bottom, text="Add by name…", command=add_by_name)
-        b.pack(side="left", padx=6)
         bq = ttk.Button(bottom, text="Quantity…", command=set_qty)
-        bq.pack(side="left")
+        bq.pack(side="left", padx=6)
         tip("Change how many of the selected items to add (or double-click a Qty).", bq)
-        tip("Put an item in the list by typing its name, e.g. one that isn't in your inventory "
-            "window right now.", b)
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
         ttk.Button(bottom, text="Add", command=add).pack(side="right", padx=6)
         win.stop = threading.Event()
@@ -1979,13 +2242,12 @@ class App:
                 ic.thumbnail((28, 28))   # same size as the other tables' icons
                 win.photos[(tab, i)] = ImageTk.PhotoImage(ic)
             review = not r["item"] and (tab, i) not in win.chosen
-            match = ("added by name" if r.get("manual") and (tab, i) not in win.chosen
-                     else "chosen" if (tab, i) in win.chosen else f"{r['score']:.0%}" if r["item"]
+            match = ("chosen" if (tab, i) in win.chosen else f"{r['score']:.0%}" if r["item"]
                      else f"review: {r['guess']}? ({r['score']:.0%})" if r.get("guess") else "review: no match")
             tree.insert("", "end", iid=iid, image=win.photos[(tab, i)], tags=("review",) if review else (),
                         values=(
                 name, win.qty.get((tab, i), r["qty"]),
-                self.INV_TABS[tab] if 0 <= tab < len(self.INV_TABS) else ("By name" if tab == -2 else ""),
+                self.INV_TABS[tab] if 0 <= tab < len(self.INV_TABS) else "",
                 match))
         tree.selection_set([k for k in keep if tree.exists(k)])
 
@@ -3225,7 +3487,6 @@ class App:
             self.watch = mfm.load_watchlist()
             self.watched_listings = mfm.load_watched_listings()
             self.refresh_watched_listings()
-            self.inventory = mfm.load_inventory()
             self.refresh_inventory()
             self.ignored = set(mfm.load_ignorelist())
             self.sound_on.set(self.cfg.get("alert_sound_on", True))

@@ -7,10 +7,19 @@
   show in a new **Notes** column in Live, Deals and item history.
 - **Watched listings:** right-click a listing → **Watch this listing…** to get an alert when
   that player's listing is for sale again.
-- **My Inventory tab:** add the items you own and see what they're worth: market price,
-  price range, sightings, sales in the last 24 hours and the average of the last 3 sales,
-  with net worth totals. **Add items…** reads your Item Inventory window in the game and
-  matches the icons; unmatched icons can be reviewed and are remembered.
+- **My Inventory:** at the far right of the tab row. Add the items you own and see what
+  they're worth: market price, price range, sightings, sales in the last 24 hours and the
+  average of the last 3 sales.
+  - **Add by name…**, or **Auto Detect (beta)** to read your Item Inventory window in the
+    game. Unmatched icons can be reviewed and are remembered.
+  - **List price** and **Notes** columns. Click a selected row's Qty, List price or Notes
+    to edit it.
+  - **Sold** / **Unsell:** sold items are faded and added to your prices. If you have more
+    than one, you're asked how many sold.
+  - **Net worth** with possible range, estimated values, listed items value and realized
+    profit, all with the 3% meso tax taken off.
+  - **Export…**, **Import…** and **Clear My Inventory…**. It's kept in its own file,
+    `inventory/inventory.db`.
 
 ### Changed
 - The channel picker shows 18 channels by default.
