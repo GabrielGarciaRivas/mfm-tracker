@@ -1578,6 +1578,7 @@ class App:
         self.inv_underline = tk.Canvas(self.root, height=2, highlightthickness=0, borderwidth=0)
         self.inv_tabtop = tk.Canvas(self.root, height=2, highlightthickness=0, borderwidth=0)
         self.inv_tabedge = tk.Frame(self.root, width=1, height=2, borderwidth=0)
+        self.inv_tabcorner = tk.Frame(self.root, width=1, height=1, borderwidth=0)
         self.root.after(50, self._place_inv_tabbar)
         self.nb.bind("<Configure>", lambda e: self._place_inv_tabbar_later(), add="+")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.hide_inventory(), add="+")
@@ -1718,14 +1719,27 @@ class App:
         # the other, unselected ones: lower its top and draw the page border under it
         line, top, edge = self.inv_underline, self.inv_tabtop, self.inv_tabedge
         style = ttk.Style()
-        if not shown or style.theme_use() != "clam":
+        if style.theme_use() != "clam":
             for w in (line, top, edge):
                 w.place_forget()
             return
-        # keep the notebook's right edge unbroken where the My Inventory tab meets the page
+        # keep the right edge unbroken where the My Inventory tab meets the page: the
+        # page's rounded top-right corner would leave a notch there
         edge.configure(background=style.lookup("TNotebook", "bordercolor") or "#9e9a91")
-        edge.place(in_=nb, relx=1.0, x=-1, y=main[0], width=1, height=main[1] - main[0])
+        edge.place(in_=nb, relx=1.0, x=-1, y=main[0], width=1,
+                   height=main[1] - main[0] if shown else 1)
         tk.Misc.lift(edge)
+        corner = self.inv_tabcorner
+        if not shown:
+            for w in (line, top, corner):
+                w.place_forget()
+            return
+        # a selected tab's left border stops at the page's top border line
+        if last is not None and main[1] - main[0] > 1:
+            corner.configure(background=style.lookup("TNotebook", "lightcolor") or "#eeebe7")
+            corner.place(in_=nb, relx=1.0, x=-(last + 1), y=main[0] + 1, width=1,
+                         height=main[1] - main[0] - 1)
+            tk.Misc.lift(corner)
         cur, xs = nb.index("current"), []
         for x in range(0, nb.winfo_width()):
             try:
