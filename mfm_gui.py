@@ -911,7 +911,19 @@ class App:
         win.mode = "dropdown" if dropdown else "prompt"
         # no channel-change detection while you're picking a channel
         self.chan_watch.pause()
-        win.bind("<Destroy>", lambda ev: ev.widget is win and self.chan_watch.resume(), add="+")
+        launch = not changed and not dropdown and not getattr(self, "_launch_asked", False)
+        if launch:
+            self._launch_asked = True
+
+        def closed(ev):
+            if ev.widget is not win:
+                return
+            self.chan_watch.resume()
+            if launch:
+                # you may have opened the game's Change Channel window to check your
+                # channel: don't ask again when it closes
+                self.chan_watch.quiet(15)
+        win.bind("<Destroy>", closed, add="+")
         win.resizable(False, False)
         if dropdown:
             win.overrideredirect(True)            # a plain panel under the box, like a list

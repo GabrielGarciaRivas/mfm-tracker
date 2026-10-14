@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.15.002"
+VERSION = "2610.15.003"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -1861,13 +1861,25 @@ class ChannelWatch:
         self.paused = False
         self.seen, self.gone = False, 0
 
+    quiet_until = 0.0
+
+    def quiet(self, seconds: float) -> None:
+        """Ignore channel changes for a while (e.g. right after you picked your
+        channel at launch, while the game's Change Channel window may still be open)."""
+        self.quiet_until = time.monotonic() + seconds
+        self.seen, self.gone = False, 0
+
+    def _off(self) -> bool:
+        return self.paused or time.monotonic() < self.quiet_until
+
     def due(self) -> bool:
-        return not self.paused and time.monotonic() - self.last >= self.every
+        return not self._off() and time.monotonic() - self.last >= self.every
 
     def feed(self, full: Image.Image) -> bool:
         """Check one screenshot; True once the dialog has come and gone."""
         self.last = time.monotonic()
-        if self.paused:
+        if self._off():
+            self.seen, self.gone = False, 0
             return False
         if find_channel_dialog(full):
             self.seen, self.gone = True, 0
@@ -5433,7 +5445,7 @@ def fix_megaphone_words(msg: str, con=None) -> str:
 
 
 # ("S=" and "B=" are how the chat font's ">" is sometimes read)
-SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|S=(?=\S)|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
+SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|S=(?=\S)|C\s?/\s?O\b|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
 BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
                        re.I)
 

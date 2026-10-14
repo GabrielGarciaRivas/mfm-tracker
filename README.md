@@ -93,7 +93,9 @@ number. In the picker, the arrow keys move between channels and Enter picks one.
 channel stays set until you change it.
 
 The app also asks for your channel when it starts and each time you change channel in
-the game (after the game's Change Channel window closes). Turn this off, or set how many
+the game (after the game's Change Channel window closes). For 15 seconds after you pick
+your channel at start, channel changes aren't detected, in case you had the Change Channel
+window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.
 
 ## Tabs
@@ -126,7 +128,7 @@ the time (in your local time), player, channel and message. Blue megaphones are 
 own channel, so they get the channel from the **Channel** box. The panel on the right
 shows what's being read.
 
-- Selling: S>, WTS, sell, selling, have, trade, trading.
+- Selling: S>, WTS, C/O, sell, selling, have, trade, trading.
 - Buying: B>, WTB, buy, buying, looking for, LF, need, want.
 - A megaphone with both shows in both lists.
 - Long megaphones that wrap onto more lines are read in full. Repeated symbols at the end

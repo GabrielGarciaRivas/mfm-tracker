@@ -1,5 +1,12 @@
 # Changelog
 
+## 2610.15.003 — 2026-10-14
+
+### Changed
+- Megaphones with **C/O** count as selling.
+- After you pick your channel when the app starts, channel changes aren't detected for
+  15 seconds, so closing the game's Change Channel window doesn't ask again.
+
 ## 2610.15.002 — 2026-10-14
 
 ### Fixed
