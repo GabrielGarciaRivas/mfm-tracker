@@ -668,8 +668,8 @@ class App:
                         command=lambda: self.root.attributes("-topmost", self.top_var.get())
                         ).pack(side="right")
         ttk.Button(bar, text="Settings", command=self.settings).pack(side="right", padx=6)
-        ttk.Button(bar, text="Import prices…", command=self.import_ref).pack(side="right")
-        ttk.Button(bar, text="Export prices…", command=self.export_prices).pack(side="right", padx=(0, 6))
+        ttk.Button(bar, text="Import prices", command=self.import_ref).pack(side="right")
+        ttk.Button(bar, text="Export prices", command=self.export_prices).pack(side="right", padx=(0, 6))
         self.start_btn = ttk.Button(bar, text="▶  Start monitoring", command=self.toggle, width=17)
         self.start_btn.pack(side="left")
         ttk.Button(bar, text="Shop area", command=self.calibrate).pack(side="left", padx=(8, 0))
@@ -1516,7 +1516,7 @@ class App:
         self.alerts.bind("<Double-1>", lambda e: self.open_history(self.alerts))
         self._list_menu(self.alerts, [
             ("Show history", self.open_history, True),
-            ("Change max price…", lambda t: self.change_alert_max(), False),
+            ("Change max price", lambda t: self.change_alert_max(), False),
             None,
             ("Remove item", lambda t: self.remove_alert(), False)])
         self.alerts.bind("<Delete>", lambda e: self.remove_alert())
@@ -1536,7 +1536,7 @@ class App:
         self.wlist.bind("<Double-1>", lambda e: self.open_history(self.wlist))
         self._list_menu(self.wlist, [
             ("Show history", self.open_history, True),
-            ("Edit note…", lambda t: self.edit_watched_note(), True),
+            ("Edit note", lambda t: self.edit_watched_note(), True),
             None,
             ("Remove listing", lambda t: self.remove_watched_listing(), False)])
         self.wlist.bind("<Delete>", lambda e: self.remove_watched_listing())
@@ -1550,7 +1550,7 @@ class App:
         ttk.Checkbutton(bottom, text="Bring this window to front", variable=self.raise_on,
                         command=self._save_sound_prefs).pack(side="left", padx=(10, 0))
         ttk.Button(bottom, text="Test sound", command=self.test_sound).pack(side="left", padx=(10, 0))
-        ttk.Button(bottom, text="Choose sound…", command=self.choose_sound).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Choose sound", command=self.choose_sound).pack(side="left", padx=4)
         self.sound_lbl = ttk.Label(bottom, foreground="#666")
         self.sound_lbl.pack(side="left", padx=6)
         self.refresh_alerts()
@@ -1586,20 +1586,20 @@ class App:
         b = ttk.Button(top, text="Auto Detect (beta)", command=self.open_inventory_scan)
         b.pack(side="left")
         tip("Reads your Item Inventory window in the game and matches the items.", b)
-        b = ttk.Button(top, text="Add by name…", command=self.add_inventory_by_name)
+        b = ttk.Button(top, text="Add by name", command=self.add_inventory_by_name)
         b.pack(side="left", padx=(6, 0))
         tip("Add an item by typing its name.", b)
         self.inv_sold_btn = ttk.Button(top, text="Sold", command=self.toggle_inventory_sold, width=8)
         self.inv_sold_btn.pack(side="left", padx=(6, 0))
         tip("Mark the selected items as sold (or, for sold items, unsell them).", self.inv_sold_btn)
         ttk.Button(top, text="Remove selected", command=self.remove_inventory).pack(side="left", padx=6)
-        b = ttk.Button(top, text="Clear My Inventory…", command=self.clear_inventory)
+        b = ttk.Button(top, text="Clear My Inventory", command=self.clear_inventory)
         b.pack(side="right")
         tip("Delete everything in My Inventory (asks first, keeps a backup).", b)
-        b = ttk.Button(top, text="Export…", command=self.export_inventory)
+        b = ttk.Button(top, text="Export", command=self.export_inventory)
         b.pack(side="right", padx=6)
         tip("Save My Inventory as a CSV file.", b)
-        b = ttk.Button(top, text="Import…", command=self.import_inventory)
+        b = ttk.Button(top, text="Import", command=self.import_inventory)
         b.pack(side="right")
         tip("Load a My Inventory CSV file.", b)
 
@@ -1628,15 +1628,15 @@ class App:
             menu.add_command(label="Show history", state="normal" if n == 1 else "disabled",
                              command=lambda: self.open_history(t))
             menu.add_separator()
-            for col, label in (("notes", "Edit note…"), ("qty", "Change quantity…"),
-                               ("list_price", "Set list price…")):
-                menu.add_command(label=label if n == 1 else f"{label[:-1]} ({n} items)…",
+            for col, label in (("notes", "Edit note"), ("qty", "Change quantity"),
+                               ("list_price", "Set list price")):
+                menu.add_command(label=label if n == 1 else f"{label} ({n} items)",
                                  command=lambda c=col: self._inv_edit_dialog(c))
             menu.add_separator()
             if sold and len(sold) == n:
-                menu.add_command(label="Unmark as sold…", command=self.unsell_inventory)
+                menu.add_command(label="Unmark as sold", command=self.unsell_inventory)
             else:
-                menu.add_command(label="Mark as sold…", command=self.sell_inventory)
+                menu.add_command(label="Mark as sold", command=self.sell_inventory)
             menu.add_separator()
             menu.add_command(label="Remove" if n == 1 else f"Remove ({n} items)", command=self.remove_inventory)
             menu.tk_popup(e.x_root, e.y_root)
@@ -2062,8 +2062,8 @@ class App:
                 win.qty[tuple(json.loads(k))] = int(raw)
             self._inv_scan_show(win)
         self._list_menu(tree, [("Accept suggestion  (Enter)", lambda t: accept(), False),
-                               ("Pick an item…  (M)", lambda t: pick_item(), False),
-                               ("Change quantity…", lambda t: set_qty(), False),
+                               ("Pick an item  (M)", lambda t: pick_item(), False),
+                               ("Change quantity", lambda t: set_qty(), False),
                                None,
                                ("Remove  (Delete)", lambda t: remove(), False)])
         tree.bind("<Double-1>", lambda e: set_qty() if self._clicked_column(tree, e) == "qty" else pick_item())
@@ -2098,7 +2098,7 @@ class App:
         bottom.pack(fill="x")
         ttk.Button(bottom, text="Select all", command=lambda: tree.selection_set(tree.get_children())
                    ).pack(side="left")
-        bq = ttk.Button(bottom, text="Quantity…", command=set_qty)
+        bq = ttk.Button(bottom, text="Quantity", command=set_qty)
         bq.pack(side="left", padx=6)
         tip("Change how many of the selected items to add (or double-click a Qty).", bq)
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
@@ -2536,7 +2536,7 @@ class App:
             menu.delete(0, "end")
             menu.add_command(label="Accept suggested match" + (f" ({n})" if n > 1 else "") + "   Enter",
                              command=self.review_accept)
-            menu.add_command(label="Match by hand…   M", state="normal" if n == 1 else "disabled",
+            menu.add_command(label="Match by hand   M", state="normal" if n == 1 else "disabled",
                              command=lambda: self.match_dialog(t))
             menu.add_command(label="Keep name as is" + (f" ({n})" if n > 1 else "") + "   K",
                              command=self.review_keep)
@@ -2553,7 +2553,7 @@ class App:
         bottom = ttk.Frame(tab)
         bottom.pack(fill="x", pady=(6, 0))
         ttk.Button(bottom, text="Accept suggestion", command=self.review_accept).pack(side="left")
-        ttk.Button(bottom, text="Match…", command=lambda: self.match_dialog(self.review)).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Match", command=lambda: self.match_dialog(self.review)).pack(side="left", padx=4)
         ttk.Button(bottom, text="Keep as is", command=self.review_keep).pack(side="left")
         ttk.Button(bottom, text="Delete listings", command=self.review_delete).pack(side="left", padx=4)
         ttk.Button(bottom, text="Accept all 90%+ alike", command=self.review_accept_confident
@@ -2624,7 +2624,7 @@ class App:
         rows, nxt = (rows, None) if rows is not None else self._review_selected()
         done = [(r["item"], r["suggest"]) for r in rows if r["suggest"]]
         if not done:
-            self._set_status("No suggestion to accept; use Match… (M) to pick one by hand.")
+            self._set_status("No suggestion to accept; use Match (M) to pick one by hand.")
             return
         n = sum(self._apply_match(old, pick, self.review_remember.get()) for old, pick in done)
         self.refresh_tables()
@@ -2785,18 +2785,18 @@ class App:
             one = len(rows) == 1
             n_items = "this item" if len(items) == 1 else f"{len(items)} items"
             single = "normal" if one else "disabled"
-            menu.add_command(label="Match to database item…", state=single,
+            menu.add_command(label="Match to database item", state=single,
                              command=lambda: self.match_dialog(tree))
             menu.add_command(label="Show history", state=single, command=lambda: self.open_history(tree))
             menu.add_command(label="Look up on meowdb", state=single, command=lambda: self.open_meowdb(tree))
             menu.add_separator()
-            menu.add_command(label="Watch this item…" if len(items) == 1 else f"Watch these {len(items)} items…",
+            menu.add_command(label="Watch this item" if len(items) == 1 else f"Watch these {len(items)} items",
                              command=lambda: self.alert_from_table(tree))
             if tree is not self.items:
                 has_note = one and bool(tree.set(rows[0], "notes"))
-                menu.add_command(label="Edit note…" if has_note else "Add note…", state=single,
+                menu.add_command(label="Edit note" if has_note else "Add note", state=single,
                                  command=lambda: self.note_from_table(tree))
-                menu.add_command(label="Watch this listing…", state=single,
+                menu.add_command(label="Watch this listing", state=single,
                                  command=lambda: self.watch_listing_from_table(tree))
             if all(i in self.ignored for i in items):
                 menu.add_command(label=f"Stop ignoring {n_items}",
@@ -3092,9 +3092,9 @@ class App:
             def imp(kind=kind):
                 if self._import_game_data(kind, parent):
                     refresh()
-            bi = ttk.Button(b, text="Import…", command=imp)
+            bi = ttk.Button(b, text="Import", command=imp)
             bi.pack(side="left")
-            be = ttk.Button(b, text="Export…", command=lambda kind=kind: self._export_game_data(kind, parent))
+            be = ttk.Button(b, text="Export", command=lambda kind=kind: self._export_game_data(kind, parent))
             be.pack(side="left", padx=(6, 0))
             noun = "item list" if kind == "items" else "map list"
             tip(f"Loads the {noun} from a file.", bi)
@@ -3432,7 +3432,7 @@ class App:
         btns = ttk.Frame(win, padding=(14, 10, 14, 12))
         btns.pack(fill="x")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
-        ttk.Button(btns, text="Export…", command=go).pack(side="right", padx=6)
+        ttk.Button(btns, text="Export", command=go).pack(side="right", padx=6)
 
     def _confirm_twice(self, parent, title, first, second) -> bool:
         """Deleting anything takes two separate confirmations."""
@@ -3508,7 +3508,7 @@ class App:
         btns = ttk.Frame(win, padding=(14, 10, 14, 12))
         btns.pack(fill="x")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
-        ttk.Button(btns, text="Reset…", command=go).pack(side="right", padx=6)
+        ttk.Button(btns, text="Reset", command=go).pack(side="right", padx=6)
 
     def settings(self):
         win = tk.Toplevel(self.root)
@@ -3588,7 +3588,7 @@ class App:
                                         initialdir=arch_var.get() or str(mfm.DATA))
             if d:
                 arch_var.set(d)
-        bb = ttk.Button(r2, text="Browse…", command=browse)
+        bb = ttk.Button(r2, text="Browse", command=browse)
         bb.pack(side="left", padx=(6, 0))
         tip(f"The folder for {mfm.ARCHIVE_NAME}.", ea, bb)
         r3 = ttk.Frame(ret)
@@ -3707,9 +3707,9 @@ class App:
         bottom.grid(row=len(fields) + 3, column=0, columnspan=3, sticky="we", padx=12, pady=(12, 12))
         danger = ttk.LabelFrame(bottom, text=" Your data (prices and personal settings) ", padding=(10, 6))
         danger.pack(side="left")
-        b1 = ttk.Button(danger, text="Clear pricing data…", command=lambda: self.clear_prices(win))
+        b1 = ttk.Button(danger, text="Clear pricing data", command=lambda: self.clear_prices(win))
         b1.pack(side="left")
-        b2 = ttk.Button(danger, text="Reset personal settings…", command=lambda: self.reset_personal(win))
+        b2 = ttk.Button(danger, text="Reset personal settings", command=lambda: self.reset_personal(win))
         b2.pack(side="left", padx=6)
         b3 = ttk.Button(danger, text="Open data folder", command=self.open_data_folder)
         b3.pack(side="left")
@@ -3964,15 +3964,15 @@ class App:
                 table.selection_set(row)
             n = len(table.selection())
             menu.delete(0, "end")
-            menu.add_command(label="Change price…" if n == 1 else f"Change price of {n} listings…",
+            menu.add_command(label="Change price" if n == 1 else f"Change price of {n} listings",
                              command=change_price)
-            menu.add_command(label="Change channel…" if n == 1 else f"Change channel of {n} listings…",
+            menu.add_command(label="Change channel" if n == 1 else f"Change channel of {n} listings",
                              command=change_channel)
             has_note = n == 1 and bool(table.set(table.selection()[0], "notes"))
-            menu.add_command(label="Edit note…" if has_note else ("Add note…" if n == 1 else
-                                                                   f"Note for {n} listings…"),
+            menu.add_command(label="Edit note" if has_note else ("Add note" if n == 1 else
+                                                                   f"Note for {n} listings"),
                              command=edit_note)
-            menu.add_command(label="Watch this listing…", command=watch_this,
+            menu.add_command(label="Watch this listing", command=watch_this,
                              state="normal" if n == 1 else "disabled")
             menu.add_separator()
             menu.add_command(label="Delete listing" if n == 1 else f"Delete {n} listings", command=delete)

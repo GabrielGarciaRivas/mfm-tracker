@@ -117,7 +117,7 @@ listing, ignore, match to the right item, delete a bad read, or look the item up
 ## Notes
 
 Add a note to a listing for anything the item name doesn't say, like **+5 ATK** or **7
-slots**: right-click it in Live, Deals or an item's history → **Add note…**. Notes show in
+slots**: right-click it in Live, Deals or an item's history → **Add note**. Notes show in
 the **Notes** column. The next time you see the same item from the same player at the same
 price, it gets the note too.
 
@@ -134,22 +134,22 @@ the front. The **Watched** tab has two lists.
 
 **Watched items** (top): any listing of an item.
 1. Type the item, optionally a **max price**, and click **Watch**. Or right-click any item →
-   **Watch this item…**
+   **Watch this item**
 2. When it's for sale in a shop you open, you get an alert, and the price, shop, player,
    map, channel and time are shown.
 
 **Watched listings** (bottom): one player's listing, e.g. a Korean Fan with +5 ATK.
-1. Right-click a listing in Live, Deals or an item's history → **Watch this listing…**, and
+1. Right-click a listing in Live, Deals or an item's history → **Watch this listing**, and
    enter a note for it.
 2. When that listing is for sale again, you get an alert. Its latest price, place and time
    are shown, and it's marked sold once it sells.
 
 Right-click a watched item or listing to see its history, change the max price or note, or
-remove it. Pick your own alert sound with **Choose sound…**. Sound and "bring to front" can
+remove it. Pick your own alert sound with **Choose sound**. Sound and "bring to front" can
 each be turned off.
 
 **Ignored:** items you don't care about. They never count as deals, but their prices are
-still logged and watched items still get alerts. Right-click any item → **Ignore deals on…**
+still logged and watched items still get alerts. Right-click any item → **Ignore deals on**
 
 ## My Inventory
 
@@ -157,7 +157,7 @@ Keep track of what the items you own are worth. Click **My Inventory** at the fa
 the tab row.
 
 **Adding items**
-- **Add by name…:** type an item's name and how many you have.
+- **Add by name:** type an item's name and how many you have.
 - **Auto Detect (beta):** reads your **Item Inventory** in the game (open it with the I
   key). Your items show up as you switch between its tabs. Icons that couldn't be matched
   are highlighted: press **Enter** to accept the suggested item, **M** to pick one yourself,
@@ -169,10 +169,10 @@ the tab row.
 **Editing:** click a highlighted row's **Qty**, **List price** or **Notes** to type in it,
 or right-click the row. **List price** is the price you're selling it for.
 
-**Selling:** select items and click **Sold** (or right-click → **Mark as sold…**). If you
+**Selling:** select items and click **Sold** (or right-click → **Mark as sold**). If you
 have more than one of an item, you're asked how many sold. Sold items are faded, their sale
 is added to your prices, and their list price counts toward **Realized profit**. To undo,
-select them and click **Unsell** (or right-click → **Unmark as sold…**).
+select them and click **Unsell** (or right-click → **Unmark as sold**).
 
 For each item, the tab shows its market price, the range of prices seen, how many
 sightings there are, how many sold in the last 24 hours, and the average of its last 3
@@ -182,8 +182,8 @@ sales. **Net worth** at the bottom adds them up, with the 3% meso tax taken off:
 - **Listed items value:** the list prices of the items you own.
 - **Realized profit:** what your sold items sold for.
 
-**Export…** and **Import…** save and load My Inventory as a CSV file. **Clear My
-Inventory…** deletes it all (it asks first and keeps a backup).
+**Export** and **Import** save and load My Inventory as a CSV file. **Clear My
+Inventory** deletes it all (it asks first and keeps a backup).
 
 ## Market price
 
@@ -204,11 +204,11 @@ same shop doesn't log the same listing twice.
 
 ## Import and export
 
-- **Export prices…** saves a CSV of market prices (one row per item) or every sighting.
-- **Import prices…** loads reference prices from a CSV with the columns `item,price`, for
+- **Export prices** saves a CSV of market prices (one row per item) or every sighting.
+- **Import prices** loads reference prices from a CSV with the columns `item,price`, for
   example prices you copied from meso.watch.
 - **Settings → Game data:** **Update** downloads the latest item and map lists (and item
-  icons) from NiaMeowDB, with OSMS Data Explorer as a backup. **Import…** / **Export…**
+  icons) from NiaMeowDB, with OSMS Data Explorer as a backup. **Import** / **Export**
   saves or restores each list; an item list exported as **.zip** includes every icon.
 
 Exported files get the date and time in their name, e.g.
@@ -252,7 +252,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |
 
-**Settings → Clear pricing data…** and **Reset personal settings…** ask twice and save a
+**Settings → Clear pricing data** and **Reset personal settings** ask twice and save a
 backup first.
 
 ## Command line
