@@ -1,5 +1,13 @@
 # Changelog
 
+## 2610.14.001 — 2026-10-14
+
+### New
+- **Megaphones tab:** while monitoring, buying and selling megaphones are read from the
+  chat window and listed with their time, player, channel and message: selling on top,
+  buying below.
+- **Chat area** button, for when the chat window isn't found by itself.
+
 ## 2610.13.001 — 2026-10-13
 
 ### New

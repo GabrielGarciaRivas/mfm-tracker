@@ -82,8 +82,9 @@ The shop window and the minimap are found automatically, on any monitor. Each li
 saved with its item, price, shop, player, map, channel and time. The panel on the right
 shows what's being read.
 
-If the shop or map is ever not found, use **Shop area** / **Map area** to draw a box
-around it. **Settings → Auto Detection** goes back to finding them automatically.
+If the shop, map or chat is ever not found, use **Shop area** / **Map area** / **Chat
+area** to draw a box around it. **Settings → Auto Detection** goes back to finding them
+automatically.
 
 ## Channel
 
@@ -96,6 +97,7 @@ channels the picker shows, in **Settings**.
 
 ## Tabs
 
+- **Megaphones:** see below.
 - **Live:** the shop you're in, filling in as you scroll. Green = DEAL, red = HIGH,
   grey = no market price yet, faded = sold.
 - **Deals:** listings still for sale, best deals first. Tick **Include sold** to see sold
@@ -113,6 +115,22 @@ sighting to change its price or channel, add a note, watch it, or delete it.
 
 Right-click items in any table for more options: watch the item, add a note, watch the
 listing, ignore, match to the right item, delete a bad read, or look the item up on meowdb.
+
+## Megaphones
+
+While monitoring, the app also reads your chat window for megaphones: the coloured chat
+lines with a channel badge after the player's name. Ones that are buying or selling are
+listed in the **Megaphones** tab, **Selling** on top and **Buying** below, with the time
+(in your local time), player, channel and message.
+
+- Selling: S>, WTS, sell, selling, have, trade, trading.
+- Buying: B>, WTB, buy, buying, looking for, LF, need, want.
+- A megaphone with both shows in both lists.
+- Long megaphones that wrap onto more lines are read in full. Repeated symbols at the end
+  (like @@@@@@) are left out.
+
+Right-click a megaphone to copy its message or player name, or delete it. If the chat
+window isn't found, click **Chat area** and draw a box around the chat messages.
 
 ## Notes
 
@@ -245,7 +263,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 
 | Folder | Contents |
 |---|---|
-| `prices/` | your prices (`prices.db`) |
+| `prices/` | your prices and megaphones (`prices.db`) |
 | `inventory/` | My Inventory (`inventory.db`) |
 | `settings/` | settings, watched items and listings, ignore list, manual matches |
 | `cache/` | downloaded item and map lists, icons |

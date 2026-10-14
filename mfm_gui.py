@@ -133,7 +133,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "max_each": "Max price", "last_price": "Last price", "npc_buy": "NPC buy", "npc_sell": "NPC sell",
         "saved": "Saved", "notes": "Notes", "qty": "Qty", "range": "Price range",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
-        "match": "Match / suggestion", "list_price": "List price",
+        "match": "Match / suggestion", "list_price": "List price", "message": "Message",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -142,7 +142,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
-         "last3": 130, "tab": 70, "match": 230, "list_price": 95, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price"}
@@ -675,6 +675,10 @@ class App:
         ttk.Button(bar, text="Shop area", command=self.calibrate).pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Map area",
                    command=lambda: self.calibrate(key="map_region")).pack(side="left", padx=(6, 0))
+        b = ttk.Button(bar, text="Chat area", command=lambda: self.calibrate(key="chat_region"))
+        b.pack(side="left", padx=(6, 0))
+        tip("Draw a box around the chat messages, if the chat window isn't found by itself. "
+            "Settings → Auto Detection goes back to finding it.", b)
         ttk.Label(bar, text="Channel:").pack(side="left", padx=(14, 4))
         # stays filled in for every shop until you change it (saved with each listing)
         self.channel_var = tk.StringVar()
@@ -780,6 +784,9 @@ class App:
         for tree in (self.live, self.deals, self.items):
             self._add_menu(tree)
 
+        self._build_megaphones_tab()
+        self.live_tab = live
+        self.nb.select(live)
         self._build_review_tab()
         self._build_watched_tab()
         self._build_ignore_tab()
@@ -812,12 +819,14 @@ class App:
         self.worker.start()
         self.start_btn.config(text="■  Stop monitoring")
         self._set_status("Monitoring — open shops and scroll through them normally.")
+        self._mega_status_text(None)
 
     def stop(self):
         if self.stop_event:
             self.stop_event.set()
         self.start_btn.config(text="▶  Start monitoring")
         self._set_status("Stopped.")
+        self.root.after(300, lambda: self._mega_status_text(None))
 
     def channel(self) -> str | None:
         """The channel in the box (1-100), as saved with listings; None when empty."""
@@ -1262,8 +1271,9 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def periodic_refresh(self):
-        if self.nb.index("current") != 0:
+        if self.nb.select() != str(self.live_tab):
             self.refresh_tables()
+        self.refresh_megaphones()
         self.root.after(5000, self.periodic_refresh)
 
     def _keep_selection(self, tree, key):
@@ -1555,6 +1565,91 @@ class App:
         self.sound_lbl.pack(side="left", padx=6)
         self.refresh_alerts()
         self.refresh_watched_listings()
+
+    # ------------------------------------------------------------------ megaphones
+    def _build_megaphones_tab(self):
+        tab = ttk.Frame(self.nb, padding=6)
+        self.nb.insert(0, tab, text="  Megaphones  ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x", pady=(0, 6))
+        ttk.Label(top, text="Megaphones from the last").pack(side="left")
+        self.mega_hours = tk.IntVar(value=24)
+        ttk.Spinbox(top, from_=1, to=720, width=5, textvariable=self.mega_hours,
+                    command=self.refresh_megaphones).pack(side="left", padx=4)
+        ttk.Label(top, text="hours, newest first. Read from the chat window while monitoring.").pack(side="left")
+        self.mega_status = ttk.Label(top, foreground="#666")
+        self.mega_status.pack(side="right")
+        panes = ttk.PanedWindow(tab, orient="vertical")
+        panes.pack(fill="both", expand=True)
+        self.mega_trees = {}
+        for kind, title in (("sell", "Selling"), ("buy", "Buying")):
+            f = ttk.Frame(panes)
+            ttk.Label(f, text=title, style="Bold.TLabel").pack(anchor="w", pady=(4, 2))
+            t = make_tree(f, ("time", "player", "channel", "message"))
+            t.configure(show="headings")
+            t.column("message", stretch=True)
+            t.column("player", width=130)
+            t.column("time", width=140)
+            t.frame.pack(fill="both", expand=True)
+            self._list_menu(t, [("Copy message", lambda tr: self._copy_megaphone(tr, "message"), False),
+                                ("Copy player name", lambda tr: self._copy_megaphone(tr, "player"), False),
+                                None,
+                                ("Delete", lambda tr: self.delete_megaphones(tr), False)])
+            t.bind("<Delete>", lambda e, tr=t: self.delete_megaphones(tr))
+            t.bind("<Double-1>", lambda e, tr=t: self._copy_megaphone(tr, "message"))
+            panes.add(f, weight=1)
+            self.mega_trees[kind] = t
+        self._mega_status_text(None)
+        self.refresh_megaphones()
+
+    def _mega_status_text(self, found):
+        running = bool(self.worker and self.worker.is_alive())
+        manual = self.cfg.get("chat_region")
+        self.mega_status.config(text=(
+            "Start monitoring to read megaphones." if not running else
+            "Reading the chat area you drew." if manual and found else
+            "Reading the chat window." if found else
+            "Chat window not found: open it in the game (or set the Chat area)." if found is False else
+            "Looking for the chat window…"))
+
+    def on_chat(self, p):
+        self._mega_status_text(p.get("found"))
+
+    def on_megaphones(self, n):
+        self.refresh_megaphones()
+
+    def refresh_megaphones(self):
+        if not hasattr(self, "mega_trees"):
+            return
+        try:
+            hours = max(1, int(self.mega_hours.get()))
+        except (tk.TclError, ValueError):
+            hours = 24
+        rows = self.con.execute(
+            "SELECT id, ts, player, channel, message, kind FROM megaphones WHERE ts >= ? "
+            "AND kind IS NOT NULL ORDER BY ts DESC, id DESC", (mfm.utc_ago(hours=hours),)).fetchall()
+        for kind, t in self.mega_trees.items():
+            restore = self._keep_selection(t, lambda tr, k: k)
+            t.delete(*t.get_children())
+            for mid, ts, player, ch, msg, k in rows:
+                if k in (kind, "both"):
+                    t.insert("", "end", iid=str(mid), values=(mfm.local_time(ts), player, ch or "", msg))
+            restore()
+
+    def _copy_megaphone(self, tree, col):
+        vals = [tree.set(k, col) for k in tree.selection()]
+        if vals:
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(vals))
+            self._set_status(f"Copied {mfm.plural(len(vals), 'line')}.")
+
+    def delete_megaphones(self, tree):
+        ids = [int(k) for k in tree.selection()]
+        if not ids:
+            return
+        self.con.executemany("DELETE FROM megaphones WHERE id = ?", [(i,) for i in ids])
+        self.con.commit()
+        self.refresh_megaphones()
 
     # ------------------------------------------------------------------ my inventory
     INV_EDITABLE = ("qty", "list_price", "notes")
@@ -3497,7 +3592,8 @@ class App:
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
                     self._update_stats(None, None)
-                    label = {"map_region": "Map area", "inventory_region": "Inventory area"}.get(key, "Shop area")
+                    label = {"map_region": "Map area", "inventory_region": "Inventory area",
+                             "chat_region": "Chat area"}.get(key, "Shop area")
                     self._set_status(f"{label} set to {region}.")
                     if then_start and not was_running:
                         self.start()
@@ -3814,15 +3910,16 @@ class App:
 
         def reset_auto():
             self.cfg["region"] = self.cfg["map_region"] = self.cfg["inventory_region"] = None
+            self.cfg["chat_region"] = None
             mfm.save_config(self.cfg)
             self.found_at = None
             self._update_stats(None, None)
-            self._set_status("Shop and map areas will be found automatically.")
+            self._set_status("The shop, map, inventory and chat will be found automatically.")
         b = ttk.Button(win, text="Auto Detection", command=reset_auto)
         b.grid(row=len(fields) + 1, column=0, sticky="w", padx=12, pady=(8, 0))
-        tip("Find the shop and minimap automatically again.", b)
+        tip("Find the shop, minimap, inventory and chat automatically again.", b)
         ttk.Label(win, foreground="#666", wraplength=620, justify="left", text=(
-            "Forgets the shop, map and inventory areas you drew and finds them automatically."
+            "Forgets the shop, map, inventory and chat areas you drew and finds them automatically."
             )).grid(row=len(fields) + 1, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=(8, 0))
         self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
                                         padx=12, pady=(12, 0))

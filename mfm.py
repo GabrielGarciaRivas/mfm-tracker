@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.13.001"
+VERSION = "2610.14.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -158,6 +158,7 @@ DEFAULT_CONFIG = {
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
     "channel_count": 18,       # channels shown in the channel picker (1-100)
     "inventory_region": None,  # the item inventory window; None = find it automatically
+    "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
@@ -273,6 +274,16 @@ def db() -> sqlite3.Connection:
             raw TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_item_ts ON listings(item, ts);
+        CREATE TABLE IF NOT EXISTS megaphones (
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL,
+            seen TEXT,
+            player TEXT,
+            channel TEXT,
+            message TEXT,
+            kind TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_megaphones_ts ON megaphones(ts);
         CREATE TABLE IF NOT EXISTS reference (
             item TEXT PRIMARY KEY,
             price INTEGER NOT NULL,
@@ -419,6 +430,8 @@ CALIBRATE_HINTS = {
     "map_region": "Drag a box around the minimap's street and map name "
                   "(e.g. 'Hidden Street / Free Market <2>'). Esc cancels.",
     "inventory_region": "Drag a box around your whole ITEM INVENTORY window. Esc cancels.",
+    "chat_region": "Drag a box around the chat messages: not the scroll bar or the white chat "
+                   "bar below them. Esc cancels.",
 }
 
 
@@ -5144,6 +5157,521 @@ class SeenListing:
     notes: str = ""         # your note on this listing (e.g. "+5 ATK")
 
 
+# --------------------------------------------------------------------------- megaphones
+# The game's chat window: a white chat bar along its bottom with a dark-blue button
+# at its left ("All", "Party", ...) and a light-blue minimize button at its right,
+# and a scroll bar up its right side. Megaphones are the chat lines on a solid
+# colour with a channel badge (a white box with a red "CHxx" and an ear) after the
+# player's name:  [04:01] PlayerName [CH07] : message   (the time is UTC).
+
+CHAT_BTN_LO, CHAT_BTN_HI = (35, 65, 100), (72, 108, 142)
+
+
+def find_chat(full: Image.Image) -> list | None:
+    """The chat messages area (left of the scroll bar, above the chat bar):
+    [left, top, width, height], or None."""
+    img = full.convert("RGB")
+    W, H = img.size
+    sc = 2 if W > 1200 else 1
+    small = img.resize((W // sc, H // sc), Image.NEAREST) if sc > 1 else img
+    px = img.load()
+    for b in _blobs(_rgb_mask(small, CHAT_BTN_LO, CHAT_BTN_HI), min_w=max(8, 20 // sc), min_h=max(4, 8 // sc)):
+        b = tuple(v * sc for v in b)
+        w, h = b[2] - b[0], b[3] - b[1]
+        if not (10 <= h <= 70 and 2.5 <= w / h <= 9):
+            continue
+        ym = (b[1] + b[3]) // 2
+        # the white chat bar right of the button
+        xs = range(min(W - 1, b[2] + 3), min(W, b[2] + 3 + 8 * h), 2)
+        if not xs or sum(1 for x in xs if min(px[x, ym]) >= 225) < 0.6 * len(xs):
+            continue
+        # its far end: the light-blue minimize button
+        cyan = next((x for x in range(b[2] + 3, W) if px[x, ym][2] >= 190 and 120 <= px[x, ym][1] <= 215
+                     and px[x, ym][0] <= 90), None)
+        if cyan is None:
+            continue
+        # the bottom of the messages: up from the button, past the white bar
+        y = b[1] - 1
+        while y > 0 and min(px[min(W - 1, b[2] + 6), y]) >= 225:
+            y -= 1
+        # the scroll bar's white left edge runs up the messages' right side
+        edge = None
+        ys = range(max(0, y - 4 * h), max(0, y - h), 2)
+        for x in range(max(0, cyan - 2 * h), min(W, cyan + 2 * h)):
+            if ys and all(min(px[x, yy]) >= 240 for yy in ys):
+                edge = x
+                break
+        if edge is None:
+            continue
+        top = bot = max(0, y - h)
+        while top > 0 and min(px[edge, top - 1]) >= 235:
+            top -= 1
+        while bot < H - 1 and min(px[edge, bot + 1]) >= 235:
+            bot += 1
+        left = max(0, b[0] - int(0.2 * h))
+        if bot - top < h or edge - left < 6 * h:
+            continue
+        return [left, top, edge - left, bot - top + 1]
+    return None
+
+
+def chat_badges(img: Image.Image) -> list[tuple]:
+    """Channel badges in a crop of the chat: white boxes with red text, top to bottom."""
+    white = _rgb_mask(img, (245, 245, 245), (255, 255, 255))
+    rpx = _rgb_mask(img, (170, 0, 0), (255, 90, 90)).load()
+    out = []
+    for b in _blobs(white, min_w=16, min_h=6):
+        w, h = b[2] - b[0], b[3] - b[1]
+        if not (6 <= h <= 60 and 2.2 <= w / h <= 3.8):
+            continue
+        n = sum(1 for y in range(b[1], b[3]) for x in range(b[0], b[2]) if rpx[x, y])
+        if n >= 0.02 * w * h:
+            out.append(b)
+    return sorted(out, key=lambda b: b[1])
+
+
+# the badge's two digits, as 6x8 grids of redness 0-9 (averaged from real badges)
+BADGE_DIGITS = {
+    "0": "049930299990860077860077860077860077089970039920",
+    "1": "059950009950000950000950000950000950000950000950",
+    "2": "799930099996000069039999089999860000799999099999",
+    "3": "899940699992000077049996039996000077799960799930",
+    "4": "750186850286650186799996599996000186000286000175",
+    "5": "999996998990960000999930999980000178999960999930",
+    "6": "079950699700740000799940799970740284079950069710",
+    "7": "199990089990000590000590001880018500017610006500",
+    "8": "039940078882760069039950049970860069049980039930",
+    "9": "079940699981870175089994039994000175049940069940",
+}
+
+
+def _redness(p) -> int:
+    r, g, b = p
+    return max(0, min(255, (r - max(g, b)) * 2)) if g < 140 else 0
+
+
+def badge_channel(img: Image.Image, b: tuple) -> str | None:
+    """The channel number on a badge ("CH07" -> "7")."""
+    bx = img.crop(b).convert("RGB")
+    W, H = bx.size
+    px = bx.load()
+    lim = int(W * 0.62)                      # the ear is on the right
+    R = [[_redness(px[x, y]) for x in range(W)] for y in range(H)]
+    groups: list[list[int]] = []
+    for x in range(lim):
+        if max(R[y][x] for y in range(H)) > 150:
+            if groups and x - groups[-1][1] <= 1:
+                groups[-1][1] = x
+            else:
+                groups.append([x, x])
+    while len(groups) > 4:                   # C, H and two digits
+        i = min(range(len(groups) - 1), key=lambda i: groups[i + 1][0] - groups[i][1])
+        groups[i:i + 2] = [[groups[i][0], groups[i + 1][1]]]
+    if len(groups) != 4:
+        return None
+    digits = ""
+    for gx0, gx1 in groups[2:]:
+        rows = [y for y in range(H) if max(R[y][x] for x in range(gx0, gx1 + 1)) > 150]
+        if not rows:
+            return None
+        y0, gh = rows[0], rows[-1] + 1 - rows[0]
+        cx, bw = (gx0 + gx1 + 1) / 2, gh * 0.9
+        grid = []
+        for gy in range(8):
+            for gx in range(6):
+                s = 0
+                for sy in range(3):
+                    for sx in range(3):
+                        xx = cx - bw / 2 + (gx + (sx + .5) / 3) * bw / 6
+                        yy = y0 + (gy + (sy + .5) / 3) * gh / 8
+                        if 0 <= xx < W:
+                            s += R[min(H - 1, int(yy))][int(xx)]
+                grid.append(s / 9 / 255)
+        digits += min(BADGE_DIGITS, key=lambda d: sum((g - int(c) / 10) ** 2
+                                                    for g, c in zip(grid, BADGE_DIGITS[d])))
+    n = int(digits)
+    return str(n) if n > 0 else None
+
+
+def _median_color(img: Image.Image) -> tuple:
+    out = []
+    for c in img.convert("RGB").split():
+        hist, half, s = c.histogram(), c.width * c.height // 2, 0
+        for i, k in enumerate(hist):
+            s += k
+            if s > half:
+                out.append(i)
+                break
+    return tuple(out)
+
+
+def _chat_text(img: Image.Image, up: int = 3) -> Image.Image:
+    """A chat line as dark text on white: whatever differs from the line's colour."""
+    from PIL import ImageChops
+
+    rgb = img.convert("RGB").resize((img.width * up, img.height * up), Image.LANCZOS)
+    bg = _median_color(rgb)
+    d = [ImageChops.difference(c, Image.new("L", c.size, v)) for c, v in zip(rgb.split(), bg)]
+    m = ImageChops.lighter(ImageChops.lighter(d[0], d[1]), d[2])
+    return ImageOps.invert(m.point(lambda v: max(0, min(255, (v - 40) * 3))))
+
+
+def _has_text(img: Image.Image, bg: tuple, thr: int = 90) -> bool:
+    px = img.convert("RGB").load()
+    W, H = img.size
+    hits = sum(1 for y in range(0, H, 2) for x in range(0, W, 2)
+               if max(abs(a - b) for a, b in zip(px[x, y], bg)) > thr)
+    return hits >= 3
+
+
+def _join_wrapped(a: str, b: str) -> str:
+    """Join a line and its wrapped continuation. The game breaks long lines
+    anywhere, even inside a word ("TRADI" / "NG"): join without a space when that
+    makes a known word that the two halves aren't."""
+    if not a or not b:
+        return a + b
+    wa, wb = re.findall(r"[A-Za-z']+$", a), re.findall(r"^[A-Za-z']+", b)
+    if wa and wb:
+        known = _TitleWords.get().known
+        x, y = wa[0].lower(), wb[0].lower()
+        if (x + y) in known and not (x in known and y in known and len(x) > 1 and len(y) > 1):
+            return a + b
+    return a + " " + b
+
+
+_DIGITISH = str.maketrans({"o": "0", "O": "0", "D": "0", "l": "1", "I": "1", "|": "1", "i": "1",
+                           "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2"})
+
+
+def parse_chat_line(text: str) -> tuple[str, str, str] | None:
+    """'[04:01] Player : message' -> ("04:01", "Player", "message")."""
+    m = re.search(r"([0-9oOlIDSZz|]{2})\s*[:;.\-,]\s*([0-9oOlIDSZz|]{2})\s*[\]\)}|lI1J]?\s*(.+)$", text)
+    if not m:
+        return None
+    hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
+    if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
+        return None
+    rest = m.group(3)
+    if ":" not in rest:
+        return None
+    name, msg = rest.split(":", 1)
+    # the ':' after the badge, read twice, and specks around it
+    msg = re.sub(r"^\s*(?:[^\w\s\[@#$(]{1,3}\s+)*[^\w\s\[@#$(]*:[^\w\s\[@#$(]*\s*", "", msg)
+    name = re.sub(r"[^\w().'\-]+", "", name.strip().split()[0] if name.strip() else "")
+    if name.endswith(")") and "(" not in name:
+        name = name[:-1]
+    return f"{hh}:{mm}", name, msg.strip()
+
+
+def clean_megaphone(msg: str) -> str:
+    """Drop repeated symbols at the end (@@@@@@, !!!!!!, ~~~~) and stray edge marks."""
+    msg = msg.strip()
+    while True:
+        # a run of one symbol at the end (@@@@@@), with whatever OCR made of the rest of
+        # it (the @s often come out as O, C, Q, G ...)
+        new = re.sub(r"\s*([^\w\s])(?:\1|[\sOoCcQGDB0@©®]){8,}$", "", msg)
+        new = re.sub(r"\s*([^\w\s])\1{2,}\S*$", "", new)
+        new = re.sub(r"\s+[|\[\]]$", "", new).strip()
+        if new == msg:
+            return msg
+        msg = new
+
+
+def fix_megaphone_words(msg: str, con=None) -> str:
+    """Common misreads of the chat font: g read as q ("hiqhest"), O for 0 in prices
+    ("7Ok"), and item links ("[Mystc Shield]") matched to the item list."""
+    known = _TitleWords.get().known
+
+    def word(m):
+        w = m.group(0)
+        lw = w.lower()
+        if len(w) < 3 or lw in known:
+            return w
+        for cand in (lw.replace("q", "g"), re.sub(r"ina$", "ing", lw), re.sub(r"ina$", "ing", lw.replace("q", "g"))):
+            if cand != lw and cand in known:
+                return "".join(c.upper() if o.isupper() else c for o, c in zip(w, cand))
+        return w
+    msg = re.sub(r"[A-Za-z]+", word, msg)
+    msg = re.sub(r"\b\d[\dOo,.]*[kKmM]?\b", lambda m: re.sub(r"[Oo]", "0", m.group(0)), msg)
+    msg = re.sub(r"\b[5S][0-9Oo]{1,3}[kKmM]\b", lambda m: "5" + re.sub(r"[Oo]", "0", m.group(0)[1:]), msg)
+    if con is not None and has_item_list():
+        def link(m):
+            name = m.group(1).strip()
+            if is_known_item(name):
+                return m.group(0)
+            try:
+                pick, score = best_match(con, name)
+            except Exception:
+                return m.group(0)
+            return f"[{pick}]" if pick and score >= 0.75 else m.group(0)
+        msg = re.sub(r"\[([^\[\]]{3,40})\]", link, msg)
+    return msg
+
+
+# ("S=" and "B=" are how the chat font's ">" is sometimes read)
+SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|S=(?=\S)|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
+BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
+                       re.I)
+
+
+def megaphone_kind(msg: str) -> str | None:
+    """"sell", "buy", "both" (e.g. "S> ... B> ...") or None."""
+    s, b = SELL_TERMS.search(msg), BUY_TERMS.search(msg)
+    return "both" if s and b else "sell" if s else "buy" if b else None
+
+
+def chat_time_utc(hhmm: str, now: datetime | None = None) -> str:
+    """A chat time (UTC, no date) as a full UTC timestamp: today, or yesterday if
+    that would be in the future."""
+    now = now or datetime.now(timezone.utc)
+    h, m = map(int, hhmm.split(":"))
+    dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if dt > now + timedelta(minutes=10):
+        dt -= timedelta(days=1)
+    return dt.strftime(UTC_FMT)
+
+
+def _line_span(row: Image.Image, bg: tuple, u: float) -> tuple[int, int]:
+    """Where a chat line's colour starts and ends (outside it is the window's frame)."""
+    px = row.convert("RGB").load()
+    y = row.height // 2
+    near = lambda x: max(abs(a - c) for a, c in zip(px[x, y], bg)) < 40
+    x0 = next((x for x in range(min(row.width, int(1.5 * u))) if near(x)), 0)
+    x1 = next((x + 1 for x in range(row.width - 1, max(0, row.width - int(1.5 * u)), -1) if near(x)), row.width)
+    return x0, x1
+
+
+def _text_band(img: Image.Image) -> Image.Image:
+    """A chat line without the edges of the lines above and below it."""
+    h = img.height
+    return img.crop((0, int(round(0.12 * h)), img.width, h - 1))
+
+
+def _ocr_words(img: Image.Image) -> list[tuple[str, int, float]]:
+    """OCR one line: [(word, left x, confidence)]."""
+    import pytesseract
+
+    border = 12
+    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255), config="--psm 7",
+                                  output_type=pytesseract.Output.DICT)
+    return [(t.strip(), d["left"][i] - border, float(d["conf"][i])) for i, t in enumerate(d["text"])
+            if t.strip()]
+
+
+def _drop_junk(words: list[tuple[str, float]]) -> str:
+    """Words of a line, without unsure bits of background at its end."""
+    while words and words[-1][1] < 40 and len(re.sub(r"\W", "", words[-1][0])) <= 2:
+        words = words[:-1]
+    return " ".join(w for w, c in words)
+
+
+def _read_chat_time(left: Image.Image, unit: float) -> str | None:
+    """The "[hh:mm]" at the start of a chat line (dark text on white, `unit` = one
+    line's height in its pixels), read on its own with digits only: "HH:MM"."""
+    import pytesseract
+
+    W, H = left.size
+    px = left.load()
+    ink = [any(px[x, y] < 128 for y in range(H)) for x in range(W)]
+    end, run = None, 0
+    for x in range(int(2 * unit), W):
+        run = run + 1 if not ink[x] else 0
+        if run >= max(2, int(0.2 * unit)):
+            end = x - run + 1
+            break
+    if end is None:
+        return None
+    text = pytesseract.image_to_string(ImageOps.expand(left.crop((0, 0, end, H)), border=12, fill=255),
+                                       config="--psm 7 -c tessedit_char_whitelist=0123456789:[]").strip()
+    m = re.search(r"(\d{2}):?(\d{2})", text)
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return f"{m.group(1)}:{m.group(2)}"
+    return None
+
+
+def _fix_chat_times(rows: list[dict]) -> None:
+    """Chat lines are in time order: a time far from the lines around it is a misread
+    digit (16:10 for 18:10); use its neighbour's."""
+    def mins(t):
+        h, m = map(int, t.split(":"))
+        return h * 60 + m
+
+    def far(a, b):
+        d = abs(mins(a) - mins(b))
+        return min(d, 1440 - d) > 30
+    for i, r in enumerate(rows):
+        prev = rows[i - 1]["time"] if i > 0 else None
+        nxt = rows[i + 1]["time"] if i + 1 < len(rows) else None
+        near = [t for t in (prev, nxt) if t]
+        if near and all(far(r["time"], t) for t in near) and (len(near) == 1 or not far(prev, nxt)):
+            r["time"] = prev or nxt
+
+
+def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None) -> list[dict]:
+    """Megaphones in a crop of the chat messages: [{time, player, channel, message}]."""
+    import hashlib
+    import pytesseract
+
+    chat = chat.convert("RGB")
+    W, H = chat.size
+    badges = chat_badges(chat)
+    if not badges:
+        return []
+    bh = sorted(b[3] - b[1] for b in badges)[len(badges) // 2]
+    u = bh / 0.75                       # about one line
+    pitch = 1.38 * bh
+    gaps = sorted(b2[1] - b1[1] for b1, b2 in zip(badges, badges[1:]) if 0.8 * pitch <= b2[1] - b1[1] <= 1.2 * pitch)
+    if gaps:
+        pitch = gaps[len(gaps) // 2]
+    right = W - int(0.3 * u)
+    setup_tesseract(cfg)
+    memo = memo if memo is not None else {}
+    out = []
+    for b in badges:
+        cy = (b[1] + b[3]) / 2
+        y0 = int(round(cy - pitch / 2))
+        y1 = y0 + int(round(pitch))
+        slack = int(0.15 * pitch)
+        if y0 < -slack or y1 > H + slack:
+            continue                    # cut off at the top or bottom
+        y0, y1 = max(0, y0), min(H, y1)
+        row = chat.crop((0, y0, right, y1))
+        bg = _median_color(chat.crop((b[2], y0, right, y1)))
+        lx0, lx1 = _line_span(row, bg, u)
+        # wrapped lines below: same colour, no time at the start, no badge
+        extra = []
+        k = 1
+        while True:
+            ny0 = int(round(cy - pitch / 2 + k * pitch))
+            ny1 = ny0 + int(round(pitch))
+            if ny1 > H + slack or any(ny0 <= (c[1] + c[3]) / 2 < ny1 for c in badges):
+                break
+            ny1 = min(H, ny1)
+            nrow = chat.crop((0, ny0, right, ny1))
+            nbg = _median_color(nrow)
+            if max(abs(a - c) for a, c in zip(nbg, bg)) > 45:
+                break
+            nx0, nx1 = _line_span(nrow, nbg, u)
+            if _has_text(nrow.crop((nx0 + 1, int(0.25 * nrow.height), nx0 + int(1.0 * u),
+                                    int(0.8 * nrow.height))), nbg):
+                break                   # a new line (it starts with the time)
+            body = _text_band(nrow.crop((nx0 + 1, 0, nx1, nrow.height)))
+            if not _has_text(body, nbg):
+                break
+            extra.append(body)
+            k += 1
+        # the text alone (the game shows through the line's colour)
+        key = hashlib.md5(b"".join(_chat_text(im, 1).point(lambda v: 255 if v > 128 else 0).tobytes()
+                                   for im in [row] + extra) + str(b[0] - lx0).encode()).hexdigest()
+        if key not in memo:
+            left = _chat_text(_text_band(row.crop((lx0 + 1, 0, b[0] - 1, row.height))))
+            msg = _chat_text(_text_band(row.crop((b[2] + 1, 0, lx1, row.height))))
+            gap = int(2 * u)
+            line = Image.new("L", (left.width + gap + msg.width, max(left.height, msg.height)), 255)
+            line.paste(left, (0, 0))
+            line.paste(msg, (left.width + gap, 0))
+            words = _ocr_words(line)
+            split = left.width + gap // 2
+            head = " ".join(w for w, x, c in words if x < split)
+            tail = _drop_junk([(w, c) for w, x, c in words if x >= split])
+            parsed = parse_chat_line(head + " : " + tail)
+            if parsed:
+                hhmm, name, message = parsed
+                hhmm = _read_chat_time(left, u * 3) or hhmm
+                for im in extra:
+                    t = _drop_junk([(w, c) for w, x, c in _ocr_words(_chat_text(im))])
+                    message = _join_wrapped(message, t)
+                memo[key] = {"time": hhmm, "player": name, "channel": badge_channel(chat, b),
+                             "message": fix_megaphone_words(clean_megaphone(message), con)}
+            else:
+                memo[key] = None
+        if memo[key]:
+            out.append(dict(memo[key]))
+    if len(memo) > 2000:
+        memo.clear()
+    _fix_chat_times(out)
+    return out
+
+
+def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
+    """Store megaphones that aren't stored yet; returns how many are new. One already
+    stored (same player and time, nearly the same message) keeps the longer read."""
+    new = 0
+    seen = utc_now()
+    for f in found:
+        if not f.get("player") or not f.get("message"):
+            continue
+        ts = chat_time_utc(f["time"], now)
+        kind = megaphone_kind(f["message"])
+        norm = re.sub(r"\W+", "", f["message"].lower())
+        same = None
+        for mid, msg in con.execute("SELECT id, message FROM megaphones WHERE lower(player) = lower(?) "
+                                    "AND ts = ?", (f["player"], ts)).fetchall():
+            old = re.sub(r"\W+", "", msg.lower())
+            if old == norm or difflib.SequenceMatcher(None, old, norm).ratio() >= 0.8 \
+                    or old.startswith(norm) or norm.startswith(old):
+                same = (mid, msg)
+                break
+        if same:
+            if len(f["message"]) > len(same[1]):
+                con.execute("UPDATE megaphones SET message = ?, kind = ? WHERE id = ?",
+                            (f["message"], kind, same[0]))
+            continue
+        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind) VALUES (?,?,?,?,?,?)",
+                    (ts, seen, f["player"], f.get("channel"), f["message"], kind))
+        new += 1
+    con.commit()
+    return new
+
+
+class MegaphoneWatch:
+    """While monitoring: about once a second, reads the chat window for megaphones in
+    the background (so shop reading isn't slowed down) and saves new ones."""
+
+    def __init__(self, cfg: dict, on_event, every: float = 1.0):
+        import threading
+
+        self.cfg, self.on_event, self.every = cfg, on_event, every
+        self.last = 0.0
+        self.busy = threading.Event()
+        self.memo: dict = {}
+        self.found = None
+
+    def due(self) -> bool:
+        return not self.busy.is_set() and time.monotonic() - self.last >= self.every
+
+    def offer(self, full: Image.Image) -> None:
+        import threading
+
+        self.last = time.monotonic()
+        self.busy.set()
+        threading.Thread(target=self._work, args=(full,), daemon=True).start()
+
+    def _work(self, full):
+        try:
+            region = self.cfg.get("chat_region")
+            if not region or is_auto(region, full.size):
+                region = find_chat(full)
+            found = region is not None
+            if found != self.found:
+                self.found = found
+                self.on_event("chat", {"found": found})
+            if not region:
+                return
+            con = db()
+            try:
+                got = read_megaphones(crop(full, region), self.cfg, self.memo, con)
+                n = save_megaphones(con, got) if got else 0
+            finally:
+                con.close()
+            if n:
+                self.on_event("megaphones", n)
+        except Exception as e:
+            self.on_event("error", f"megaphone read failed: {type(e).__name__}: {e}")
+        finally:
+            self.busy.clear()
+
+
 class Monitor:
     """
     Continuously OCRs the store window and turns a stream of scrolled frames into
@@ -5190,6 +5718,7 @@ class Monitor:
         self.layout: Layout | None = None
         self.map_fresh = False   # minimap measured since the last visit ended
         self.chan_watch = ChannelWatch()   # the GUI may hand in its own (shared with its idle check)
+        self.megaphones = MegaphoneWatch(cfg, self.on_event)
         self.map_tried = 0.0
         self.geom: dict | None = None
         self.geom_misses = 0
@@ -5486,6 +6015,8 @@ class Monitor:
                             self.on_event("channel_change", None)
                     except Exception as e:
                         self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
+                if self.megaphones.due():
+                    self.megaphones.offer(full)
                 shop_r, map_r = self.regions_for(full)
                 if shop_r is None:
                     self.step(blank, None)  # no store window anywhere: counts as closed
@@ -5752,6 +6283,8 @@ def apply_retention(con, cfg: dict) -> tuple[int, Path | None]:
     mode = cfg.get("retention", "archive")
     if mode not in ("archive", "delete"):
         return 0, None
+    con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(days=cfg.get("keep_days", 30)),))
+    con.commit()
     return prune_old(con, cfg.get("keep_days", 30), archive_dir(cfg) if mode == "archive" else None)
 
 
@@ -5766,6 +6299,7 @@ def clear_prices(con) -> Path:
     dst.close()
     con.execute("DELETE FROM listings")
     con.execute("DELETE FROM reference")
+    con.execute("DELETE FROM megaphones")
     con.commit()
     con.execute("VACUUM main")
     _Dictionary.cache = None
@@ -5956,7 +6490,7 @@ def main() -> None:
         return
 
     if a.cmd == "calibrate" and a.auto:
-        cfg["region"] = cfg["map_region"] = cfg["inventory_region"] = None
+        cfg["region"] = cfg["map_region"] = cfg["inventory_region"] = cfg["chat_region"] = None
         save_config(cfg)
         print("Shop and map areas will be found automatically.")
     elif a.cmd == "calibrate":
