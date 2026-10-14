@@ -89,7 +89,8 @@ automatically.
 ## Channel
 
 Click the arrow on the **Channel** box to pick from the channel picker, or type the
-number. The channel stays set until you change it.
+number. In the picker, the arrow keys move between channels and Enter picks one. The
+channel stays set until you change it.
 
 The app also asks for your channel when it starts and each time you change channel in
 the game (after the game's Change Channel window closes). Turn this off, or set how many
@@ -248,7 +249,7 @@ Rest the mouse on any setting for a short explanation.
 | Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
 | Ask for the channel at launch and after a channel change | on | the channel prompt |
-| Channels in the channel picker | 18 | buttons in the channel picker |
+| Channels in the channel picker | 20 | buttons in the channel picker |
 | Data retention | 30 days, archive | see below |
 
 **Data retention:** listings not seen for 30 days are copied to an archive file and then

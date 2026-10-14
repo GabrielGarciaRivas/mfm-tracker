@@ -7,6 +7,11 @@
   chat window and listed with their time, player, channel and message: selling on top,
   buying below.
 - **Chat area** button, for when the chat window isn't found by itself.
+- The channel picker works with the keyboard: arrow keys to move, Enter to pick.
+
+### Changed
+- The channel picker shows 20 channels by default again.
+- While the channel picker is open, channel changes in the game aren't detected.
 
 ## 2610.13.001 — 2026-10-13
 

@@ -156,7 +156,7 @@ DEFAULT_CONFIG = {
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
-    "channel_count": 18,       # channels shown in the channel picker (1-100)
+    "channel_count": 20,       # channels shown in the channel picker (1-100)
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "save_captures": False,    # keep a PNG of every capture for debugging
@@ -178,6 +178,8 @@ def load_config() -> dict:
         saved = json.loads(CONFIG_PATH.read_text())
         if "confirm_frames" not in saved and saved.get("interval_seconds") == 3:
             saved.pop("interval_seconds")  # old default was too slow for scrolling
+        if saved.get("channel_count") == 18:
+            saved.pop("channel_count")     # the previous default: use the new one
         if saved.get("interval_seconds") == 0.75:
             saved.pop("interval_seconds")  # the previous default: use the new one
         if "outlier_min_n" in saved:       # renamed: it now applies to DEAL / HIGH too
@@ -1842,12 +1844,25 @@ class ChannelWatch:
         self.gone = 0
         self.last = 0.0
 
+    paused = False
+
+    def pause(self) -> None:
+        """Stop noticing channel changes (e.g. while the app's channel picker is open)."""
+        self.paused = True
+        self.seen, self.gone = False, 0
+
+    def resume(self) -> None:
+        self.paused = False
+        self.seen, self.gone = False, 0
+
     def due(self) -> bool:
-        return time.monotonic() - self.last >= self.every
+        return not self.paused and time.monotonic() - self.last >= self.every
 
     def feed(self, full: Image.Image) -> bool:
         """Check one screenshot; True once the dialog has come and gone."""
         self.last = time.monotonic()
+        if self.paused:
+            return False
         if find_channel_dialog(full):
             self.seen, self.gone = True, 0
             return False

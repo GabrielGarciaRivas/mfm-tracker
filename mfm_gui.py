@@ -861,6 +861,8 @@ class App:
                 time.sleep(5)
 
     def on_channel_change(self, _p=None):
+        if self.chan_popup is not None and self.chan_popup.winfo_exists():
+            return                    # the channel picker is already open
         self.ask_channel(changed=True)
 
     def _channel_box_click(self, e):
@@ -903,10 +905,13 @@ class App:
                 return
             win.destroy()                         # an open drop-down gives way to the prompt
         cur = self.channel()
-        count = max(1, min(100, int(self.cfg.get("channel_count", 18) or 18)))
+        count = max(1, min(100, int(self.cfg.get("channel_count", 20) or 20)))
         win = tk.Toplevel(self.root)
         self.chan_popup = win
         win.mode = "dropdown" if dropdown else "prompt"
+        # no channel-change detection while you're picking a channel
+        self.chan_watch.pause()
+        win.bind("<Destroy>", lambda ev: ev.widget is win and self.chan_watch.resume(), add="+")
         win.resizable(False, False)
         if dropdown:
             win.overrideredirect(True)            # a plain panel under the box, like a list
@@ -933,13 +938,18 @@ class App:
         cols = 8
         grid = ttk.Frame(body, padding=(0, 0, 0, 4) if dropdown else (14, 0, 14, 4))
         grid.pack()
+        buttons = []
         for n in range(1, count + 1):
             b = tk.Button(grid, text=str(n), width=5, padx=2, pady=2, relief="groove",
+                          highlightthickness=2, highlightcolor="#1e88e5",
                           command=lambda n=n: pick(str(n)))
+            b.normal_bg = b.cget("background")
             if cur == str(n):
                 b.config(background="#1e88e5", foreground="white", activebackground="#1565c0",
                          activeforeground="white")
+                b.normal_bg = "#1e88e5"
             b.grid(row=(n - 1) // cols, column=(n - 1) % cols, padx=1, pady=1)
+            buttons.append(b)
         bottom = ttk.Frame(body, padding=(0, 6, 0, 0) if dropdown else (14, 8, 14, 12))
         bottom.pack(fill="x")
         ttk.Label(bottom, text="Or type it:").pack(side="left")
@@ -948,6 +958,57 @@ class App:
         e = ttk.Entry(bottom, textvariable=typed, width=5, validate="key", validatecommand=ok)
         e.pack(side="left", padx=6)
         e.bind("<Return>", lambda ev: pick(typed.get()))
+        e.bind("<KP_Enter>", lambda ev: pick(typed.get()))
+
+        # arrow keys move between the channel buttons, Enter picks one; typing a
+        # number goes to the box
+        def move(i, key):
+            n = len(buttons)
+            if key == "Left":
+                j = i - 1 if i > 0 else n - 1
+            elif key == "Right":
+                j = i + 1 if i < n - 1 else 0
+            elif key == "Up":
+                j = i - cols if i - cols >= 0 else None
+            else:
+                j = i + cols if i + cols < n else None
+            if j is None:
+                if key == "Down":
+                    e.focus_set()
+                    e.icursor("end")
+                return "break"
+            buttons[j].focus_set()
+            return "break"
+
+        def type_digit(ev):
+            if ev.char.isdigit():
+                e.focus_set()
+                typed.set(typed.get() + ev.char if typed.get() else ev.char)
+                e.icursor("end")
+                return "break"
+            return None
+
+        def focus_in(b):
+            if b.normal_bg != "#1e88e5":
+                b.config(background="#cfe3fa")
+
+        for i, b in enumerate(buttons):
+            for key in ("Left", "Right", "Up", "Down"):
+                b.bind(f"<{key}>", lambda ev, i=i, key=key: move(i, key))
+            b.bind("<Return>", lambda ev, b=b: (b.invoke(), "break")[1])
+            b.bind("<KP_Enter>", lambda ev, b=b: (b.invoke(), "break")[1])
+            b.bind("<Key>", type_digit)
+            b.bind("<FocusIn>", lambda ev, b=b: focus_in(b))
+            b.bind("<FocusOut>", lambda ev, b=b: b.config(background=b.normal_bg))
+
+        def entry_up(ev):
+            if buttons:
+                last_row = (len(buttons) - 1) // cols
+                buttons[min(len(buttons) - 1, last_row * cols)].focus_set()
+            return "break"
+        e.bind("<Up>", entry_up)
+        start = buttons[int(cur) - 1] if cur and cur.isdigit() and 1 <= int(cur) <= len(buttons) else \
+            (buttons[0] if buttons else e)
         ttk.Button(bottom, text="OK", command=lambda: pick(typed.get())).pack(side="left")
         if dropdown:
             clear = ttk.Button(bottom, text="Clear", command=lambda: (self.channel_var.set(""), win.destroy()))
@@ -979,7 +1040,7 @@ class App:
             except tk.TclError:
                 pass
             win.lift()
-            e.focus_set()
+            start.focus_set()
             return
         # centred over the main window
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
@@ -987,7 +1048,7 @@ class App:
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
         win.lift()
         win.focus_force()
-        e.focus_set()
+        start.focus_set()
         self.root.bell()
 
     def _channel_changed(self, *_):
@@ -3864,7 +3925,7 @@ class App:
         tip("Asks for your channel when the app opens and after you change channel in the game.", cb)
         rc = ttk.Frame(win)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
-        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 18)))
+        chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
         lc = ttk.Label(rc, text="Channels in the channel picker")
         lc.pack(side="left")
         sc = ttk.Spinbox(rc, from_=1, to=100, increment=1, width=6, textvariable=chan_count)
