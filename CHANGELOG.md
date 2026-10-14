@@ -3,29 +3,26 @@
 ## 2610.13.001 — 2026-10-13
 
 ### New
-- **Notes on listings:** right-click a listing → **Add note** for things like +5 ATK. Notes
-  show in a new **Notes** column in Live, Deals and item history.
+- **My Inventory:** a new tab at the far right of the tab row to keep track of the items
+  you own and what they're worth.
+  - Add items with **Add by name**, or let **Auto Detect (beta)** read your Item
+    Inventory window in the game.
+  - See each item's market price, price range, recent sales and more.
+  - Set a **List price** and **Notes**: click a selected row's cell to edit it.
+  - Mark items **Sold** when they sell (or **Unsell** to undo). Sales are added to your
+    prices.
+  - **Net worth** totals, including listed items value and realized profit, with the 3%
+    meso tax taken off.
+  - **Export**, **Import** and **Clear My Inventory**.
+- **Notes on listings:** right-click a listing → **Add note** for things like +5 ATK.
 - **Watched listings:** right-click a listing → **Watch this listing** to get an alert when
   that player's listing is for sale again.
-- **My Inventory:** at the far right of the tab row. Add the items you own and see what
-  they're worth: market price, price range, sightings, sales in the last 24 hours and the
-  average of the last 3 sales.
-  - **Add by name**, or **Auto Detect (beta)** to read your Item Inventory window in the
-    game. Unmatched icons can be reviewed and are remembered.
-  - **List price** and **Notes** columns. Click a selected row's Qty, List price or Notes
-    to edit it.
-  - **Sold** / **Unsell:** sold items are faded and added to your prices. If you have more
-    than one, you're asked how many sold.
-  - **Net worth** with possible range, estimated values, listed items value and realized
-    profit, all with the 3% meso tax taken off.
-  - **Export**, **Import** and **Clear My Inventory**. It's kept in its own file,
-    `inventory/inventory.db`.
 
 ### Changed
-- Buttons and menu items no longer end in "…".
-- The channel picker shows 18 channels by default.
 - The **Alerts** tab is now **Watched**, with watched items on top and watched listings
-  below. Watched items and listings get alerts.
+  below.
+- The channel picker shows 18 channels by default.
+- Buttons and menu items no longer end in "…".
 
 ## 2610.12.002 — 2026-10-13
 
