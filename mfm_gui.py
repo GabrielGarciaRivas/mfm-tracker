@@ -1570,10 +1570,16 @@ class App:
             style.map(name + ".Tab", background=[("selected", normal_bg), ("!selected", normal_bg)],
                       lightcolor=[("selected", "#cfcdc8"), ("!selected", "#cfcdc8")],
                       expand=[("selected", (0, 0, 0, 0))])
+        # the lone My Inventory tab, when not shown: the height of an unselected tab
+        style.map("DimInv.TNotebook.Tab", padding=[("selected", style.lookup("TNotebook.Tab", "padding") or 2)])
         self.inv_tabbar = ttk.Notebook(self.root, style="DimInv.TNotebook")
         self.inv_tabbar.add(ttk.Frame(self.inv_tabbar, height=1), text="  My Inventory  ")
         self.inv_tabbar.bind("<Button-1>", lambda e: self.show_inventory())
-        self.root.after(50, lambda: self.inv_tabbar.place(in_=self.nb, relx=1.0, x=0, y=0, anchor="ne"))
+        self.inv_underline = tk.Canvas(self.root, height=2, highlightthickness=0, borderwidth=0)
+        self.inv_tabtop = tk.Canvas(self.root, height=2, highlightthickness=0, borderwidth=0)
+        self.inv_tabedge = tk.Frame(self.root, width=1, height=2, borderwidth=0)
+        self.root.after(50, self._place_inv_tabbar)
+        self.nb.bind("<Configure>", lambda e: self._place_inv_tabbar_later(), add="+")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.hide_inventory(), add="+")
         self.nb.bind("<ButtonRelease-1>", lambda e: self.hide_inventory()
                      if self.nb.identify(e.x, e.y) else None, add="+")
@@ -1666,6 +1672,105 @@ class App:
         tip("What the items you marked as sold sold for, added up, less 3% tax.", self.worth_profit)
         self.refresh_inventory()
 
+    @staticmethod
+    def _page_edge(nb) -> tuple[int, int] | None:
+        """(top of a notebook's page border, top of its page), in the notebook."""
+        try:
+            page = nb.nametowidget(nb.select())
+        except Exception:
+            return None
+        y, bw = page.winfo_y(), page.winfo_x()
+        return (y - bw, y) if y > 0 else None
+
+    def _place_inv_tabbar_later(self):
+        if not getattr(self, "_inv_tabbar_job", None):
+            self._inv_tabbar_job = self.root.after(30, self._place_inv_tabbar)
+
+    def _place_inv_tabbar(self):
+        """Put the My Inventory tab at the right end of the tab row, cut off just above
+        its own page border, so it looks like one of the notebook's tabs: selected, it
+        runs into the page; not selected, it sits on the page's top border."""
+        self._inv_tabbar_job = None
+        tb, nb = self.inv_tabbar, self.nb
+        if not tb.winfo_ismapped():
+            tb.place(in_=nb, relx=1.0, x=0, y=0, anchor="ne")
+            nb.update_idletasks()
+        tb.place_configure(height="", width="")
+        tb.update_idletasks()
+        own, main = self._page_edge(tb), self._page_edge(nb)
+        if not own or not main:
+            return
+        shown = getattr(self, "inventory_shown", False)
+        # the tab without the page border below it; a selected tab covers that border
+        cut = own[1] if shown else own[0]
+        # line the tab's right edge up with the notebook's right edge
+        last = None
+        for x in range(tb.winfo_width() - 1, -1, -1):
+            try:
+                if tb.index(f"@{x},{cut // 2}") == 0:
+                    last = x
+                    break
+            except tk.TclError:
+                pass
+        width = last + 1 if last is not None else ""
+        tb.place_configure(y=(main[1] if shown else main[0]) - cut, height=cut, width=width)
+        # while My Inventory is shown, make the main notebook's selected tab look like
+        # the other, unselected ones: lower its top and draw the page border under it
+        line, top, edge = self.inv_underline, self.inv_tabtop, self.inv_tabedge
+        style = ttk.Style()
+        if not shown or style.theme_use() != "clam":
+            for w in (line, top, edge):
+                w.place_forget()
+            return
+        # keep the notebook's right edge unbroken where the My Inventory tab meets the page
+        edge.configure(background=style.lookup("TNotebook", "bordercolor") or "#9e9a91")
+        edge.place(in_=nb, relx=1.0, x=-1, y=main[0], width=1, height=main[1] - main[0])
+        tk.Misc.lift(edge)
+        cur, xs = nb.index("current"), []
+        for x in range(0, nb.winfo_width()):
+            try:
+                if nb.index(f"@{x},{main[0] // 2}") == cur:
+                    xs.append(x)
+            except tk.TclError:
+                if xs:
+                    break
+        if not xs:
+            line.place_forget()
+            top.place_forget()
+            return
+        border = style.lookup("TNotebook", "bordercolor") or "#9e9a91"
+        light = style.lookup("TNotebook", "lightcolor") or "#eeebe7"
+        dim_light = style.lookup("TNotebook.Tab", "lightcolor") or "#cfcdc8"
+        bg = style.lookup("TNotebook", "background") or "#dcdad5"
+        x0, x1 = xs[0], xs[-1]
+        # the page border, from just inside the notebook's left edge
+        lx = max(x0, 1)
+        w, bw = x1 - lx + 2, main[1] - main[0]
+        line.delete("all")
+        for i in range(bw):
+            line.create_line(0, i, w, i, fill=border if i == 0 else light)
+        line.place(in_=nb, x=lx, y=main[0], width=w, height=bw)
+        tk.Misc.lift(line)
+        # a selected tab is taller by the difference in top padding
+        try:
+            pads = [str(style.lookup("TNotebook.Tab", "padding")).split(),
+                    str(dict(style.map("TNotebook.Tab")).get("padding", [("", "")])[0][-1]).split()]
+            dy = round(nb.winfo_fpixels(pads[1][1]) - nb.winfo_fpixels(pads[0][1]))
+        except Exception:
+            dy = 2
+        if dy <= 0:
+            top.place_forget()
+            return
+        w = x1 - x0 + 1
+        top.delete("all")
+        top.create_rectangle(0, 0, w + 1, dy, fill=bg, width=0)   # + the tab's right border
+        top.create_line(1, dy, w - 1, dy, fill=border)
+        top.create_line(1, dy + 1, w - 1, dy + 1, fill=dim_light)
+        top.create_line(0, dy + 1, 0, dy + 2, fill=border)
+        top.create_line(w - 1, dy + 1, w - 1, dy + 2, fill=border)
+        top.place(in_=nb, x=x0, y=0, width=w + 1, height=dy + 2)
+        tk.Misc.lift(top)
+
     def show_inventory(self):
         """Bring My Inventory to the front (its tab is at the far right of the tab row)."""
         page = self.nb.nametowidget(self.nb.select())
@@ -1675,6 +1780,8 @@ class App:
         self.nb.configure(style="Dim.TNotebook")
         self.inv_tabbar.configure(style="TNotebook")
         self.inventory_shown = True
+        self._place_inv_tabbar()
+        self._place_inv_tabbar_later()   # again, once the new styles are laid out
         self.refresh_inventory()
 
     def hide_inventory(self):
@@ -1684,6 +1791,8 @@ class App:
         self.nb.configure(style="TNotebook")
         self.inv_tabbar.configure(style="DimInv.TNotebook")
         self.inventory_shown = False
+        self._place_inv_tabbar()
+        self._place_inv_tabbar_later()
 
     # -- inline editing: click a cell of a highlighted row to type in it
     def _inline_editing(self, tree, cols, on_done):
