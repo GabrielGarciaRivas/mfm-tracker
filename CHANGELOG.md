@@ -1,5 +1,21 @@
 # Changelog
 
+## 2610.15.005 — 2026-10-15
+
+### Fixed
+- **The window no longer freezes while shops are being read, or while you search
+  in Items.** The Deals, Items and Review tables used to be recounted on the
+  window's own thread (thousands of queries, and the fuzzy name search for every
+  unmatched name, which alone took over 10 seconds with a few hundred of them);
+  they're now worked out in the background and filled in when ready. The Items
+  filter and the Deals checkboxes re-filter the last result at once, without going
+  back to the database.
+- The window and the OCR no longer wait on each other for the database (write-ahead
+  logging): logging a shop while the tables refreshed could stall either side for
+  seconds.
+- Fuzzy name matching (Review suggestions, the item search box, the OCR's own
+  lookups) is about 4× faster, with the same results.
+
 ## 2610.15.004 — 2026-10-14
 
 ### Changed

@@ -87,7 +87,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.15.004"
+VERSION = "2610.15.005"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -243,11 +243,27 @@ def local_time(ts: str | None) -> str:
 # --------------------------------------------------------------------------- db
 
 
+def _wal(con: sqlite3.Connection, *schemas: str) -> None:
+    """Write-ahead logging, so the window's reads never wait for the OCR thread's
+    writes (and the other way round). In the default rollback mode a commit from
+    one thread blocks every query from another, up to the busy timeout: with the
+    app recounting its tables while a shop is being logged, that showed as the
+    window freezing ("not responding"). The setting sticks to the file; it's
+    retried on the next open if another process holds the database right now."""
+    for s in schemas:
+        try:
+            con.execute(f"PRAGMA {s}.journal_mode=WAL")
+            con.execute(f"PRAGMA {s}.synchronous=NORMAL")   # safe with WAL, far fewer fsyncs
+        except sqlite3.OperationalError:
+            pass
+
+
 def db() -> sqlite3.Connection:
     """Prices database, with the icon cache attached: queries can use `icons` as
     if it were part of it, but it lives in cache/icons.db."""
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("ATTACH DATABASE ? AS cache", (str(ICONS_DB_PATH),))
+    _wal(con, "main", "cache")
     con.execute("""CREATE TABLE IF NOT EXISTS cache.icons (
             item TEXT PRIMARY KEY, png BLOB NOT NULL, faded INTEGER NOT NULL DEFAULT 0,
             updated TEXT, source TEXT)""")
@@ -1233,12 +1249,19 @@ def _scroll_family(name: str) -> tuple[list[str], str, bool]:
     if len(fh) < 8:
         return [], part, bool(m)
     scored = []
+    quick = difflib.SequenceMatcher(None, "", fh)   # quick_ratio never undershoots ratio
     for n in d.graded_scrolls:
         fb = d.scroll_base_fold[n]
         # whole "... Scroll" visible: compare with the whole base name; cut off
         # earlier ("Two-handed Blunt Wea…"): with the same-length start of it
         ref = fb if m else fb[:len(fh)]
-        r = 1.0 if ref == fh else difflib.SequenceMatcher(None, fh, ref).ratio()
+        if ref == fh:
+            scored.append((1.0, n))
+            continue
+        quick.set_seq1(ref)
+        if quick.quick_ratio() < 0.9:
+            continue   # can't reach 0.9 on the full comparison either
+        r = difflib.SequenceMatcher(None, fh, ref).ratio()
         if r >= 0.9:
             scored.append((r, n))
     if not scored:
@@ -2471,7 +2494,8 @@ INV_FIELDS = ("item", "qty", "notes", "list_price", "sold", "sold_at", "sold_ids
 def inventory_db():
     """The My Inventory database (created on first use)."""
     INVENTORY_DIR.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(INVENTORY_DB_PATH)
+    con = sqlite3.connect(INVENTORY_DB_PATH, timeout=10)
+    _wal(con, "main")
     con.execute("""CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY, item TEXT NOT NULL, qty INTEGER NOT NULL DEFAULT 1,
         notes TEXT, list_price INTEGER, sold INTEGER NOT NULL DEFAULT 0, sold_at TEXT,
@@ -2530,6 +2554,8 @@ def clear_inventory(con) -> Path | None:
     if INVENTORY_DB_PATH.exists():
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         backup = BACKUP_DIR / f"inventory-{_stamp()}.db"
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # everything into the main file first
         shutil.copy2(INVENTORY_DB_PATH, backup)
     con.execute("DELETE FROM items")
     con.commit()
@@ -4148,7 +4174,16 @@ class _Dictionary:
         for n in names:
             for wd in set(re.findall(r"[a-z']{4,}", n.lower())):
                 self.by_word.setdefault(wd, []).append(n)
+        # folded spellings, worked out once: the fuzzy scans below compare every
+        # name with what was read, and re-folding 5,000 names per lookup was most
+        # of their cost
+        self.norm_of = {n: _norm(n) for n in names}
+        self.fold_lower = [(n, fl, _counts(fl)) for n, fl in ((n, fold(n.lower())) for n in names)]
+        self.fold_norm = [(n, fn, len(self.norm_of[n].split()), _counts(fn))
+                          for n, fn in ((n, fold(self.norm_of[n])) for n in names)]
+        self.folded = {n: f for n, f, _, _ in self.fold_norm}   # name -> fold(_norm(name))
         self.memo: dict[str, str | None] = {}
+        self.suggest_memo: dict[tuple, list[str]] = {}
         best_match.memo = {}
         # graded scrolls, for deciding a cut-off scroll's grade by its icon colour
         self.graded_scrolls = [n for n in names if re.search(r"\bScroll: (Chaos|Greater|Intermediate|Lesser)$", n)]
@@ -4216,9 +4251,8 @@ class _Dictionary:
         pool = set(self._candidates(low))
         # names sharing no long word with the misread ("Rennae Hat"): shortlist by
         # same word count, similar length and overall look
-        pool.update(n for n in self.names
-                    if len(_norm(n).split()) == len(ta) and abs(len(n) - len(a)) <= 2
-                    and difflib.SequenceMatcher(None, fa, fold(_norm(n))).quick_ratio() >= 0.7)
+        pool.update(_quick_scan(fa, ((n, f, c) for n, f, nw, c in self.fold_norm
+                                     if nw == len(ta) and abs(len(n) - len(a)) <= 2), 0.7))
         scored = []
         for cand in pool:
             b = _norm(cand)
@@ -4297,9 +4331,47 @@ class _Dictionary:
             # only word isn't in the index: cheap length + quick_ratio filter, on the
             # folded spelling so commonly-confused letters (g/p, a/o) count as equal
             f = fold(low)
-            cands |= {n for n in self.names if abs(len(n) - len(low)) <= 3
-                      and difflib.SequenceMatcher(None, f, fold(n.lower())).quick_ratio() >= 0.85}
+            cands.update(_quick_scan(f, ((n, fl, c) for n, fl, c in self.fold_lower
+                                         if abs(len(n) - len(low)) <= 3), 0.85))
         return list(cands)
+
+
+def _counts(s: str) -> dict:
+    """Letter counts of a (folded) name, kept with it for _quick_scan."""
+    c: dict = {}
+    for ch in s:
+        c[ch] = c.get(ch, 0) + 1
+    return c
+
+
+def _quick_scan(query: str, triples, threshold: float) -> list[str]:
+    """Names whose folded spelling is at least `threshold` alike to the folded
+    `query` by difflib's quick_ratio, from (name, folded, letter counts) triples.
+
+    quick_ratio is 2 × (letters the two have in common, with repeats) / (both
+    lengths), so it's computed here straight from the letter counts worked out
+    once per name when the dictionary loads, instead of difflib indexing each
+    name again on every lookup; names too long or short to possibly reach the
+    threshold are skipped before even that. Same results as
+    SequenceMatcher(None, query, folded).quick_ratio() >= threshold."""
+    q = list(_counts(query).items())
+    lq = len(query)
+    out = []
+    for n, f, counts in triples:
+        lf = len(f)
+        if not lf and not lq:
+            out.append(n)     # difflib calls two empty strings identical
+            continue
+        if 2.0 * min(lf, lq) / (lf + lq) < threshold:   # even all letters in common wouldn't do
+            continue
+        m = 0
+        for ch, k in q:
+            c = counts.get(ch)
+            if c:
+                m += c if c < k else k
+        if 2.0 * m / (lf + lq) >= threshold:
+            out.append(n)
+    return out
 
 
 def normalize_name(name: str, known_items: list[str]) -> str:
@@ -4493,17 +4565,26 @@ def suggest_items(text: str, limit: int = 40) -> list[str]:
     d = _dict()
     if not d or not d.names:
         return []
+    key = (text, limit)
+    hit = d.suggest_memo.get(key)
+    if hit is not None:
+        return list(hit)
     low = _norm(text.rstrip("…"))
     words = [w for w in re.findall(r"[a-z0-9']+", low) if len(w) >= 2]
-    pool = [n for n in d.names if all(w in _norm(n) for w in words)] if words else []
+    norm_of = d.norm_of
+    pool = [n for n in d.names if all(w in norm_of[n] for w in words)] if words else []
     if len(pool) < limit:
         pool += [n for n in d._candidates(low) if n not in pool]
-    if len(pool) < 5:
-        f = fold(low)
-        pool += [n for n in d.names if n not in pool and
-                 difflib.SequenceMatcher(None, f, fold(_norm(n))).quick_ratio() >= 0.7]
     f = fold(low)
-    pool.sort(key=lambda n: -difflib.SequenceMatcher(None, f, fold(_norm(n))[:len(f) + 8]).ratio())
+    if len(pool) < 5:
+        have = set(pool)
+        pool += [n for n in _quick_scan(f, ((n, fn, c) for n, fn, _, c in d.fold_norm), 0.7)
+                 if n not in have]
+    folded = d.folded
+    pool.sort(key=lambda n: -difflib.SequenceMatcher(None, f, folded[n][:len(f) + 8]).ratio())
+    if len(d.suggest_memo) > 2000:
+        d.suggest_memo.clear()
+    d.suggest_memo[key] = pool[:limit]
     return pool[:limit]
 
 
@@ -4866,6 +4947,55 @@ def cheapest(con, hours: int = 24, cfg: dict | None = None) -> dict[str, tuple]:
                 continue          # absurdly high: skipped; very low ones are real deals
         best[item] = (each, shop, seller, mp, channel, ts)
     return best
+
+
+def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
+               show_kept: bool = False) -> dict:
+    """What the app's Deals, Items and Review tables show, as plain data.
+
+    The app works this out on a background thread (with its own connection) and
+    only puts the rows on screen from the window's thread: with a thousand items
+    it is thousands of queries plus the fuzzy name search for every unmatched
+    name, which used to freeze the window while it ran.
+
+    "deals": one tuple per listing seen in the last `hours` hours (sold ones only
+      with `show_sold`), sorted best deal first:
+      (sold, pct or 999, item, qty, each, market, verdict, (shop, seller, map,
+       channel), last_seen, price, shop, seller, notes). Outliers, ignored items
+      and non-deals are all still in: the app filters them as its checkboxes say.
+    "items": every item ever logged, A-Z: (item, market, source, price_stats,
+      cheapest-for-sale tuple or None, npc buy price, npc sell price).
+    "review": unmatched_items(con, show_kept)."""
+    since = utc_ago(hours=hours)
+    sold_filter = "" if show_sold else "AND COALESCE(sold, 0) = 0"
+    rows = con.execute(
+        "SELECT item, price, qty, shop, seller, map, channel, COALESCE(sold, 0), "
+        "MAX(COALESCE(last_seen, ts)), MAX(COALESCE(notes, '')) FROM listings "
+        "WHERE COALESCE(last_seen, ts) >= ? "
+        f"{sold_filter} GROUP BY item, price, qty, shop, seller, map, sold",
+        (since,)).fetchall()
+    scored = []
+    bounds: dict[str, object] = {}
+    rates: dict[str, tuple] = {}     # an item's market rate, once, not once per listing
+    for item, price, qty, shop, seller, mp, channel, sold, ts, notes in rows:
+        each = price
+        if item not in rates:
+            rates[item] = market_rate(con, item, cfg)
+            bounds[item] = outlier_bounds(con, item, cfg)
+        mkt = rates[item][0]
+        v, pct = verdict(each, mkt, cfg["deal_threshold_pct"], bounds[item])
+        scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
+                       (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller,
+                       notes))
+    scored.sort()
+    best = cheapest(con, 24, cfg)
+    items = []
+    for (item,) in con.execute("SELECT DISTINCT item FROM listings ORDER BY item COLLATE NOCASE"):
+        mkt, src = rates.get(item) or market_rate(con, item, cfg)
+        info = item_info(item) or {}
+        st = price_stats(con, item, cfg, bounds.get(item, "auto"))
+        items.append((item, mkt, src, st, best.get(item), info.get("npcBuy"), info.get("npcSell")))
+    return {"deals": scored, "items": items, "review": unmatched_items(con, include_kept=show_kept)}
 
 
 DUPLICATE_HOURS = 24   # the same listing seen again within this long isn't logged again
