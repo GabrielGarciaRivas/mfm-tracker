@@ -1660,7 +1660,8 @@ class App:
         try:
             self.shared = mfm_shared.SharedSync(self.cfg, url, key,
                                                 on_status=lambda st: self.events.put(("shared", st)),
-                                                on_new_rows=lambda n: self.events.put(("shared_rows", n)))
+                                                on_new_rows=lambda n: self.events.put(("shared_rows", n)),
+                                                on_megaphones=lambda n: self.events.put(("megaphones", n)))
         except mfm_shared.SharedError as e:
             self.on_shared({"ok": False, "text": str(e)})
             return
@@ -1863,8 +1864,15 @@ class App:
         except (tk.TclError, ValueError):
             return
         if hours != self.cfg.get("megaphone_hours"):
+            more = hours > int(self.cfg.get("megaphone_hours", 24) or 24)
             self.cfg["megaphone_hours"] = hours
             mfm.save_config(self.cfg)
+            if more and self.cfg.get("shared_server"):
+                # get the older megaphones from the Shared Database too
+                import mfm_shared
+                mfm_shared.reset_megaphones(self.con, self.cfg["shared_server"])
+                if self.shared:
+                    self.shared.wake.set()
         self.refresh_megaphones()
 
     def refresh_megaphones(self):

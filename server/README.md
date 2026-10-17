@@ -2,7 +2,7 @@
 
 A small self-hosted database that lets a group of players share prices. Everyone in
 the group connects their Free Market Tracker to it (**Shared Database** in the app), and
-each player's price sightings show up for everyone within a few seconds.
+each player's price sightings and megaphones show up for everyone within a few seconds.
 
 - One person runs the server (on a PC, a home server, a NAS or a Raspberry Pi), and
   gives everyone else the address and an access key.
@@ -112,8 +112,8 @@ server's VPN IP as the address. No port forwarding is needed then.
   `remove-key NAME` (then make a new one for that player).
 - Plain HTTP sends the key unencrypted. That's fine on your home network or over a VPN.
   Over the internet, HTTPS is better (below).
-- Only price sightings are stored: item, price, shop, player name, map, channel, times,
-  notes and which key added them.
+- Only price sightings and megaphones are stored: item, price, shop, player name, map,
+  channel, times, notes, megaphone messages, and which key added them.
 
 ## HTTPS (optional)
 
@@ -162,6 +162,7 @@ again.
 | `MFM_NAME` | Shared prices | the server's name, shown in the app |
 | `MFM_PORT` | 8765 | the port inside the container |
 | `MFM_KEEP_DAYS` | 30 | sightings not seen for this many days are deleted (0 = keep all) |
+| `MFM_MEGAPHONE_HOURS` | 72 | megaphones are kept this many hours (each player still sees only the hours set in their app) |
 | `MFM_TLS_CERT`, `MFM_TLS_KEY` | (none) | certificate and key files (PEM) for HTTPS |
 | `MFM_DATA` | /data | where the database is kept inside the container |
 
@@ -225,6 +226,8 @@ JSON over HTTP. Every `/api` request needs `Authorization: Bearer <access key>`.
 | `GET /api/v1/status` | `{"name", "version", "sightings", "seq", "you"}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
+| `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
+| `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,
 last_seen, notes}`, with times in UTC (`2026-10-17T20:00:00Z`). Every new or changed
@@ -232,3 +235,8 @@ sighting gets the next `seq` number; clients ask for everything after the last o
 have. A listing sent by two players (same item, price and shop within a day) is stored
 once; `same` tells the sender which stored sighting theirs became. Once sold, a sighting
 stays sold.
+
+A megaphone is `{uid, ts, player, channel, message, kind, color, conf}`, where `conf` is
+how sure the sender's OCR was (0-100). Reads within two minutes of each other with nearly
+the same message, and the same player (allowing for look-alike letters) or channel, are
+one megaphone: the read with the highest `conf` is kept.

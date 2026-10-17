@@ -6,6 +6,9 @@ server (see server/README.md), so a group of players shares one set of prices.
   change (sold, seen again, a note) are sent again; everyone's sightings are copied
   into the local prices every few seconds.
 - Names that end up in Review are only sent once they're matched to an item.
+- Megaphones are shared too. When several players read the same megaphone, the read
+  the OCR was most sure of is kept (on the server and here). The server keeps them for
+  72 hours; you get the ones from the time set in your Megaphones tab.
 
 Local bookkeeping lives in prices.db: listings.uid (the sighting's id on the
 server), listings.shared (NULL = local only, 0 = to send, 1 = on the server),
@@ -94,12 +97,33 @@ class Server:
     def changes(self, since: int) -> dict:
         return self.call("GET", "/api/v1/sightings", query={"since": since, "limit": 2000})
 
+    def send_megaphones(self, megaphones: list[dict]) -> dict:
+        return self.call("POST", "/api/v1/megaphones", {"megaphones": megaphones})
+
+    def megaphone_changes(self, since: int, hours: float) -> dict:
+        return self.call("GET", "/api/v1/megaphones", query={"since": since, "hours": hours, "limit": 2000})
+
 
 # --------------------------------------------------------------------------- local side
 
 def prepare(con) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS idx_listings_uid ON listings(uid)")
     con.execute("CREATE TABLE IF NOT EXISTS shared_state (server TEXT PRIMARY KEY, seq INTEGER)")
+    con.commit()
+
+
+MEGA_SERVER_HOURS = 72     # how long the server keeps megaphones
+
+
+def _mega_sig(r: dict) -> str:
+    return json.dumps([str(r.get(k) or "") for k in ("player", "channel", "message")] + [float(r.get("conf") or 0)])
+
+
+def reset_megaphones(con, url: str) -> None:
+    """Read the server's megaphones from the start again (e.g. after you chose to see
+    more hours of them)."""
+    prepare(con)
+    con.execute("DELETE FROM shared_state WHERE server = ?", (normalize_url(url) + "#megaphones",))
     con.commit()
 
 
@@ -130,8 +154,10 @@ class SharedSync:
 
     EVERY = 4.0
 
-    def __init__(self, cfg: dict, url: str, key: str, on_status=lambda s: None, on_new_rows=lambda n: None):
+    def __init__(self, cfg: dict, url: str, key: str, on_status=lambda s: None, on_new_rows=lambda n: None,
+                 on_megaphones=lambda n: None):
         self.cfg = cfg
+        self.on_megaphones = on_megaphones
         self.server = Server(url, key)
         self.on_status, self.on_new_rows = on_status, on_new_rows
         self.stop_event = threading.Event()
@@ -165,6 +191,8 @@ class SharedSync:
                     self.info = self.server.status()
                 self._send(con)
                 self._receive(con)
+                self._send_megaphones(con)
+                self._receive_megaphones(con)
                 self._status(True, "Connected")
             except SharedError as e:
                 self.info = {}
@@ -255,6 +283,66 @@ class SharedSync:
         if new:
             self.received += new
             self.on_new_rows(new)
+
+
+    # -- megaphones
+    def _send_megaphones(self, con) -> None:
+        cols = ("id", "uid", "shared_sig", "ts", "player", "channel", "message", "kind", "color", "conf")
+        rows = []
+        for r in con.execute(f"SELECT {', '.join(cols)} FROM megaphones WHERE kind IS NOT NULL AND ts >= ? "
+                             "ORDER BY id", (mfm.utc_ago(hours=MEGA_SERVER_HOURS),)):
+            r = dict(zip(cols, r))
+            if not r["uid"] or _mega_sig(r) != r["shared_sig"]:
+                rows.append(r)
+        if not rows:
+            return
+        rows = rows[:500]
+        for r in rows:
+            if not r["uid"]:
+                r["uid"] = uuid.uuid4().hex
+        res = self.server.send_megaphones([{k: r[k] for k in cols[3:] + ("uid",)} for r in rows])
+        same = res.get("same", {})
+        for r in rows:
+            con.execute("UPDATE megaphones SET uid = ?, shared_sig = ? WHERE id = ?",
+                        (same.get(r["uid"], r["uid"]), _mega_sig(r), r["id"]))
+        con.commit()
+
+    def _receive_megaphones(self, con) -> None:
+        key = self.server.url + "#megaphones"
+        row = con.execute("SELECT seq FROM shared_state WHERE server = ?", (key,)).fetchone()
+        seq = row[0] if row else 0
+        hours = max(1, min(MEGA_SERVER_HOURS, float(self.cfg.get("megaphone_hours", 24) or 24)))
+        new = 0
+        while True:
+            res = self.server.megaphone_changes(seq, hours)
+            for m in res.get("megaphones", []):
+                conf = float(m.get("conf") or 0)
+                sig = _mega_sig(m)
+                local = con.execute("SELECT id, conf FROM megaphones WHERE uid = ?", (m["uid"],)).fetchone()
+                if not local:
+                    same = mfm.find_megaphone(con, m["ts"], m["player"], m.get("channel"), m["message"])
+                    if same:
+                        local = (same[0], same[4])
+                        con.execute("UPDATE megaphones SET uid = ? WHERE id = ?", (m["uid"], same[0]))
+                if local:
+                    if conf >= float(local[1] or 0):   # the server's read is at least as sure: take it
+                        con.execute("UPDATE megaphones SET player=?, channel=COALESCE(?, channel), message=?, kind=?, "
+                                    "conf=?, shared_sig=? WHERE id=?",
+                                    (m["player"], m.get("channel"), m["message"], mfm.megaphone_kind(m["message"]),
+                                     conf, sig, local[0]))
+                    continue
+                con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color, conf, uid, "
+                            "shared_sig) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (m["ts"], mfm.utc_now(), m["player"], m.get("channel"), m["message"],
+                             mfm.megaphone_kind(m["message"]), m.get("color"), conf, m["uid"], sig))
+                new += 1
+            seq = res.get("seq", seq)
+            con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)", (key, seq))
+            con.commit()
+            if not res.get("more"):
+                break
+        if new:
+            self.on_megaphones(new)
 
 
 def check(url: str, key: str) -> dict:

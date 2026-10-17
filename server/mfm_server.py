@@ -15,6 +15,7 @@ Settings (environment variables):
   MFM_DATA        folder for the database (default /data, or ./data outside Docker)
   MFM_NAME        a name for this server, shown in the app (default "Shared prices")
   MFM_KEEP_DAYS   sightings not seen for this many days are deleted (default 30, 0 = keep)
+  MFM_MEGAPHONE_HOURS  megaphones are kept this many hours (default 72)
   MFM_TLS_CERT    with MFM_TLS_KEY: serve HTTPS with this certificate (PEM files)
   MFM_TLS_KEY
 
@@ -26,11 +27,15 @@ API (JSON over HTTP; every /api call needs "Authorization: Bearer <access key>")
                                            -> {"seq", "same": {your uid: stored uid}}
   GET  /api/v1/sightings?since=SEQ&limit=N -> {"sightings": [... with "seq", "by"], "seq",
                                            "more": bool}
-Every stored or changed sighting gets the next "seq" number, so a client asks for
-everything after the last number it has seen.
+  POST /api/v1/megaphones                  {"megaphones": [ {uid, ts, player, channel, message, kind,
+                                           color, conf}, ... ]}  -> {"seq", "same": {...}}
+  GET  /api/v1/megaphones?since=SEQ&hours=H -> {"megaphones": [...], "seq", "more"}
+Every stored or changed sighting (or megaphone) gets the next "seq" number, so a
+client asks for everything after the last number it has seen.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import hmac
 import json
@@ -47,10 +52,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
+MEGA_HOURS = float(os.environ.get("MFM_MEGAPHONE_HOURS", "72"))
 FIELDS = ("ts", "item", "price", "qty", "shop", "seller", "map", "channel", "sold", "sold_ts",
           "last_seen", "notes")
 
@@ -98,6 +104,19 @@ def db() -> sqlite3.Connection:
             created TEXT
         );
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS megaphones (
+            uid TEXT PRIMARY KEY,
+            seq INTEGER NOT NULL,
+            ts TEXT NOT NULL,
+            player TEXT NOT NULL,
+            channel TEXT,
+            message TEXT NOT NULL,
+            kind TEXT, color TEXT,
+            conf REAL NOT NULL DEFAULT 0,
+            added_by TEXT, updated TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_mega_seq ON megaphones(seq);
+        CREATE INDEX IF NOT EXISTS idx_mega_ts ON megaphones(ts);
     """)
     return con
 
@@ -227,8 +246,9 @@ def store(con, sightings: list[dict], by: str) -> tuple[int, dict]:
 
 def changes(con, since: int, limit: int) -> tuple[list[dict], int, bool]:
     cols = ("uid", "seq") + FIELDS + ("added_by",)
-    rows = con.execute(f"SELECT {', '.join(cols)} FROM sightings WHERE seq > ? ORDER BY seq LIMIT ?",
-                       (since, limit + 1)).fetchall()
+    with _lock:                       # not halfway through someone's upload
+        rows = con.execute(f"SELECT {', '.join(cols)} FROM sightings WHERE seq > ? ORDER BY seq LIMIT ?",
+                           (since, limit + 1)).fetchall()
     more = len(rows) > limit
     out = []
     for row in rows[:limit]:
@@ -244,6 +264,105 @@ def prune(con, days: int) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(UTC_FMT)
     with _lock:
         n = con.execute("DELETE FROM sightings WHERE COALESCE(last_seen, ts) < ?", (cutoff,)).rowcount
+        con.commit()
+    return n
+
+
+# --------------------------------------------------------------------------- megaphones
+# Several players read the same megaphone off their screens, each with its own OCR
+# slips ("Lock1024" / "Locki024"). Reads within two minutes of each other with nearly
+# the same message, and the same player (as far as the spelling goes) or channel, are
+# one megaphone: only the read with the highest OCR confidence is kept.
+
+_FOLD = str.maketrans({"g": "p", "q": "p", "l": "i", "1": "i", "|": "i", "!": "i", "0": "o",
+                       "a": "o", "c": "e", "5": "s", "v": "u", "8": "b"})
+
+
+def _fold(s: str) -> str:
+    return (s or "").lower().replace("rn", "m").replace("vv", "w").translate(_FOLD)
+
+
+def _alike(a: dict, b: dict) -> bool:
+    na, nb = (re.sub(r"\W+", "", (x or "").lower()) for x in (a["message"], b["message"]))
+    alike_msg = na == nb or (na and nb and (na.startswith(nb) or nb.startswith(na))) or \
+        difflib.SequenceMatcher(None, na, nb).ratio() >= 0.85
+    fa, fb = _fold(a["player"]), _fold(b["player"])
+    alike_name = fa == fb or difflib.SequenceMatcher(None, fa, fb).ratio() >= 0.75
+    same_ch = bool(a["channel"] and b["channel"] and str(a["channel"]) == str(b["channel"]))
+    return bool(alike_msg and (alike_name or same_ch))
+
+
+def _clean_mega(m: dict) -> dict | None:
+    def text(v, n):
+        v = "" if v is None else str(v).strip()
+        return v[:n] or None
+    ts = text(m.get("ts"), 30)
+    if not ts or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", ts):
+        return None
+    try:
+        conf = max(0.0, min(100.0, float(m.get("conf") or 0)))
+    except (TypeError, ValueError):
+        conf = 0.0
+    out = {"uid": text(m.get("uid"), 64), "ts": ts, "player": text(m.get("player"), 20),
+           "channel": text(m.get("channel"), 8), "message": text(m.get("message"), 400),
+           "kind": text(m.get("kind"), 8), "color": text(m.get("color"), 9), "conf": conf}
+    return out if out["uid"] and out["player"] and out["message"] else None
+
+
+def store_megaphones(con, megaphones: list[dict], by: str) -> tuple[int, dict]:
+    same = {}
+    cols = ("uid", "ts", "player", "channel", "message", "kind", "color", "conf")
+    with _lock:
+        for raw in megaphones:
+            m = _clean_mega(raw) if isinstance(raw, dict) else None
+            if not m:
+                continue
+            row = con.execute(f"SELECT {', '.join(cols)} FROM megaphones WHERE uid = ?", (m["uid"],)).fetchone()
+            cur = dict(zip(cols, row)) if row else None
+            if not cur:
+                t = datetime.strptime(m["ts"], UTC_FMT)
+                lo, hi = ((t + timedelta(minutes=d)).strftime(UTC_FMT) for d in (-2, 2))
+                for r in con.execute(f"SELECT {', '.join(cols)} FROM megaphones WHERE ts BETWEEN ? AND ?", (lo, hi)):
+                    r = dict(zip(cols, r))
+                    if _alike(r, m):
+                        cur = r
+                        same[m["uid"]] = r["uid"]
+                        break
+            if cur:
+                if m["conf"] > cur["conf"]:           # a better read: it replaces the stored one
+                    con.execute("UPDATE megaphones SET player=?, channel=COALESCE(?, channel), message=?, kind=?, "
+                                "color=COALESCE(color, ?), conf=?, seq=?, updated=? WHERE uid=?",
+                                (m["player"], m["channel"], m["message"], m["kind"], m["color"], m["conf"],
+                                 next_seq(con), utc_now(), cur["uid"]))
+                elif m["channel"] and not cur["channel"]:
+                    con.execute("UPDATE megaphones SET channel=?, seq=?, updated=? WHERE uid=?",
+                                (m["channel"], next_seq(con), utc_now(), cur["uid"]))
+                continue
+            con.execute("INSERT INTO megaphones (uid, seq, ts, player, channel, message, kind, color, conf, added_by, "
+                        "updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (m["uid"], next_seq(con), m["ts"], m["player"], m["channel"], m["message"], m["kind"],
+                         m["color"], m["conf"], by, utc_now()))
+        con.commit()
+        return last_seq(con), same
+
+
+def megaphone_changes(con, since: int, hours: float, limit: int) -> tuple[list[dict], int, bool]:
+    """Megaphones stored or changed after `since`, from the last `hours` only."""
+    cols = ("uid", "seq", "ts", "player", "channel", "message", "kind", "color", "conf")
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(UTC_FMT)
+    with _lock:                       # not halfway through someone's upload
+        newest = last_seq(con)
+        rows = con.execute(f"SELECT {', '.join(cols)} FROM megaphones WHERE seq > ? AND ts >= ? ORDER BY seq "
+                           "LIMIT ?", (since, cutoff, limit + 1)).fetchall()
+    more = len(rows) > limit
+    out = [dict(zip(cols, r)) for r in rows[:limit]]
+    return out, (out[-1]["seq"] if more else newest), more
+
+
+def prune_megaphones(con, hours: float) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(UTC_FMT)
+    with _lock:
+        n = con.execute("DELETE FROM megaphones WHERE ts < ?", (cutoff,)).rowcount
         con.commit()
     return n
 
@@ -287,8 +406,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "Missing or wrong access key."})
         if url.path == "/api/v1/status":
             n = self.con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
+            m = self.con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
-                                    "sightings": n, "seq": last_seq(self.con), "you": name})
+                                    "sightings": n, "megaphones": m, "megaphone_hours": MEGA_HOURS,
+                                    "seq": last_seq(self.con), "you": name})
         if url.path == "/api/v1/sightings":
             q = parse_qs(url.query)
             try:
@@ -298,25 +419,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "since and limit must be numbers"})
             rows, seq, more = changes(self.con, since, limit)
             return self._send(200, {"sightings": rows, "seq": seq, "more": more})
+        if url.path == "/api/v1/megaphones":
+            q = parse_qs(url.query)
+            try:
+                since = int(q.get("since", ["0"])[0])
+                hours = max(0.1, min(MEGA_HOURS, float(q.get("hours", [str(MEGA_HOURS)])[0])))
+                limit = max(1, min(5000, int(q.get("limit", ["2000"])[0])))
+            except ValueError:
+                return self._send(400, {"error": "since, hours and limit must be numbers"})
+            rows, seq, more = megaphone_changes(self.con, since, hours, limit)
+            return self._send(200, {"megaphones": rows, "seq": seq, "more": more})
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
         name = self._who()
         if name is None:
             return self._send(401, {"error": "Missing or wrong access key."})
-        if urlparse(self.path).path != "/api/v1/sightings":
+        path = urlparse(self.path).path
+        if path not in ("/api/v1/sightings", "/api/v1/megaphones"):
             return self._send(404, {"error": "not found"})
+        what = path.rsplit("/", 1)[1]
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0 or n > MAX_BODY:
             return self._send(413, {"error": "too much at once"})
         try:
             body = json.loads(self.rfile.read(n))
-            sightings = body["sightings"]
-            assert isinstance(sightings, list) and len(sightings) <= MAX_BATCH
+            items = body[what]
+            assert isinstance(items, list) and len(items) <= MAX_BATCH
         except Exception:
-            return self._send(400, {"error": f'send {{"sightings": [...]}} with at most {MAX_BATCH}'})
+            return self._send(400, {"error": f'send {{"{what}": [...]}} with at most {MAX_BATCH}'})
         try:
-            seq, same = store(self.con, sightings, name)
+            seq, same = (store if what == "sightings" else store_megaphones)(self.con, items, name)
         except Exception as e:
             log(f"store failed: {type(e).__name__}: {e}")
             return self._send(500, {"error": "server error"})
@@ -348,9 +481,12 @@ def serve() -> None:
                 n = prune(con, keep)
                 if n:
                     log(f"deleted {n} sightings not seen for {keep} days")
+                n = prune_megaphones(con, MEGA_HOURS)
+                if n:
+                    log(f"deleted {n} megaphones older than {MEGA_HOURS:g} hours")
             except Exception as e:
                 log(f"clean-up failed: {e}")
-            time.sleep(6 * 3600)
+            time.sleep(600)
     threading.Thread(target=housekeeping, daemon=True).start()
     log(f"Free Market Tracker server {VERSION} on {scheme}://0.0.0.0:{port} (data: {DB_PATH})")
     httpd.serve_forever()
@@ -378,7 +514,8 @@ def main(argv: list[str]) -> int:
     if cmd == "stats":
         n = con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         items = con.execute("SELECT COUNT(DISTINCT item) FROM sightings").fetchone()[0]
-        print(f"{n} sightings of {items} items; {DB_PATH.stat().st_size / 1e6:.1f} MB")
+        m = con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
+        print(f"{n} sightings of {items} items, {m} megaphones; {DB_PATH.stat().st_size / 1e6:.1f} MB")
         for name, c in con.execute("SELECT added_by, COUNT(*) FROM sightings GROUP BY added_by ORDER BY 2 DESC"):
             print(f"  {name}: {c}")
         return 0

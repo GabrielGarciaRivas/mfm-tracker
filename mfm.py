@@ -298,9 +298,11 @@ def db() -> sqlite3.Connection:
         """
     )
     mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
-    for col in ("color", "votes"):
+    for col, typ in (("color", "TEXT"), ("votes", "TEXT"), ("conf", "REAL"),
+                     # Shared Database: id on the server, synced values
+                     ("uid", "TEXT"), ("shared_sig", "TEXT")):
         if col not in mcols:
-            con.execute(f"ALTER TABLE megaphones ADD COLUMN {col} TEXT")
+            con.execute(f"ALTER TABLE megaphones ADD COLUMN {col} {typ}")
     cols = {r[1] for r in con.execute("PRAGMA table_info(listings)")}
     if con.execute("PRAGMA main.user_version").fetchone()[0] < 1 and "ts" in cols:
         # versions before 2610.1 saved local times without a zone: convert to UTC once
@@ -5693,13 +5695,16 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
         line.paste(left, (0, 0))
         line.paste(msg, (left.width + gap, 0))
         words = _ocr_words(line)
+        confs = [c for w, x, c in words if c >= 0]
         split = left.width + gap // 2
         head = " ".join(w for w, x, c in words if x < split)
         tail = _drop_junk([(w, c) for w, x, c in words if x >= split])
         parsed = parse_chat_line(head + " : " + tail)
     else:
         left = _chat_text(_text_band(row.crop((lx0 + 1, 0, lx1, row.height))))
-        parsed = parse_chat_line(_drop_junk([(w, c) for w, x, c in _ocr_words(left)]))
+        words = _ocr_words(left)
+        confs = [c for w, x, c in words if c >= 0]
+        parsed = parse_chat_line(_drop_junk([(w, c) for w, x, c in words]))
     if not parsed:
         return None
     hhmm, name, message = parsed
@@ -5707,10 +5712,14 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
     for im in extra:
-        t = _drop_junk([(w, c) for w, x, c in _ocr_words(_chat_text(im))])
+        ws = _ocr_words(_chat_text(im))
+        confs += [c for w, x, c in ws if c >= 0]
+        t = _drop_junk([(w, c) for w, x, c in ws])
         message = _join_wrapped(message, t)
+    # how sure the OCR was of this read (0-100): the average of its words
+    conf = round(sum(confs) / len(confs), 1) if confs else 0.0
     return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
-            "message": fix_megaphone_words(clean_megaphone(message), con)}
+            "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf}
 
 
 def _player_names(con) -> dict[str, str]:
@@ -5730,10 +5739,27 @@ def _player_names(con) -> dict[str, str]:
     return {k: v[1] for k, v in out.items()}
 
 
-def _vote(votes: dict, value: str) -> str:
-    """Count one more read of `value`; returns the most-read value so far."""
-    votes[value] = votes.get(value, 0) + 1
-    return max(votes, key=lambda v: (votes[v], len(v)))
+def megaphones_alike(a_player, a_channel, a_msg, b_player, b_channel, b_msg) -> bool:
+    """Two reads of the same megaphone: nearly the same message, and the same player
+    (as far as the spelling goes) or channel. (Times are compared by the caller.)"""
+    na, nb = re.sub(r"\W+", "", (a_msg or "").lower()), re.sub(r"\W+", "", (b_msg or "").lower())
+    alike_msg = na == nb or (na and nb and (na.startswith(nb) or nb.startswith(na))) or \
+        difflib.SequenceMatcher(None, na, nb).ratio() >= 0.85
+    fa, fb = fold(a_player or ""), fold(b_player or "")
+    alike_name = fa == fb or difflib.SequenceMatcher(None, fa, fb).ratio() >= 0.75
+    same_ch = bool(a_channel and b_channel and str(a_channel) == str(b_channel))
+    return bool(alike_msg and (alike_name or same_ch))
+
+
+def find_megaphone(con, ts: str, player: str, channel, message: str, minutes: int = 2):
+    """A stored megaphone that is this one: (id, player, channel, message, conf, uid) or None."""
+    t = datetime.strptime(ts, UTC_FMT)
+    lo, hi = ((t + timedelta(minutes=d)).strftime(UTC_FMT) for d in (-minutes, minutes))
+    for row in con.execute("SELECT id, player, channel, message, conf, uid FROM megaphones "
+                           "WHERE ts BETWEEN ? AND ?", (lo, hi)).fetchall():
+        if megaphones_alike(row[1], row[2], row[3], player, channel, message):
+            return row
+    return None
 
 
 def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
@@ -5742,8 +5768,8 @@ def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
     The same megaphone is read again every second while it's on screen (and moves up
     as the chat scrolls), sometimes with a letter read differently. A read within two
     minutes of a stored one, with nearly the same message and the same player (as
-    far as the spelling goes) or channel, is that one: it counts as another read,
-    and the player name and message read most often win."""
+    far as the spelling goes) or channel, is that one: only the read the OCR was most
+    sure of (its confidence) is kept."""
     new = 0
     seen = utc_now()
     names = _player_names(con)
@@ -5753,40 +5779,21 @@ def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
             continue
         player = names.get(fold(player), player)
         ts = chat_time_utc(f["time"], now)
-        t = datetime.strptime(ts, UTC_FMT)
-        lo, hi = ((t + timedelta(minutes=d)).strftime(UTC_FMT) for d in (-2, 2))
-        norm = re.sub(r"\W+", "", f["message"].lower())
-        same = None
-        for row in con.execute("SELECT id, player, channel, message, votes FROM megaphones "
-                               "WHERE ts BETWEEN ? AND ?", (lo, hi)).fetchall():
-            mid, p0, ch0, msg0, votes = row
-            old = re.sub(r"\W+", "", (msg0 or "").lower())
-            alike_msg = old == norm or old.startswith(norm) or norm.startswith(old) or \
-                difflib.SequenceMatcher(None, old, norm).ratio() >= 0.85
-            alike_name = fold(p0 or "") == fold(player) or \
-                difflib.SequenceMatcher(None, fold(p0 or ""), fold(player)).ratio() >= 0.75
-            same_ch = bool(ch0 and f.get("channel") and ch0 == f.get("channel"))
-            if alike_msg and (alike_name or same_ch):
-                same = row
-                break
+        conf = float(f.get("conf") or 0)
+        same = find_megaphone(con, ts, player, f.get("channel"), f["message"])
         if same:
-            mid, p0, ch0, msg0, votes = same
-            try:
-                v = json.loads(votes) if votes else {}
-            except ValueError:
-                v = {}
-            v.setdefault("player", {p0: 1} if p0 else {})
-            v.setdefault("message", {msg0: 1} if msg0 else {})
-            best_p = _vote(v["player"], player)
-            best_m = _vote(v["message"], f["message"])
-            con.execute("UPDATE megaphones SET player = ?, message = ?, kind = ?, votes = ?, "
-                        "channel = COALESCE(channel, ?) WHERE id = ?",
-                        (best_p, best_m, megaphone_kind(best_m), json.dumps(v), f.get("channel"), mid))
+            mid, p0, ch0, msg0, conf0, uid = same
+            if conf > (conf0 or 0):
+                con.execute("UPDATE megaphones SET player = ?, message = ?, kind = ?, conf = ?, "
+                            "channel = COALESCE(?, channel) WHERE id = ?",
+                            (player, f["message"], megaphone_kind(f["message"]), conf, f.get("channel"), mid))
+            elif f.get("channel") and not ch0:
+                con.execute("UPDATE megaphones SET channel = ? WHERE id = ?", (f["channel"], mid))
             continue
-        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color, votes) "
+        con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color, conf) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (ts, seen, player, f.get("channel"), f["message"], megaphone_kind(f["message"]),
-                     f.get("color"), json.dumps({"player": {player: 1}, "message": {f["message"]: 1}})))
+                     f.get("color"), conf))
         new += 1
     con.commit()
     return new

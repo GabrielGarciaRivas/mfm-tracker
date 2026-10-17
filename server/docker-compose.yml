@@ -11,6 +11,7 @@ services:
     environment:
       MFM_NAME: "Our Free Market"  # shown in the app
       MFM_KEEP_DAYS: "30"          # delete sightings not seen for this many days (0 = keep all)
+      MFM_MEGAPHONE_HOURS: "72"    # keep megaphones this many hours
       # MFM_TLS_CERT: /certs/fullchain.pem   # optional HTTPS with your own certificate
       # MFM_TLS_KEY: /certs/privkey.pem
     volumes:

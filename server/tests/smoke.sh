@@ -18,4 +18,14 @@ curl -fsS -H "Authorization: Bearer $K2" -H 'Content-Type: application/json' -X 
 out=$(curl -fsS -H "Authorization: Bearer $K2" "$URL/api/v1/sightings?since=0")
 echo "$out" | grep -q '"sold": 1' || fail "read back: $out"
 [ "$(echo "$out" | grep -o '"uid"' | wc -l)" = 1 ] || fail "stored twice: $out"
+# megaphones: two reads of the same one; the surer read wins and it's stored once
+NOW=$(date -u +%Y-%m-%dT%H:%M:00Z)
+curl -fsS -H "Authorization: Bearer $K1" -H 'Content-Type: application/json' -X POST "$URL/api/v1/megaphones" \
+  -d "{\"megaphones\":[{\"uid\":\"m1\",\"ts\":\"$NOW\",\"player\":\"Locki024\",\"channel\":\"1\",\"message\":\"S>Gloves Attack Scroll\",\"kind\":\"sell\",\"conf\":61}]}" >/dev/null
+curl -fsS -H "Authorization: Bearer $K2" -H 'Content-Type: application/json' -X POST "$URL/api/v1/megaphones" \
+  -d "{\"megaphones\":[{\"uid\":\"m2\",\"ts\":\"$NOW\",\"player\":\"Lock1024\",\"channel\":\"1\",\"message\":\"S>Gloves Attack Scroll\",\"kind\":\"sell\",\"conf\":88}]}" \
+  | grep -q '"m2": "m1"' || fail "same megaphone"
+out=$(curl -fsS -H "Authorization: Bearer $K1" "$URL/api/v1/megaphones?since=0&hours=2")
+echo "$out" | grep -q '"player": "Lock1024"' || fail "best read: $out"
+[ "$(echo "$out" | grep -o '"uid"' | wc -l)" = 1 ] || fail "megaphone stored twice: $out"
 echo "OK"

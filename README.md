@@ -241,7 +241,9 @@ connected sees each other's prices in the app as they're logged.
 While connected, your new sightings are saved both here and on the server, sold and
 seen-again updates go to it too, and everyone else's sightings are copied into your
 prices every few seconds. Only items from the item list are shared: a name in Review is
-shared once you match it to an item. It stays connected when you restart the app;
+shared once you match it to an item. Megaphones are shared too: when several players
+read the same one, the clearest read is kept. The server keeps megaphones for 72 hours;
+you see the hours set in your Megaphones tab. It stays connected when you restart the app;
 **Stop sharing** disconnects.
 
 ## Import and export
