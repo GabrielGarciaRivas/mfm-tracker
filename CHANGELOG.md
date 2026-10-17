@@ -1,5 +1,12 @@
 # Changelog
 
+## 2610.16.002 — 2026-10-17
+
+### Changed
+- **Shared Database:** each time the app connects (or reconnects after being offline),
+  it catches up: prices and megaphones logged while you weren't connected are sent, and
+  everything on the server is read again, so nothing missed is left out.
+
 ## 2610.16.001 — 2026-10-17
 
 ### New

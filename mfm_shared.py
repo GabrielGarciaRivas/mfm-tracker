@@ -213,6 +213,7 @@ class SharedSync:
         self.sent = self.received = 0
         self.ok = False
         self.info: dict = {}
+        self.caught_up = False
 
     def start(self) -> None:
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -238,6 +239,13 @@ class SharedSync:
             try:
                 if not self.info:
                     self.info = self.server.status()
+                    self.caught_up = False
+                if not self.caught_up:
+                    # every time it (re)connects: send what was logged while offline and
+                    # read everything on the server again, for sightings and megaphones
+                    self._status(True, "Catching up with the server…")
+                    self._true_up(con)
+                    self.caught_up = True
                 self._send(con)
                 self._receive(con)
                 self._send_megaphones(con)
@@ -260,9 +268,10 @@ class SharedSync:
         con.close()
 
     # -- local -> server
-    def _send(self, con) -> None:
+    def _send(self, con, changed_days: float = 7) -> int:
+        """Send new and changed sightings (at most 500); returns how many were sent."""
         if not mfm.has_item_list():
-            return                            # can't tell real items from misreads
+            return 0                          # can't tell real items from misreads
         # new ones (names still in Review wait until they're matched to an item)
         ids = [rid for rid, item in con.execute("SELECT id, item FROM listings WHERE shared = 0 ORDER BY id")
                if mfm.is_known_item(item)][:500]
@@ -273,12 +282,12 @@ class SharedSync:
                 f"SELECT {', '.join(cols)} FROM listings WHERE id IN ({','.join('?' * len(ids))})", ids)]
         # changed since they were last synced (sold, seen again, a note)
         for r in con.execute(f"SELECT {', '.join(cols)} FROM listings WHERE shared = 1 AND uid IS NOT NULL "
-                             "AND COALESCE(last_seen, ts) >= ?", (mfm.utc_ago(days=7),)):
+                             "AND COALESCE(last_seen, ts) >= ?", (mfm.utc_ago(days=changed_days),)):
             r = dict(zip(cols, r))
             if _sig(r) != r["shared_sig"] and len(rows) < 500:
                 rows.append(r)
         if not rows:
-            return
+            return 0
         for r in rows:
             if not r["uid"]:
                 r["uid"] = uuid.uuid4().hex
@@ -290,6 +299,34 @@ class SharedSync:
                         (same.get(r["uid"], r["uid"]), _sig(r), r["id"]))
         con.commit()
         self.sent += sum(1 for r in rows if r["id"] in ids)
+        return len(rows)
+
+    def _keep_days(self) -> float:
+        """How far back sightings are kept: the server's limit or yours, whichever is less."""
+        mine = self.cfg.get("keep_days", 30) if self.cfg.get("retention", "archive") != "keep" else 3650
+        server = self.info.get("keep_days") or 30
+        return max(1, min(float(mine), float(server) if server > 0 else 3650))
+
+    def _true_up(self, con) -> None:
+        """Catch up after being offline (or on first connecting):
+        - sightings logged here while not connected are sent (as far back as sightings
+          are kept), and so are changes made to shared ones (sold, seen again, notes);
+        - megaphones read here while not connected are sent;
+        - everything on the server is read again, so nothing missed while offline (or
+          deleted here) is left out."""
+        days = self._keep_days()
+        con.execute("UPDATE listings SET shared = 0 WHERE shared IS NULL AND uid IS NULL "
+                    "AND COALESCE(last_seen, ts) >= ?", (mfm.utc_ago(days=days),))
+        con.commit()
+        while not self.stop_event.is_set() and self._send(con, changed_days=days):
+            self._status(True, f"Catching up with the server… sent {self.sent:,}")
+        while not self.stop_event.is_set() and self._send_megaphones(con):
+            pass
+        url = self.server.url
+        con.execute("DELETE FROM shared_state WHERE server IN (?, ?)", (url, url + "#megaphones"))
+        con.commit()
+        self._receive(con)
+        self._receive_megaphones(con)
 
     # -- server -> local
     def _receive(self, con) -> None:
@@ -340,7 +377,7 @@ class SharedSync:
 
 
     # -- megaphones
-    def _send_megaphones(self, con) -> None:
+    def _send_megaphones(self, con) -> int:
         cols = ("id", "uid", "shared_sig", "ts", "player", "channel", "message", "kind", "color", "conf")
         rows = []
         for r in con.execute(f"SELECT {', '.join(cols)} FROM megaphones WHERE kind IS NOT NULL AND ts >= ? "
@@ -349,7 +386,7 @@ class SharedSync:
             if not r["uid"] or _mega_sig(r) != r["shared_sig"]:
                 rows.append(r)
         if not rows:
-            return
+            return 0
         rows = rows[:500]
         for r in rows:
             if not r["uid"]:
@@ -360,6 +397,7 @@ class SharedSync:
             con.execute("UPDATE megaphones SET uid = ?, shared_sig = ? WHERE id = ?",
                         (same.get(r["uid"], r["uid"]), _mega_sig(r), r["id"]))
         con.commit()
+        return len(rows)
 
     def _receive_megaphones(self, con) -> None:
         key = self.server.url + "#megaphones"

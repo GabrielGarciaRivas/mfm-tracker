@@ -252,7 +252,7 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `POST /api/v1/login` with `{"username", "password"}` | `{"token", "user": {"id", "name"}, "expires"}` |
 | `POST /api/v1/logout` | ends this token |
 | `POST /api/v1/password` with `{"password", "new_password"}` | changes it; signs out your other devices |
-| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "seq", "you": {"id", "name"}}` |
+| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "seq", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |

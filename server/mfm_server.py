@@ -34,7 +34,8 @@ API (JSON over HTTP):
   Every other /api call needs "Authorization: Bearer <token>":
   POST /api/v1/logout                      ends this sign-in
   POST /api/v1/password  {"password", "new_password"}   change your password
-  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "seq", "you"}
+  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "seq", "you",
+                                           "keep_days", "megaphone_hours"}
   POST /api/v1/sightings                   {"sightings": [ {uid, ts, item, price, qty, shop,
                                            seller, map, channel, sold, sold_ts, last_seen,
                                            notes}, ... ]}  (at most 500 at a time)
@@ -66,7 +67,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -581,6 +582,7 @@ class Handler(BaseHTTPRequestHandler):
             m = self.con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
                                     "sightings": n, "megaphones": m, "megaphone_hours": MEGA_HOURS,
+                                    "keep_days": int(os.environ.get("MFM_KEEP_DAYS", "30")),
                                     "seq": last_seq(self.con), "you": {"id": user["id"], "name": user["name"]}})
         if url.path == "/api/v1/sightings":
             q = parse_qs(url.query)
