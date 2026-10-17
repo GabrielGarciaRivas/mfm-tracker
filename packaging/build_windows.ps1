@@ -42,7 +42,7 @@ if (Test-Path (Join-Path $TessDir "tessdata\configs")) {
   --name $Name `
   --icon (Join-Path $Root "packaging\icon.ico") `
   --paths $Root `
-  --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared --hidden-import mfm_google_client `
+  --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared `
   --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk `
   --collect-data spellchecker --collect-data certifi --hidden-import certifi `
   --exclude-module pynput `

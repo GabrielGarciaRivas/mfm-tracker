@@ -1,0 +1,60 @@
+# Builds the shared price server's Docker image, checks it, and publishes it as
+# ghcr.io/jayee88/mfm-tracker-server (for x86-64 PCs and ARM boards like a Raspberry Pi).
+name: Server image
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", ".github/workflows/server.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/mfm-tracker-server
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for testing
+        run: docker build -t mfm-server:test server
+
+      - name: Test the container
+        run: |
+          set -e
+          docker volume create mfm-test
+          docker run -d --name mfm-test -p 8765:8765 -v mfm-test:/data mfm-server:test
+          for i in $(seq 1 20); do curl -fsS http://localhost:8765/health && break; sleep 1; done
+          docker logs mfm-test
+          K1=$(docker exec mfm-test mfm-server add-key Alice | grep -o 'mfm_[A-Za-z0-9_-]*')
+          K2=$(docker exec mfm-test mfm-server add-key Bob | grep -o 'mfm_[A-Za-z0-9_-]*')
+          sh server/tests/smoke.sh http://localhost:8765 "$K1" "$K2"
+          # the data survives a restart
+          docker restart mfm-test
+          for i in $(seq 1 20); do curl -fsS http://localhost:8765/health >/dev/null && break; sleep 1; done
+          docker exec mfm-test mfm-server stats | grep -q "1 sightings"
+          docker exec mfm-test mfm-server list-keys
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Self-hosted shared price database for Free Market Tracker

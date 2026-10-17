@@ -648,7 +648,7 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.shared = None
         self.shared_state = {"ok": False, "text": "Not connected"}
-        if self.cfg.get("shared_on") and self.cfg.get("shared_sheet"):
+        if self.cfg.get("shared_on") and self.cfg.get("shared_server"):
             root.after(1500, self._start_shared)
 
     # ------------------------------------------------------------------ layout
@@ -676,7 +676,7 @@ class App:
         ttk.Button(bar, text="Export prices", command=self.export_prices).pack(side="right", padx=(0, 6))
         b = ttk.Button(bar, text="Shared Database", command=self.shared_dialog)
         b.pack(side="right", padx=(0, 6))
-        tip("Share prices with other players through a Google spreadsheet.", b)
+        tip("Share prices with other players through a server one of you runs.", b)
         self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground="#c62828")
         self.shared_dot.pack(side="right", padx=(0, 2))
         tip("Green: connected to the Shared Database and syncing. Red: not connected.", self.shared_dot)
@@ -1653,14 +1653,17 @@ class App:
     def _start_shared(self):
         import mfm_shared
 
-        sid = mfm_shared.sheet_id(self.cfg.get("shared_sheet", ""))
-        if not sid or not mfm_shared.load_token().get("refresh_token") or not mfm_shared.client():
-            self.on_shared({"ok": False, "text": "Not connected"})
-            return
+        url, key = self.cfg.get("shared_server", ""), self.cfg.get("shared_key", "")
         if self.shared:
             self.shared.stop()
-        self.shared = mfm_shared.SharedSync(self.cfg, sid, on_status=lambda st: self.events.put(("shared", st)),
-                                            on_new_rows=lambda n: self.events.put(("shared_rows", n)))
+            self.shared = None
+        try:
+            self.shared = mfm_shared.SharedSync(self.cfg, url, key,
+                                                on_status=lambda st: self.events.put(("shared", st)),
+                                                on_new_rows=lambda n: self.events.put(("shared_rows", n)))
+        except mfm_shared.SharedError as e:
+            self.on_shared({"ok": False, "text": str(e)})
+            return
         self.on_shared({"ok": False, "text": "Connecting…"})
         self.shared.start()
 
@@ -1681,7 +1684,6 @@ class App:
         self.refresh_tables()
 
     def shared_dialog(self):
-        import webbrowser
         import mfm_shared
 
         old = getattr(self, "shared_win", None)
@@ -1698,32 +1700,35 @@ class App:
         body = ttk.Frame(win, padding=14)
         body.pack(fill="both", expand=True)
         ttk.Label(body, wraplength=560, justify="left", text=(
-            "Share prices with other players through a Google spreadsheet. Everyone who can edit the "
-            "spreadsheet sees each other's prices here as they're logged. Only items from the item list are "
-            "shared (names in Review are shared once you match them).")).pack(anchor="w")
-        ttk.Label(body, text="Google spreadsheet link:").pack(anchor="w", pady=(12, 2))
-        url = tk.StringVar(value=self.cfg.get("shared_sheet", ""))
-        entry = ttk.Entry(body, textvariable=url, width=74)
-        entry.pack(anchor="w", fill="x")
+            "Share prices with other players through a Free Market Tracker server that one of you runs. "
+            "Everyone connected sees each other's prices here as they're logged. Only items from the item "
+            "list are shared (names in Review are shared once you match them).")).pack(anchor="w")
+        form = ttk.Frame(body)
+        form.pack(anchor="w", fill="x", pady=(12, 0))
+        addr = tk.StringVar(value=self.cfg.get("shared_server", ""))
+        key = tk.StringVar(value=self.cfg.get("shared_key", ""))
+        ttk.Label(form, text="Server address:").grid(row=0, column=0, sticky="w")
+        e1 = ttk.Entry(form, textvariable=addr, width=50)
+        e1.grid(row=0, column=1, sticky="w", padx=6, pady=2)
+        ttk.Label(form, text="e.g. 203.0.113.5:8765", foreground="#777").grid(row=0, column=2, sticky="w")
+        ttk.Label(form, text="Access key:").grid(row=1, column=0, sticky="w")
+        e2 = ttk.Entry(form, textvariable=key, width=50, show="•")
+        e2.grid(row=1, column=1, sticky="w", padx=6, pady=2)
+        show = tk.BooleanVar(value=False)
+        ttk.Checkbutton(form, text="Show", variable=show,
+                        command=lambda: e2.config(show="" if show.get() else "•")).grid(row=1, column=2, sticky="w")
         row = ttk.Frame(body)
         row.pack(fill="x", pady=(10, 0))
         dot = tk.Label(row, text="●", font=("TkDefaultFont", 14))
         dot.pack(side="left")
         status = ttk.Label(row, wraplength=520, justify="left")
         status.pack(side="left", padx=6)
-        acct = ttk.Frame(body)
-        acct.pack(fill="x", pady=(8, 0))
-        who = ttk.Label(acct, foreground="#555")
-        who.pack(side="left")
-        out_btn = ttk.Button(acct, text="Sign out", command=lambda: sign_out())
-        out_btn.pack(side="right")
-        setup = ttk.Frame(body)
         bottom = ttk.Frame(body)
         bottom.pack(fill="x", pady=(14, 0))
         go = ttk.Button(bottom, text="Connect")
         go.pack(side="left")
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
-        busy = {"cancel": None}
+        busy = {"on": False}
 
         def refresh():
             st = self.shared_state
@@ -1731,96 +1736,48 @@ class App:
             dot.config(foreground="#2e7d32" if st.get("ok") else "#c62828")
             text = st.get("text", "")
             if running and st.get("ok"):
-                text = (f"Connected and syncing. Shared by you: {st.get('uploaded', 0):,} · "
-                        f"from others: {st.get('downloaded', 0):,} (since the app started).")
-            if busy["cancel"] is not None:
-                text = st.get("text", "")
+                text = (f"Connected to {st.get('server') or 'the server'}"
+                        + (f" as {st['you']}" if st.get("you") else "") + ". "
+                        f"Sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,} (since the app started).")
             status.config(text=text)
-            tok = mfm_shared.load_token()
-            who.config(text=f"Signed in to Google as {tok.get('email') or 'your account'}." if tok.get("refresh_token")
-                       else "Not signed in to Google. Connect opens Google's sign-in in your browser.")
-            out_btn.config(state="normal" if tok.get("refresh_token") else "disabled")
-            go.config(text="Cancel" if busy["cancel"] is not None else "Stop sharing" if running else "Connect")
-            if mfm_shared.client():
-                setup.pack_forget()
-            else:
-                setup.pack(fill="x", pady=(10, 0), before=bottom)
+            go.config(text="Stop sharing" if running else "Connect", state="disabled" if busy["on"] else "normal")
         win.refresh = refresh
 
-        def sign_out():
-            self._stop_shared()
-            mfm_shared.sign_out()
-            refresh()
-
         def connect():
-            if busy["cancel"] is not None:
-                busy["cancel"].set()
-                return
             if self.shared is not None:
                 self.cfg["shared_on"] = False
                 mfm.save_config(self.cfg)
                 self._stop_shared()
                 return
-            sid = mfm_shared.sheet_id(url.get())
-            if not sid:
-                messagebox.showerror("Shared Database", "Paste the link of a Google spreadsheet, e.g. "
-                                     "https://docs.google.com/spreadsheets/d/…/edit", parent=win)
-                return
-            if not mfm_shared.client():
-                messagebox.showerror("Shared Database", "Google sign-in isn't set up in this copy of the app.",
-                                     parent=win)
-                return
-            cancel = threading.Event()
-            busy["cancel"] = cancel
+            url, k = mfm_shared.normalize_url(addr.get()), key.get().strip()
+            busy["on"] = True
+            self.on_shared({"ok": False, "text": "Connecting…"})
 
             def work():
                 try:
-                    if not mfm_shared.load_token().get("refresh_token"):
-                        self.events.put(("shared", {"ok": False, "text": "Sign in to Google in your browser "
-                                                    "(it opened a page), then come back here."}))
-                        mfm_shared.sign_in(webbrowser.open, cancel)
-                    self.events.put(("shared", {"ok": False, "text": "Checking the spreadsheet…"}))
-                    title = mfm_shared.connect(sid)
-                    self.events.put(("call", lambda: done(title)))
+                    info = mfm_shared.check(url, k)
+                    self.events.put(("call", lambda: done(url, k, info)))
                 except mfm_shared.SharedError as e:
-                    self.events.put(("call", lambda: done(None, str(e))))
+                    msg = str(e)
+                    self.events.put(("call", lambda: done(url, k, None, msg)))
                 except Exception as e:
-                    self.events.put(("call", lambda: done(None, f"{type(e).__name__}: {e}")))
+                    msg = f"{type(e).__name__}: {e}"
+                    self.events.put(("call", lambda: done(url, k, None, msg)))
             threading.Thread(target=work, daemon=True).start()
-            refresh()
 
-        def done(title, error=None):
-            busy["cancel"] = None
+        def done(url, k, info, error=None):
+            busy["on"] = False
             if error:
                 self.on_shared({"ok": False, "text": error})
                 return
-            self.cfg["shared_sheet"] = url.get().strip()
-            self.cfg["shared_on"] = True
+            addr.set(url)
+            self.cfg.update(shared_server=url, shared_key=k, shared_on=True)
             mfm.save_config(self.cfg)
             self._start_shared()
-            self._set_status(f"Shared Database: connected to '{title}'.")
+            self._set_status(f"Shared Database: connected to {info.get('name') or url}.")
         go.config(command=connect)
-
-        # Google sign-in set-up (only shown when this copy of the app has none built in)
-        ttk.Label(setup, wraplength=560, justify="left", foreground="#8c1d16", text=(
-            "Google sign-in isn't set up in this copy of the app. Enter the OAuth client of a Google Cloud "
-            "project (type: Desktop app, with the Google Sheets API turned on); see the README.")).pack(anchor="w")
-        cid, csec = tk.StringVar(), tk.StringVar()
-        f = ttk.Frame(setup)
-        f.pack(anchor="w", pady=(4, 0))
-        ttk.Label(f, text="Client ID:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(f, textvariable=cid, width=60).grid(row=0, column=1, padx=4, pady=1)
-        ttk.Label(f, text="Client secret:").grid(row=1, column=0, sticky="w")
-        ttk.Entry(f, textvariable=csec, width=60, show="•").grid(row=1, column=1, padx=4, pady=1)
-
-        def save_setup():
-            if not cid.get().strip():
-                return
-            mfm_shared.save_client(cid.get(), csec.get())
-            refresh()
-        ttk.Button(f, text="Save", command=save_setup).grid(row=0, column=2, rowspan=2, padx=4)
         refresh()
-        entry.focus_set()
+        e1.focus_set()
 
     # ------------------------------------------------------------------ megaphones
     def _build_megaphones_tab(self):

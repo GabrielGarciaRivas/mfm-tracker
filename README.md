@@ -228,34 +228,21 @@ same shop doesn't log the same listing twice.
 
 ## Shared Database
 
-Share prices with your friends or guild through a Google spreadsheet. Everyone who can
-edit the spreadsheet sees each other's prices in the app as they're logged.
+Share prices with your friends or guild through a small server that one of you runs
+(see [server/README.md](server/README.md) for setting it up with Docker). Everyone
+connected sees each other's prices in the app as they're logged.
 
-1. One person creates a Google spreadsheet and shares it (**Share**) with the others as
-   **Editor**.
-2. Everyone clicks **Shared Database**, pastes the spreadsheet's link and clicks
-   **Connect**. The first time, Google's sign-in opens in your browser: pick your account
-   and allow access to your spreadsheets.
+1. Whoever runs the server gives you its **address** (e.g. `203.0.113.5:8765`) and your
+   **access key**.
+2. Click **Shared Database**, enter both and click **Connect**.
 3. The dot next to **Shared Database** turns green while it's connected and syncing; red
    means it isn't.
 
-While connected, your new sightings are saved both here and in the spreadsheet (a tab
-called **Prices**), sold and seen-again updates go to it too, and everyone else's
-sightings are copied into your prices every few seconds. Only items from the item list
-are shared: a name in Review is shared once you match it to an item. It stays connected
-when you restart the app; **Stop sharing** disconnects, **Sign out** forgets your Google
-sign-in.
-
-### Setting up Google sign-in (for whoever builds the app)
-
-The app signs in with a Google Cloud OAuth client:
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project, turn on
-   the **Google Sheets API**, and set up the **OAuth consent screen** (External, with the
-   `.../auth/spreadsheets` scope). Publish it, or add your players as test users.
-2. Create an **OAuth client ID** of type **Desktop app**.
-3. Add its ID and secret to the GitHub repository as the secrets `GOOGLE_CLIENT_ID` and
-   `GOOGLE_CLIENT_SECRET`; the built apps then include them. (Without them, the Shared
-   Database window asks for a client ID and secret instead.)
+While connected, your new sightings are saved both here and on the server, sold and
+seen-again updates go to it too, and everyone else's sightings are copied into your
+prices every few seconds. Only items from the item list are shared: a name in Review is
+shared once you match it to an item. It stays connected when you restart the app;
+**Stop sharing** disconnects.
 
 ## Import and export
 
@@ -302,7 +289,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 |---|---|
 | `prices/` | your prices and megaphones (`prices.db`) |
 | `inventory/` | My Inventory (`inventory.db`) |
-| `settings/` | settings, watched items and listings, ignore list, manual matches, Google sign-in |
+| `settings/` | settings, watched items and listings, ignore list, manual matches |
 | `cache/` | downloaded item and map lists, icons |
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |

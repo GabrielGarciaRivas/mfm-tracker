@@ -57,7 +57,7 @@ LD_LIBRARY_PATH="$PYLIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   --name "$NAME" \
   --icon "$PWD/packaging/icon.png" \
   --paths "$PWD" \
-  --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared --hidden-import mfm_google_client --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk \
+  --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk \
   --collect-data spellchecker --collect-data certifi --hidden-import certifi \
   --exclude-module pynput --strip \
   --exclude-module PIL._avif --exclude-module PIL.AvifImagePlugin \

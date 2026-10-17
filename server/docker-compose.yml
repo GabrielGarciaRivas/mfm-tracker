@@ -1,0 +1,21 @@
+# Free Market Tracker shared price server.
+# Start it with:  docker compose up -d
+# Make an access key per player:  docker compose exec mfm-server mfm-server add-key Alice
+services:
+  mfm-server:
+    image: ghcr.io/jayee88/mfm-tracker-server:latest
+    container_name: mfm-server
+    restart: unless-stopped
+    ports:
+      - "8765:8765"                # host port : container port (forward the host port on your router)
+    environment:
+      MFM_NAME: "Our Free Market"  # shown in the app
+      MFM_KEEP_DAYS: "30"          # delete sightings not seen for this many days (0 = keep all)
+      # MFM_TLS_CERT: /certs/fullchain.pem   # optional HTTPS with your own certificate
+      # MFM_TLS_KEY: /certs/privkey.pem
+    volumes:
+      - mfm-data:/data             # the database lives in this Docker volume
+      # - ./certs:/certs:ro
+
+volumes:
+  mfm-data:
