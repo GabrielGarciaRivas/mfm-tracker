@@ -4,8 +4,10 @@ A small self-hosted database that lets a group of players share prices. Everyone
 the group connects their Free Market Tracker to it (**Shared Database** in the app), and
 each player's price sightings and megaphones show up for everyone within a few seconds.
 
-- One person runs the server (on a PC, a home server, a NAS or a Raspberry Pi), and
-  gives everyone else the address and an access key.
+- One person runs the server (on a PC, a home server, a NAS or a Raspberry Pi), makes an
+  account for each player, and gives them the address, their user name and a password.
+- Everything stored records which account sent it and from which IP address, and every
+  sign-in is logged, so you can see if an account is used by someone it shouldn't be.
 - It runs in Docker and uses **one TCP port: 8765**.
 - Everything is stored in one SQLite file in a Docker volume.
 
@@ -27,21 +29,23 @@ each player's price sightings and megaphones show up for everyone within a few s
    docker compose up -d
    ```
 
-3. Get the first access key from the log:
+3. The first start makes an account called `admin`. Its password is in the log:
 
    ```
    docker compose logs mfm-server
    ```
 
-   Look for `Access key for 'admin': mfm_…`.
-4. Make one key per player (so you can take one away later):
+   Look for `Account 'admin', password: …`.
+4. Make an account for each player. It prints their first password:
 
    ```
-   docker compose exec mfm-server mfm-server add-key Alice
+   docker compose exec mfm-server mfm-server add-user Alice
    ```
 
-5. Each player opens **Shared Database** in the app, enters the **server address** and
-   **their access key**, and clicks **Connect**. The dot next to the button turns green.
+5. Each player opens **Shared Database** in the app, enters the **server address**, their
+   **user name** and **password**, and clicks **Connect**. The dot next to the button turns
+   green. The app stays signed in (it keeps a sign-in token, not the password), and players
+   can change their password there.
 
 Check that it's running by opening `http://localhost:8765` in a browser on the server
 computer. It says "Free Market Tracker server … is running."
@@ -52,8 +56,31 @@ Without Docker Compose:
 docker volume create mfm-data
 docker run -d --name mfm-server --restart unless-stopped -p 8765:8765 \
   -v mfm-data:/data -e MFM_NAME="Our Free Market" ghcr.io/jayee88/mfm-tracker-server:latest
-docker exec mfm-server mfm-server add-key Alice
+docker exec mfm-server mfm-server add-user Alice
 ```
+
+## Unraid
+
+1. Make the data folder, in the Unraid terminal (`>_` at the top right):
+
+   ```
+   mkdir -p /mnt/user/appdata/mfm-server
+   chown 99:100 /mnt/user/appdata/mfm-server
+   ```
+
+2. **Docker** → **Add Container**, turn on **Advanced View**, and fill in:
+   - Name: `mfm-server`
+   - Repository: `ghcr.io/jayee88/mfm-tracker-server:latest`
+   - Network Type: `Bridge`
+   - Extra Parameters: `--user 99:100`
+   - **Add another Path, Port, Variable…**: a **Port** (TCP), container `8765`, host
+     `8765`; a **Path**, container `/data`, host `/mnt/user/appdata/mfm-server`;
+     optionally **Variables** such as `MFM_NAME`.
+3. **Apply**. The container's icon → **Logs** shows the `admin` password; the icon →
+   **Console** runs the commands below without `docker compose exec mfm-server`, e.g.
+   `mfm-server add-user Alice`.
+4. Players connect to `YOUR-UNRAID-IP:8765`. **Check for Updates** on the Docker tab
+   updates it; the data stays in `/mnt/user/appdata/mfm-server`.
 
 ## Ports
 
@@ -108,12 +135,22 @@ server's VPN IP as the address. No port forwarding is needed then.
 
 ## Security
 
-- Every request needs an access key. Keep keys private; take one away with
-  `remove-key NAME` (then make a new one for that player).
-- Plain HTTP sends the key unencrypted. That's fine on your home network or over a VPN.
-  Over the internet, HTTPS is better (below).
+- Every player has their own account. Nothing can be read or sent without signing in.
+- Passwords are stored as salted hashes (PBKDF2-SHA256), never as text. The app keeps a
+  sign-in token, not the password; a token lasts 90 days without use
+  (`MFM_SESSION_DAYS`).
+- Every sighting and megaphone records the account (its name and unique id) and the IP
+  address it came from, both when it was added and when it was last changed.
+- Every account's IP addresses are kept (first and last time, number of requests), and
+  sign-ins, failed sign-ins, password changes and account changes are logged. See them
+  with `user-info NAME` and `log`. A first use from a new IP address is logged too.
+- 10 failed sign-ins from one IP address within 15 minutes block it for 15 minutes.
+- If an account was misused: `disable-user NAME` (blocks it and signs it out everywhere),
+  then `reset-password NAME` and `enable-user NAME` to give it back.
+- Plain HTTP sends passwords and tokens unencrypted. That's fine on your home network or
+  over a VPN. Over the internet, use HTTPS (below).
 - Only price sightings and megaphones are stored: item, price, shop, player name, map,
-  channel, times, notes, megaphone messages, and which key added them.
+  channel, times, notes and megaphone messages, plus who sent them and from where.
 
 ## HTTPS (optional)
 
@@ -129,6 +166,7 @@ services:
     restart: unless-stopped
     environment:
       MFM_NAME: "Our Free Market"
+      MFM_TRUST_PROXY: "1"         # log the players' IPs that Caddy passes on
     volumes:
       - mfm-data:/data
   caddy:
@@ -164,6 +202,8 @@ again.
 | `MFM_KEEP_DAYS` | 30 | sightings not seen for this many days are deleted (0 = keep all) |
 | `MFM_MEGAPHONE_HOURS` | 72 | megaphones are kept this many hours (each player still sees only the hours set in their app) |
 | `MFM_TLS_CERT`, `MFM_TLS_KEY` | (none) | certificate and key files (PEM) for HTTPS |
+| `MFM_SESSION_DAYS` | 90 | a sign-in ends after this many days without use |
+| `MFM_TRUST_PROXY` | (off) | `1` = take players' IPs from the `X-Forwarded-For` header; only behind your own reverse proxy (e.g. Caddy), or anyone could fake their IP |
 | `MFM_DATA` | /data | where the database is kept inside the container |
 
 ## Commands
@@ -172,9 +212,14 @@ Run these on the server computer, in the folder with `docker-compose.yml`:
 
 | Command | What it does |
 |---|---|
-| `docker compose exec mfm-server mfm-server add-key NAME` | make an access key for a player |
-| `docker compose exec mfm-server mfm-server list-keys` | who has a key |
-| `docker compose exec mfm-server mfm-server remove-key NAME` | take a key away |
+| `docker compose exec mfm-server mfm-server add-user NAME` | make an account; prints its first password |
+| `docker compose exec mfm-server mfm-server list-users` | all accounts: status, last seen, last IP |
+| `docker compose exec mfm-server mfm-server user-info NAME` | an account's IP addresses, sign-ins and recent events |
+| `docker compose exec mfm-server mfm-server log 100` | the last 100 sign-ins, failed sign-ins and account changes |
+| `docker compose exec mfm-server mfm-server reset-password NAME` | a new password (signs them out everywhere) |
+| `docker compose exec mfm-server mfm-server disable-user NAME` | block an account and sign it out (`enable-user` undoes it) |
+| `docker compose exec mfm-server mfm-server logout-user NAME` | sign an account out everywhere |
+| `docker compose exec mfm-server mfm-server remove-user NAME` | delete an account (what it sent stays, with its name and id) |
 | `docker compose exec mfm-server mfm-server stats` | how much is stored, and from whom |
 | `docker compose logs -f mfm-server` | the server's log |
 | `docker compose pull && docker compose up -d` | update to the latest version |
@@ -197,8 +242,11 @@ To restore, stop the server, copy the file back as `/data/mfm-server.db`
 - **The app says "Can't reach the server":** check the address and port; open
   `http://ADDRESS:8765` in a browser on the player's computer. On the same network it
   should work right away. From outside, check the port forwarding and the firewall.
-- **"The server didn't accept your access key":** check the key (it starts with `mfm_`),
-  or make a new one with `add-key`.
+- **"Wrong user name or password":** check them, or make a new password with
+  `reset-password NAME`. User names aren't case-sensitive; passwords are.
+- **"Your sign-in has ended":** the password was changed or reset, the account was
+  disabled or signed out, or it wasn't used for 90 days. Enter the password and connect.
+- **"Too many failed sign-ins":** wait 15 minutes.
 - **It works at home but not from outside:** your router may not support connecting to
   your own public IP from inside ("NAT loopback"). Use the local IP at home and the public
   address elsewhere, or use a VPN like Tailscale.
@@ -218,12 +266,16 @@ python mfm_server.py serve
 
 ## For developers: the API
 
-JSON over HTTP. Every `/api` request needs `Authorization: Bearer <access key>`.
+JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request needs
+`Authorization: Bearer <token>`.
 
 | Request | Answer |
 |---|---|
-| `GET /health` | plain text, no key needed |
-| `GET /api/v1/status` | `{"name", "version", "sightings", "seq", "you"}` |
+| `GET /health` | plain text, no sign-in needed |
+| `POST /api/v1/login` with `{"username", "password"}` | `{"token", "user": {"id", "name"}, "expires"}` |
+| `POST /api/v1/logout` | ends this token |
+| `POST /api/v1/password` with `{"password", "new_password"}` | changes it; signs out your other devices |
+| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "seq", "you": {"id", "name"}}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |

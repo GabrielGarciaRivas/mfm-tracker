@@ -232,9 +232,11 @@ Share prices with your friends or guild through a small server that one of you r
 (see [server/README.md](server/README.md) for setting it up with Docker). Everyone
 connected sees each other's prices in the app as they're logged.
 
-1. Whoever runs the server gives you its **address** (e.g. `203.0.113.5:8765`) and your
-   **access key**.
-2. Click **Shared Database**, enter both and click **Connect**.
+1. Whoever runs the server gives you its **address** (e.g. `203.0.113.5:8765`), your
+   **user name** and a **password**.
+2. Click **Shared Database**, enter them and click **Connect**. The app stays signed in,
+   so you don't need the password again. **Change password** sets your own;
+   **Sign out** forgets the sign-in on this computer.
 3. The dot next to **Shared Database** turns green while it's connected and syncing; red
    means it isn't.
 
@@ -244,7 +246,8 @@ prices every few seconds. Only items from the item list are shared: a name in Re
 shared once you match it to an item. Megaphones are shared too: when several players
 read the same one, the clearest read is kept. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. It stays connected when you restart the app;
-**Stop sharing** disconnects.
+**Stop sharing** disconnects. Everything you send is marked with your account, so use
+your own.
 
 ## Import and export
 
@@ -291,7 +294,7 @@ Everything is kept in one folder: `%APPDATA%\mfm-tracker` (Windows),
 |---|---|
 | `prices/` | your prices and megaphones (`prices.db`) |
 | `inventory/` | My Inventory (`inventory.db`) |
-| `settings/` | settings, watched items and listings, ignore list, manual matches |
+| `settings/` | settings, watched items and listings, ignore list, manual matches, Shared Database sign-in |
 | `cache/` | downloaded item and map lists, icons |
 | `archives/` | old listings moved out by data retention |
 | `backups/` | copies made before anything is cleared |

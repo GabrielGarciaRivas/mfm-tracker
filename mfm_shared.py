@@ -1,7 +1,9 @@
 """Shared Database: price sightings kept in sync with a self-hosted Free Market Tracker
 server (see server/README.md), so a group of players shares one set of prices.
 
-- You connect with the server's address and your access key (from whoever runs it).
+- You sign in with the server's address, your user name and password (from whoever
+  runs it). The app keeps the sign-in (a token from the server, not your password),
+  so you don't have to sign in again.
 - New sightings of items in the item list are sent to the server; sightings that
   change (sold, seen again, a note) are sent again; everyone's sightings are copied
   into the local prices every few seconds.
@@ -33,7 +35,36 @@ DEFAULT_PORT = 8765
 
 
 class SharedError(Exception):
-    """Something the user can act on (wrong key, server not reachable ...)."""
+    """Something the user can act on (server not reachable, wrong password ...)."""
+
+
+class SignedOut(SharedError):
+    """The server doesn't accept the saved sign-in any more: sign in again."""
+
+
+LOGIN_PATH = mfm.SETTINGS_DIR / "shared_login.json"
+
+
+def load_login() -> dict:
+    """The saved sign-in: {"server", "username", "user_id", "token"}."""
+    try:
+        return json.loads(LOGIN_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_login(d: dict) -> None:
+    mfm.SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGIN_PATH.write_text(json.dumps(d, indent=2))
+    try:
+        import os
+        os.chmod(LOGIN_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def forget_login() -> None:
+    LOGIN_PATH.unlink(missing_ok=True)
 
 
 def normalize_url(addr: str) -> str:
@@ -52,31 +83,34 @@ def normalize_url(addr: str) -> str:
 
 
 class Server:
-    """The server's API, with your access key."""
+    """The server's API, signed in with a token."""
 
-    def __init__(self, url: str, key: str):
-        self.url, self.key = normalize_url(url), (key or "").strip()
+    def __init__(self, url: str, token: str | None = None):
+        self.url, self.token = normalize_url(url), (token or "").strip()
         if not self.url:
             raise SharedError("Enter the server's address, e.g. 203.0.113.5:8765 or prices.example.com:8765.")
-        if not self.key:
-            raise SharedError("Enter your access key.")
 
     def call(self, method: str, path: str, body=None, query: dict | None = None) -> dict:
         url = self.url + path + ("?" + urllib.parse.urlencode(query) if query else "")
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.key}", "User-Agent": mfm.USER_AGENT,
-            "Content-Type": "application/json"})
+        headers = {"User-Agent": mfm.USER_AGENT, "Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=20, context=mfm.ssl_context()) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
-            if e.code == 401:
-                raise SharedError("The server didn't accept your access key.") from None
             try:
                 msg = json.loads(e.read() or b"{}").get("error", "")
             except ValueError:
                 msg = ""
+            if e.code == 401:
+                if path == "/api/v1/login":
+                    raise SharedError(msg or "Wrong user name or password.") from None
+                raise SignedOut("Your sign-in has ended: enter your password and connect again.") from None
+            if e.code in (403, 429) and msg:
+                raise SharedError(msg) from None
             raise SharedError(f"Server error {e.code}" + (f": {msg}" if msg else "")) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             reason = getattr(e, "reason", e)
@@ -84,6 +118,19 @@ class Server:
                               "and its port is forwarded.") from None
         except ValueError:
             raise SharedError("That address doesn't answer like a Free Market Tracker server.") from None
+
+    def login(self, username: str, password: str) -> dict:
+        r = self.call("POST", "/api/v1/login", {"username": username.strip(), "password": password})
+        if not r.get("token"):
+            raise SharedError("That address doesn't answer like a Free Market Tracker server.")
+        self.token = r["token"]
+        return r
+
+    def logout(self) -> None:
+        self.call("POST", "/api/v1/logout", {})
+
+    def change_password(self, old: str, new: str) -> None:
+        self.call("POST", "/api/v1/password", {"password": old, "new_password": new})
 
     def status(self) -> dict:
         st = self.call("GET", "/api/v1/status")
@@ -154,11 +201,11 @@ class SharedSync:
 
     EVERY = 4.0
 
-    def __init__(self, cfg: dict, url: str, key: str, on_status=lambda s: None, on_new_rows=lambda n: None,
+    def __init__(self, cfg: dict, url: str, token: str, on_status=lambda s: None, on_new_rows=lambda n: None,
                  on_megaphones=lambda n: None):
         self.cfg = cfg
         self.on_megaphones = on_megaphones
-        self.server = Server(url, key)
+        self.server = Server(url, token)
         self.on_status, self.on_new_rows = on_status, on_new_rows
         self.stop_event = threading.Event()
         self.wake = threading.Event()
@@ -176,10 +223,12 @@ class SharedSync:
         self.wake.set()
         mfm.SHARE_NEW = False
 
-    def _status(self, ok: bool, text: str) -> None:
+    def _status(self, ok: bool, text: str, **more) -> None:
         self.ok = ok
+        you = self.info.get("you", "")
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
-                        "server": self.info.get("name", ""), "you": self.info.get("you", "")})
+                        "server": self.info.get("name", ""), "you": you.get("name", "") if isinstance(you, dict) else you,
+                        **more})
 
     def _run(self) -> None:
         con = mfm.db()
@@ -194,6 +243,11 @@ class SharedSync:
                 self._send_megaphones(con)
                 self._receive_megaphones(con)
                 self._status(True, "Connected")
+            except SignedOut as e:
+                forget_login()                # the token is no good any more
+                self._status(False, str(e), signed_out=True)
+                mfm.SHARE_NEW = False
+                break
             except SharedError as e:
                 self.info = {}
                 self._status(False, str(e))
@@ -345,6 +399,19 @@ class SharedSync:
             self.on_megaphones(new)
 
 
-def check(url: str, key: str) -> dict:
-    """Connect once: the server's status (its name, and your name on it)."""
-    return Server(url, key).status()
+def sign_in(url: str, username: str, password: str) -> dict:
+    """Sign in and save the sign-in; returns the server's status (its name, and you)."""
+    srv = Server(url)
+    if not username.strip() or not password:
+        raise SharedError("Enter your user name and password.")
+    r = srv.login(username, password)
+    save_login({"server": srv.url, "username": r["user"]["name"], "user_id": r["user"]["id"], "token": r["token"]})
+    return srv.status()
+
+
+def check_saved(url: str) -> dict:
+    """Connect with the saved sign-in; returns the server's status."""
+    login = load_login()
+    if not login.get("token") or login.get("server") != normalize_url(url):
+        raise SignedOut("Enter your password to sign in.")
+    return Server(url, login["token"]).status()

@@ -2,13 +2,20 @@
 """Free Market Tracker shared price server.
 
 A small self-hosted database that several copies of Free Market Tracker sync their
-price sightings with, so a group of players shares one set of prices.
+price sightings and megaphones with, so a group of players shares one set of prices.
+Every player has their own account (a user name and password); everything stored
+records which account sent it and from which IP address.
 
-  python mfm_server.py serve                 run the server (what the Docker image does)
-  python mfm_server.py add-key NAME          make an access key for a player
-  python mfm_server.py list-keys             show who has a key
-  python mfm_server.py remove-key NAME       take a key away
-  python mfm_server.py stats                 how much is stored
+  mfm-server serve                    run the server (what the Docker image does)
+  mfm-server add-user NAME            make an account; prints its first password
+  mfm-server reset-password NAME      a new password (signs that account out everywhere)
+  mfm-server disable-user NAME        block an account (and sign it out); enable-user undoes it
+  mfm-server remove-user NAME         delete an account (what it sent stays, with its name)
+  mfm-server logout-user NAME         sign an account out everywhere
+  mfm-server list-users               accounts, when and from where they were last seen
+  mfm-server user-info NAME           an account's IP addresses, sessions and recent events
+  mfm-server log [N]                  the last N sign-ins, failed sign-ins and account changes
+  mfm-server stats                    how much is stored, and from whom
 
 Settings (environment variables):
   MFM_PORT        port to listen on (default 8765)
@@ -16,11 +23,18 @@ Settings (environment variables):
   MFM_NAME        a name for this server, shown in the app (default "Shared prices")
   MFM_KEEP_DAYS   sightings not seen for this many days are deleted (default 30, 0 = keep)
   MFM_MEGAPHONE_HOURS  megaphones are kept this many hours (default 72)
+  MFM_SESSION_DAYS     a sign-in lasts this many days without use (default 90)
+  MFM_TRUST_PROXY  1 = take the player's IP from X-Forwarded-For (only behind your own
+                   reverse proxy, e.g. Caddy)
   MFM_TLS_CERT    with MFM_TLS_KEY: serve HTTPS with this certificate (PEM files)
   MFM_TLS_KEY
 
-API (JSON over HTTP; every /api call needs "Authorization: Bearer <access key>"):
-  GET  /api/v1/status                      {"name", "version", "sightings", "seq", "you"}
+API (JSON over HTTP):
+  POST /api/v1/login     {"username", "password"} -> {"token", "user": {id, name}, "expires"}
+  Every other /api call needs "Authorization: Bearer <token>":
+  POST /api/v1/logout                      ends this sign-in
+  POST /api/v1/password  {"password", "new_password"}   change your password
+  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "seq", "you"}
   POST /api/v1/sightings                   {"sightings": [ {uid, ts, item, price, qty, shop,
                                            seller, map, channel, sold, sold_ts, last_seen,
                                            notes}, ... ]}  (at most 500 at a time)
@@ -52,11 +66,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.1.0"
+VERSION = "2.0.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
 MEGA_HOURS = float(os.environ.get("MFM_MEGAPHONE_HOURS", "72"))
+SESSION_DAYS = float(os.environ.get("MFM_SESSION_DAYS", "90"))
+TRUST_PROXY = os.environ.get("MFM_TRUST_PROXY", "") in ("1", "true", "yes")
+PBKDF2_ROUNDS = 200_000
 FIELDS = ("ts", "item", "price", "qty", "shop", "seller", "map", "channel", "sold", "sold_ts",
           "last_seen", "notes")
 
@@ -98,10 +115,28 @@ def db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_seq ON sightings(seq);
         CREATE INDEX IF NOT EXISTS idx_item_price ON sightings(item, price);
-        CREATE TABLE IF NOT EXISTS keys (
-            name TEXT PRIMARY KEY,
-            key_hash TEXT NOT NULL,
-            created TEXT
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,               -- the account's unique id, never reused
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            pw_hash TEXT NOT NULL,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created TEXT, last_seen TEXT, last_ip TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created TEXT, created_ip TEXT,
+            last_used TEXT, last_ip TEXT,
+            expires TEXT
+        );
+        CREATE TABLE IF NOT EXISTS user_ips (       -- every IP an account has been used from
+            user_id TEXT NOT NULL, ip TEXT NOT NULL,
+            first_seen TEXT, last_seen TEXT, requests INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, ip)
+        );
+        CREATE TABLE IF NOT EXISTS events (         -- sign-ins, failed sign-ins, account changes
+            id INTEGER PRIMARY KEY,
+            ts TEXT, user_id TEXT, username TEXT, ip TEXT, event TEXT, detail TEXT
         );
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS megaphones (
@@ -118,27 +153,144 @@ def db() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_mega_seq ON megaphones(seq);
         CREATE INDEX IF NOT EXISTS idx_mega_ts ON megaphones(ts);
     """)
+    # who sent each row: the account's id and name, and the IP it came from
+    for table, cols in (("sightings", ("added_by_id", "added_ip", "updated_by_id", "updated_ip")),
+                        ("megaphones", ("added_by_id", "added_ip", "updated_by", "updated_by_id", "updated_ip"))):
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for c in cols:
+            if c not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
+    con.commit()
     return con
 
 
-def _hash(key: str) -> str:
-    return hashlib.sha256(key.encode()).hexdigest()
+# --------------------------------------------------------------------------- accounts
+
+def _sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
 
 
-def add_key(con, name: str) -> str:
-    key = "mfm_" + secrets.token_urlsafe(24)
-    con.execute("INSERT OR REPLACE INTO keys (name, key_hash, created) VALUES (?,?,?)",
-                (name, _hash(key), utc_now()))
+def hash_password(pw: str) -> str:
+    salt = secrets.token_bytes(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, PBKDF2_ROUNDS)
+    return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt.hex()}${h.hex()}"
+
+
+def check_password(pw: str, stored: str) -> bool:
+    try:
+        _, rounds, salt, h = stored.split("$")
+        got = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), int(rounds))
+        return hmac.compare_digest(got.hex(), h)
+    except (ValueError, TypeError):
+        return False
+
+
+def new_password() -> str:
+    """Easy to type: four groups of letters and digits, e.g. k7qm-x2dp-9fwa-h3tc."""
+    abc = "abcdefghjkmnpqrstuvwxyz23456789"
+    return "-".join("".join(secrets.choice(abc) for _ in range(4)) for _ in range(4))
+
+
+def event(con, user: dict | None, ip: str | None, what: str, detail: str = "") -> None:
+    con.execute("INSERT INTO events (ts, user_id, username, ip, event, detail) VALUES (?,?,?,?,?,?)",
+                (utc_now(), (user or {}).get("id"), (user or {}).get("name"), ip, what, detail))
     con.commit()
-    return key
 
 
-def who(con, key: str) -> str | None:
-    h = _hash(key)
-    for name, kh in con.execute("SELECT name, key_hash FROM keys"):
-        if hmac.compare_digest(kh, h):
-            return name
-    return None
+def find_user(con, name: str) -> dict | None:
+    row = con.execute("SELECT id, name, disabled, pw_hash, created, last_seen, last_ip FROM users WHERE name = ?",
+                      (name.strip(),)).fetchone()
+    return dict(zip(("id", "name", "disabled", "pw_hash", "created", "last_seen", "last_ip"), row)) if row else None
+
+
+def add_user(con, name: str, password: str | None = None) -> tuple[dict, str]:
+    name = name.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]{2,32}", name):
+        raise ValueError("A user name is 2-32 letters, digits, '_', '.' or '-'.")
+    if find_user(con, name):
+        raise ValueError(f"There's already a user called {name}.")
+    password = password or new_password()
+    user = {"id": "u_" + secrets.token_hex(6), "name": name}
+    con.execute("INSERT INTO users (id, name, pw_hash, created) VALUES (?,?,?,?)",
+                (user["id"], name, hash_password(password), utc_now()))
+    con.commit()
+    event(con, user, None, "user added")
+    return user, password
+
+
+def end_sessions(con, user_id: str, keep: str | None = None) -> int:
+    n = con.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user_id, keep or "")).rowcount
+    con.commit()
+    return n
+
+
+def login(con, name: str, password: str, ip: str) -> tuple[str, dict, str]:
+    """A new sign-in token for the account, or raise PermissionError."""
+    u = find_user(con, name or "")
+    if not u or not check_password(password or "", u["pw_hash"]):
+        event(con, u, ip, "sign-in failed", f"user name tried: {name!r}" if not u else "wrong password")
+        raise PermissionError("Wrong user name or password.")
+    if u["disabled"]:
+        event(con, u, ip, "sign-in refused", "account disabled")
+        raise PermissionError("This account is disabled.")
+    token = "mfs_" + secrets.token_urlsafe(32)
+    now = utc_now()
+    expires = (datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)).strftime(UTC_FMT)
+    with _lock:
+        con.execute("INSERT INTO sessions (token_hash, user_id, created, created_ip, last_used, last_ip, expires) "
+                    "VALUES (?,?,?,?,?,?,?)", (_sha(token), u["id"], now, ip, now, ip, expires))
+        con.commit()
+    event(con, u, ip, "signed in")
+    return token, {"id": u["id"], "name": u["name"]}, expires
+
+
+def authenticate(con, token: str, ip: str) -> dict | None:
+    """The account a token belongs to (also notes the IP it was used from), or None."""
+    h = _sha(token)
+    row = con.execute("SELECT s.user_id, s.expires, s.last_used, u.name, u.disabled FROM sessions s "
+                      "JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?", (h,)).fetchone()
+    if not row:
+        return None
+    uid, expires, last_used, name, disabled = row
+    now = utc_now()
+    if disabled or (expires and expires < now):
+        with _lock:
+            con.execute("DELETE FROM sessions WHERE token_hash = ?", (h,))
+            con.commit()
+        return None
+    with _lock:
+        # a sign-in that's used keeps going; every IP an account is used from is kept
+        con.execute("UPDATE sessions SET last_used = ?, last_ip = ?, expires = ? WHERE token_hash = ?",
+                    (now, ip, (datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)).strftime(UTC_FMT), h))
+        con.execute("UPDATE users SET last_seen = ?, last_ip = ? WHERE id = ?", (now, ip, uid))
+        known = con.execute("SELECT 1 FROM user_ips WHERE user_id = ? AND ip = ?", (uid, ip)).fetchone()
+        con.execute("INSERT INTO user_ips (user_id, ip, first_seen, last_seen, requests) VALUES (?,?,?,?,1) "
+                    "ON CONFLICT (user_id, ip) DO UPDATE SET last_seen = excluded.last_seen, "
+                    "requests = requests + 1", (uid, ip, now, now))
+        con.commit()
+    user = {"id": uid, "name": name, "ip": ip, "token_hash": h}
+    if not known:
+        event(con, user, ip, "new IP address")
+    return user
+
+
+class _Throttle:
+    """Slows down password guessing: 10 failed sign-ins from one IP in 15 minutes
+    blocks that IP for 15 minutes."""
+
+    def __init__(self, limit=10, window=900):
+        self.limit, self.window, self.fails = limit, window, {}
+
+    def blocked(self, ip: str) -> bool:
+        now = time.monotonic()
+        self.fails[ip] = [t for t in self.fails.get(ip, []) if now - t < self.window]
+        return len(self.fails[ip]) >= self.limit
+
+    def failed(self, ip: str) -> None:
+        self.fails.setdefault(ip, []).append(time.monotonic())
+
+
+THROTTLE = _Throttle()
 
 
 def next_seq(con) -> int:
@@ -199,7 +351,7 @@ def _find_same(con, s: dict) -> str | None:
     return None
 
 
-def store(con, sightings: list[dict], by: str) -> tuple[int, dict]:
+def store(con, sightings: list[dict], by: dict) -> tuple[int, dict]:
     """Add or update sightings; returns (latest seq, {sent uid: stored uid} for ones that
     turned out to be a listing already stored under another uid)."""
     same = {}
@@ -230,16 +382,17 @@ def store(con, sightings: list[dict], by: str) -> tuple[int, dict]:
                 if (new["sold"], new["sold_ts"], new["last_seen"], new["notes"]) == (sold, sold_ts, last_seen, notes):
                     continue                    # nothing new
                 con.execute("UPDATE sightings SET sold=?, sold_ts=?, last_seen=?, notes=?, "
-                            "channel=COALESCE(?, channel), seq=?, updated_by=?, updated=? WHERE uid=?",
+                            "channel=COALESCE(?, channel), seq=?, updated_by=?, updated_by_id=?, updated_ip=?, "
+                            "updated=? WHERE uid=?",
                             (new["sold"], new["sold_ts"], new["last_seen"], new["notes"], new["channel"],
-                             next_seq(con), by, utc_now(), uid))
+                             next_seq(con), by["name"], by["id"], by["ip"], utc_now(), uid))
             else:
                 con.execute("INSERT INTO sightings (uid, seq, ts, item, price, qty, shop, seller, map, channel, sold, "
-                            "sold_ts, last_seen, notes, added_by, updated_by, updated) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "sold_ts, last_seen, notes, added_by, added_by_id, added_ip, updated_by, updated_by_id, "
+                            "updated_ip, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (uid, next_seq(con), s["ts"], s["item"], s["price"], s["qty"], s["shop"], s["seller"],
                              s["map"], s["channel"], s["sold"], s["sold_ts"], s["last_seen"], s["notes"],
-                             by, by, utc_now()))
+                             by["name"], by["id"], by["ip"], by["name"], by["id"], by["ip"], utc_now()))
         con.commit()
         return last_seq(con), same
 
@@ -309,7 +462,7 @@ def _clean_mega(m: dict) -> dict | None:
     return out if out["uid"] and out["player"] and out["message"] else None
 
 
-def store_megaphones(con, megaphones: list[dict], by: str) -> tuple[int, dict]:
+def store_megaphones(con, megaphones: list[dict], by: dict) -> tuple[int, dict]:
     same = {}
     cols = ("uid", "ts", "player", "channel", "message", "kind", "color", "conf")
     with _lock:
@@ -331,17 +484,19 @@ def store_megaphones(con, megaphones: list[dict], by: str) -> tuple[int, dict]:
             if cur:
                 if m["conf"] > cur["conf"]:           # a better read: it replaces the stored one
                     con.execute("UPDATE megaphones SET player=?, channel=COALESCE(?, channel), message=?, kind=?, "
-                                "color=COALESCE(color, ?), conf=?, seq=?, updated=? WHERE uid=?",
+                                "color=COALESCE(color, ?), conf=?, seq=?, updated=?, updated_by=?, updated_by_id=?, "
+                                "updated_ip=? WHERE uid=?",
                                 (m["player"], m["channel"], m["message"], m["kind"], m["color"], m["conf"],
-                                 next_seq(con), utc_now(), cur["uid"]))
+                                 next_seq(con), utc_now(), by["name"], by["id"], by["ip"], cur["uid"]))
                 elif m["channel"] and not cur["channel"]:
-                    con.execute("UPDATE megaphones SET channel=?, seq=?, updated=? WHERE uid=?",
-                                (m["channel"], next_seq(con), utc_now(), cur["uid"]))
+                    con.execute("UPDATE megaphones SET channel=?, seq=?, updated=?, updated_by=?, updated_by_id=?, "
+                                "updated_ip=? WHERE uid=?",
+                                (m["channel"], next_seq(con), utc_now(), by["name"], by["id"], by["ip"], cur["uid"]))
                 continue
             con.execute("INSERT INTO megaphones (uid, seq, ts, player, channel, message, kind, color, conf, added_by, "
-                        "updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "added_by_id, added_ip, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (m["uid"], next_seq(con), m["ts"], m["player"], m["channel"], m["message"], m["kind"],
-                         m["color"], m["conf"], by, utc_now()))
+                         m["color"], m["conf"], by["name"], by["id"], by["ip"], utc_now()))
         con.commit()
         return last_seq(con), same
 
@@ -381,14 +536,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _who(self) -> str | None:
+    def _ip(self) -> str:
+        if TRUST_PROXY:
+            fwd = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.headers.get("X-Real-IP", "")
+            if fwd:
+                return fwd[:64]
+        return self.client_address[0]
+
+    def _user(self) -> dict | None:
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return None
-        return who(self.con, auth[7:].strip())
+        return authenticate(self.con, auth[7:].strip(), self._ip())
+
+    def _body(self) -> dict | None:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_BODY:
+            return None
+        try:
+            body = json.loads(self.rfile.read(n))
+            return body if isinstance(body, dict) else None
+        except ValueError:
+            return None
 
     def log_message(self, fmt, *args):
-        pass                          # quiet; errors are logged below
+        pass                          # quiet; sign-ins and errors are logged below
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -401,15 +573,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        name = self._who()
-        if name is None:
-            return self._send(401, {"error": "Missing or wrong access key."})
+        user = self._user()
+        if user is None:
+            return self._send(401, {"error": "Please sign in."})
         if url.path == "/api/v1/status":
             n = self.con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
             m = self.con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
                                     "sightings": n, "megaphones": m, "megaphone_hours": MEGA_HOURS,
-                                    "seq": last_seq(self.con), "you": name})
+                                    "seq": last_seq(self.con), "you": {"id": user["id"], "name": user["name"]}})
         if url.path == "/api/v1/sightings":
             q = parse_qs(url.query)
             try:
@@ -432,24 +604,54 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        name = self._who()
-        if name is None:
-            return self._send(401, {"error": "Missing or wrong access key."})
         path = urlparse(self.path).path
+        ip = self._ip()
+        if path == "/api/v1/login":
+            if THROTTLE.blocked(ip):
+                return self._send(429, {"error": "Too many failed sign-ins: try again in 15 minutes."})
+            body = self._body() or {}
+            try:
+                token, user, expires = login(self.con, str(body.get("username") or ""),
+                                             str(body.get("password") or ""), ip)
+            except PermissionError as e:
+                THROTTLE.failed(ip)
+                log(f"sign-in failed for {str(body.get('username'))[:40]!r} from {ip}")
+                return self._send(401, {"error": str(e)})
+            log(f"{user['name']} signed in from {ip}")
+            return self._send(200, {"token": token, "user": user, "expires": expires})
+        user = self._user()
+        if user is None:
+            return self._send(401, {"error": "Please sign in."})
+        if path == "/api/v1/logout":
+            with _lock:
+                self.con.execute("DELETE FROM sessions WHERE token_hash = ?", (user["token_hash"],))
+                self.con.commit()
+            event(self.con, user, ip, "signed out")
+            return self._send(200, {"ok": True})
+        if path == "/api/v1/password":
+            body = self._body() or {}
+            u = find_user(self.con, user["name"])
+            new = str(body.get("new_password") or "")
+            if not u or not check_password(str(body.get("password") or ""), u["pw_hash"]):
+                event(self.con, user, ip, "password change failed", "wrong current password")
+                return self._send(403, {"error": "The current password is wrong."})
+            if len(new) < 8:
+                return self._send(400, {"error": "The new password needs at least 8 characters."})
+            with _lock:
+                self.con.execute("UPDATE users SET pw_hash = ? WHERE id = ?", (hash_password(new), user["id"]))
+                self.con.commit()
+            end_sessions(self.con, user["id"], keep=user["token_hash"])   # other devices sign in again
+            event(self.con, user, ip, "password changed")
+            return self._send(200, {"ok": True})
         if path not in ("/api/v1/sightings", "/api/v1/megaphones"):
             return self._send(404, {"error": "not found"})
         what = path.rsplit("/", 1)[1]
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > MAX_BODY:
-            return self._send(413, {"error": "too much at once"})
-        try:
-            body = json.loads(self.rfile.read(n))
-            items = body[what]
-            assert isinstance(items, list) and len(items) <= MAX_BATCH
-        except Exception:
+        body = self._body()
+        items = (body or {}).get(what)
+        if not isinstance(items, list) or len(items) > MAX_BATCH:
             return self._send(400, {"error": f'send {{"{what}": [...]}} with at most {MAX_BATCH}'})
         try:
-            seq, same = (store if what == "sightings" else store_megaphones)(self.con, items, name)
+            seq, same = (store if what == "sightings" else store_megaphones)(self.con, items, user)
         except Exception as e:
             log(f"store failed: {type(e).__name__}: {e}")
             return self._send(500, {"error": "server error"})
@@ -459,11 +661,10 @@ class Handler(BaseHTTPRequestHandler):
 def serve() -> None:
     port = int(os.environ.get("MFM_PORT", "8765"))
     con = db()
-    if not con.execute("SELECT 1 FROM keys LIMIT 1").fetchone():
-        key = add_key(con, "admin")
-        log("No access keys yet: made one named 'admin'. Give it to a player, or make one per "
-            "player with: add-key NAME")
-        log(f"Access key for 'admin': {key}")
+    if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        user, pw = add_user(con, "admin")
+        log("No accounts yet: made one called 'admin'. Make one per player with: mfm-server add-user NAME")
+        log(f"Account 'admin', password: {pw}")
     Handler.con = con
     httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     cert, key = os.environ.get("MFM_TLS_CERT"), os.environ.get("MFM_TLS_KEY")
@@ -484,12 +685,24 @@ def serve() -> None:
                 n = prune_megaphones(con, MEGA_HOURS)
                 if n:
                     log(f"deleted {n} megaphones older than {MEGA_HOURS:g} hours")
+                with _lock:
+                    con.execute("DELETE FROM sessions WHERE expires < ?", (utc_now(),))
+                    con.commit()
             except Exception as e:
                 log(f"clean-up failed: {e}")
             time.sleep(600)
     threading.Thread(target=housekeeping, daemon=True).start()
-    log(f"Free Market Tracker server {VERSION} on {scheme}://0.0.0.0:{port} (data: {DB_PATH})")
+    log(f"Free Market Tracker server {VERSION} on {scheme}://0.0.0.0:{port} (data: {DB_PATH})"
+        + ("; player IPs from X-Forwarded-For" if TRUST_PROXY else ""))
     httpd.serve_forever()
+
+
+def _table(rows: list[tuple], head: tuple) -> None:
+    rows = [tuple("" if v is None else str(v) for v in r) for r in rows]
+    w = [max(len(str(h)), *(len(r[i]) for r in rows)) if rows else len(str(h)) for i, h in enumerate(head)]
+    print("  ".join(str(h).ljust(w[i]) for i, h in enumerate(head)))
+    for r in rows:
+        print("  ".join(v.ljust(w[i]) for i, v in enumerate(r)))
 
 
 def main(argv: list[str]) -> int:
@@ -498,26 +711,94 @@ def main(argv: list[str]) -> int:
         serve()
         return 0
     con = db()
-    if cmd == "add-key" and len(argv) == 3:
-        print(f"Access key for '{argv[2]}': {add_key(con, argv[2])}")
-        print("Give it to that player; they paste it into Shared Database in the app.")
+    arg = argv[2] if len(argv) > 2 else None
+    needs_name = {"add-user", "reset-password", "disable-user", "enable-user", "remove-user", "logout-user",
+                  "user-info"}
+    if cmd in needs_name and not arg:
+        print(f"Usage: mfm-server {cmd} NAME")
+        return 2
+    u = find_user(con, arg) if arg and cmd in needs_name - {"add-user"} else None
+    if cmd in needs_name - {"add-user"} and not u:
+        print(f"No user called {arg}. See: mfm-server list-users")
+        return 1
+    if cmd == "add-user":
+        try:
+            user, pw = add_user(con, arg)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"Made user {user['name']} (id {user['id']}).")
+        print(f"Password: {pw}")
+        print("Give them the server address, their user name and this password. They sign in under "
+              "Shared Database in the app, and can change the password there.")
         return 0
-    if cmd == "list-keys":
-        for name, created in con.execute("SELECT name, created FROM keys ORDER BY name"):
-            print(f"{name}\t(made {created})")
-        return 0
-    if cmd == "remove-key" and len(argv) == 3:
-        n = con.execute("DELETE FROM keys WHERE name = ?", (argv[2],)).rowcount
+    if cmd == "reset-password":
+        pw = new_password()
+        con.execute("UPDATE users SET pw_hash = ? WHERE id = ?", (hash_password(pw), u["id"]))
         con.commit()
-        print("Removed." if n else "No key with that name.")
+        n = end_sessions(con, u["id"])
+        event(con, u, None, "password reset", "by the server admin")
+        print(f"New password for {u['name']}: {pw}  (signed out of {n} device(s))")
+        return 0
+    if cmd in ("disable-user", "enable-user"):
+        off = cmd == "disable-user"
+        con.execute("UPDATE users SET disabled = ? WHERE id = ?", (int(off), u["id"]))
+        con.commit()
+        n = end_sessions(con, u["id"]) if off else 0
+        event(con, u, None, "user disabled" if off else "user enabled", "by the server admin")
+        print(f"{u['name']} is {'disabled' if off else 'enabled'}." + (f" Signed out of {n} device(s)." if off else ""))
+        return 0
+    if cmd == "remove-user":
+        end_sessions(con, u["id"])
+        con.execute("DELETE FROM users WHERE id = ?", (u["id"],))
+        con.commit()
+        event(con, u, None, "user removed", "by the server admin")
+        print(f"Removed {u['name']}. What they sent stays, marked with their name and id ({u['id']}).")
+        return 0
+    if cmd == "logout-user":
+        n = end_sessions(con, u["id"])
+        event(con, u, None, "signed out everywhere", "by the server admin")
+        print(f"Signed {u['name']} out of {n} device(s).")
+        return 0
+    if cmd == "list-users":
+        rows = con.execute("SELECT u.name, u.id, CASE u.disabled WHEN 1 THEN 'disabled' ELSE 'active' END, "
+                           "u.created, u.last_seen, u.last_ip, (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id), "
+                           "(SELECT COUNT(*) FROM user_ips i WHERE i.user_id = u.id) FROM users u ORDER BY u.name "
+                           "COLLATE NOCASE").fetchall()
+        _table(rows, ("user", "id", "status", "created (UTC)", "last seen (UTC)", "last IP", "signed in", "IPs"))
+        return 0
+    if cmd == "user-info":
+        print(f"{u['name']}  id {u['id']}  {'DISABLED' if u['disabled'] else 'active'}  created {u['created']}")
+        print("\nIP addresses:")
+        _table(con.execute("SELECT ip, first_seen, last_seen, requests FROM user_ips WHERE user_id = ? "
+                           "ORDER BY last_seen DESC", (u["id"],)).fetchall(),
+               ("IP", "first seen (UTC)", "last seen (UTC)", "requests"))
+        print("\nSigned in on:")
+        _table(con.execute("SELECT created, created_ip, last_used, last_ip, expires FROM sessions WHERE user_id = ? "
+                           "ORDER BY last_used DESC", (u["id"],)).fetchall(),
+               ("since (UTC)", "from IP", "last used (UTC)", "last IP", "expires (UTC)"))
+        print("\nRecent events:")
+        _table(con.execute("SELECT ts, ip, event, detail FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 25",
+                           (u["id"],)).fetchall(), ("time (UTC)", "IP", "event", "detail"))
+        n = con.execute("SELECT COUNT(*) FROM sightings WHERE added_by_id = ?", (u["id"],)).fetchone()[0]
+        m = con.execute("SELECT COUNT(*) FROM megaphones WHERE added_by_id = ?", (u["id"],)).fetchone()[0]
+        print(f"\nSent: {n} sightings, {m} megaphones (still stored).")
+        return 0
+    if cmd == "log":
+        try:
+            n = int(arg or 50)
+        except ValueError:
+            n = 50
+        rows = con.execute("SELECT ts, username, ip, event, detail FROM events ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        _table(rows[::-1], ("time (UTC)", "user", "IP", "event", "detail"))
         return 0
     if cmd == "stats":
         n = con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         items = con.execute("SELECT COUNT(DISTINCT item) FROM sightings").fetchone()[0]
         m = con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
         print(f"{n} sightings of {items} items, {m} megaphones; {DB_PATH.stat().st_size / 1e6:.1f} MB")
-        for name, c in con.execute("SELECT added_by, COUNT(*) FROM sightings GROUP BY added_by ORDER BY 2 DESC"):
-            print(f"  {name}: {c}")
+        _table(con.execute("SELECT added_by, added_by_id, COUNT(*) FROM sightings GROUP BY added_by_id "
+                           "ORDER BY 3 DESC").fetchall(), ("user", "id", "sightings"))
         return 0
     print(__doc__)
     return 2

@@ -276,7 +276,7 @@ def tip(text: str, *widgets) -> None:
         Tooltip(w, text)
 
 
-def ask_value(parent, title, prompt, initial="", choices=None, check=None) -> str | None:
+def ask_value(parent, title, prompt, initial="", choices=None, check=None, secret=False) -> str | None:
     """Small modal dialog with one text box (a dropdown that also takes typing when
     `choices` is given). Returns the text, or None if cancelled. OK stays disabled
     while `check(text)` is False."""
@@ -289,7 +289,7 @@ def ask_value(parent, title, prompt, initial="", choices=None, check=None) -> st
     ttk.Label(frm, text=prompt, wraplength=360, justify="left").pack(anchor="w")
     var = tk.StringVar(value=initial)
     box = (ttk.Combobox(frm, textvariable=var, values=choices, width=12, height=15) if choices
-           else ttk.Entry(frm, textvariable=var, width=18))
+           else ttk.Entry(frm, textvariable=var, width=28 if secret else 18, show="•" if secret else ""))
     box.pack(anchor="w", pady=(8, 10))
     result = {"v": None}
     btns = ttk.Frame(frm)
@@ -676,7 +676,7 @@ class App:
         ttk.Button(bar, text="Export prices", command=self.export_prices).pack(side="right", padx=(0, 6))
         b = ttk.Button(bar, text="Shared Database", command=self.shared_dialog)
         b.pack(side="right", padx=(0, 6))
-        tip("Share prices with other players through a server one of you runs.", b)
+        tip("Share prices and megaphones with other players through a server one of you runs.", b)
         self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground="#c62828")
         self.shared_dot.pack(side="right", padx=(0, 2))
         tip("Green: connected to the Shared Database and syncing. Red: not connected.", self.shared_dot)
@@ -1653,12 +1653,16 @@ class App:
     def _start_shared(self):
         import mfm_shared
 
-        url, key = self.cfg.get("shared_server", ""), self.cfg.get("shared_key", "")
+        login = mfm_shared.load_login()
+        url = self.cfg.get("shared_server", "")
         if self.shared:
             self.shared.stop()
             self.shared = None
+        if not login.get("token") or login.get("server") != mfm_shared.normalize_url(url):
+            self.on_shared({"ok": False, "text": "Not signed in"})
+            return
         try:
-            self.shared = mfm_shared.SharedSync(self.cfg, url, key,
+            self.shared = mfm_shared.SharedSync(self.cfg, url, login["token"],
                                                 on_status=lambda st: self.events.put(("shared", st)),
                                                 on_new_rows=lambda n: self.events.put(("shared_rows", n)),
                                                 on_megaphones=lambda n: self.events.put(("megaphones", n)))
@@ -1675,6 +1679,9 @@ class App:
         self.on_shared({"ok": False, "text": "Not connected"})
 
     def on_shared(self, st):
+        if st.get("signed_out") and self.shared:
+            self.shared.stop()            # the server ended the sign-in: ask for the password
+            self.shared = None
         self.shared_state = st
         self.shared_dot.config(foreground="#2e7d32" if st.get("ok") else "#c62828")
         dlg = getattr(self, "shared_win", None)
@@ -1701,23 +1708,27 @@ class App:
         body = ttk.Frame(win, padding=14)
         body.pack(fill="both", expand=True)
         ttk.Label(body, wraplength=560, justify="left", text=(
-            "Share prices with other players through a Free Market Tracker server that one of you runs. "
-            "Everyone connected sees each other's prices here as they're logged. Only items from the item "
-            "list are shared (names in Review are shared once you match them).")).pack(anchor="w")
+            "Share prices and megaphones with other players through a Free Market Tracker server that one of "
+            "you runs. Everyone connected sees each other's prices here as they're logged. Only items from the "
+            "item list are shared (names in Review are shared once you match them).")).pack(anchor="w")
+        login = mfm_shared.load_login()
         form = ttk.Frame(body)
         form.pack(anchor="w", fill="x", pady=(12, 0))
-        addr = tk.StringVar(value=self.cfg.get("shared_server", ""))
-        key = tk.StringVar(value=self.cfg.get("shared_key", ""))
+        addr = tk.StringVar(value=self.cfg.get("shared_server", "") or login.get("server", ""))
+        user = tk.StringVar(value=login.get("username", ""))
+        pw = tk.StringVar()
         ttk.Label(form, text="Server address:").grid(row=0, column=0, sticky="w")
-        e1 = ttk.Entry(form, textvariable=addr, width=50)
+        e1 = ttk.Entry(form, textvariable=addr, width=44)
         e1.grid(row=0, column=1, sticky="w", padx=6, pady=2)
         ttk.Label(form, text="e.g. 203.0.113.5:8765", foreground="#777").grid(row=0, column=2, sticky="w")
-        ttk.Label(form, text="Access key:").grid(row=1, column=0, sticky="w")
-        e2 = ttk.Entry(form, textvariable=key, width=50, show="•")
+        ttk.Label(form, text="User name:").grid(row=1, column=0, sticky="w")
+        e2 = ttk.Entry(form, textvariable=user, width=44)
         e2.grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        show = tk.BooleanVar(value=False)
-        ttk.Checkbutton(form, text="Show", variable=show,
-                        command=lambda: e2.config(show="" if show.get() else "•")).grid(row=1, column=2, sticky="w")
+        ttk.Label(form, text="Password:").grid(row=2, column=0, sticky="w")
+        e3 = ttk.Entry(form, textvariable=pw, width=44, show="•")
+        e3.grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        pw_note = ttk.Label(form, foreground="#777")
+        pw_note.grid(row=2, column=2, sticky="w")
         row = ttk.Frame(body)
         row.pack(fill="x", pady=(10, 0))
         dot = tk.Label(row, text="●", font=("TkDefaultFont", 14))
@@ -1728,12 +1739,17 @@ class App:
         bottom.pack(fill="x", pady=(14, 0))
         go = ttk.Button(bottom, text="Connect")
         go.pack(side="left")
+        out_btn = ttk.Button(bottom, text="Sign out")
+        out_btn.pack(side="left", padx=6)
+        chg_btn = ttk.Button(bottom, text="Change password")
+        chg_btn.pack(side="left")
         ttk.Button(bottom, text="Close", command=win.destroy).pack(side="right")
         busy = {"on": False}
 
         def refresh():
             st = self.shared_state
             running = self.shared is not None
+            saved = mfm_shared.load_login()
             dot.config(foreground="#2e7d32" if st.get("ok") else "#c62828")
             text = st.get("text", "")
             if running and st.get("ok"):
@@ -1741,8 +1757,27 @@ class App:
                         + (f" as {st['you']}" if st.get("you") else "") + ". "
                         f"Sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,} (since the app started).")
             status.config(text=text)
+            signed_in = bool(saved.get("token"))
+            pw_note.config(text="(saved: no need to enter it)" if signed_in else "")
             go.config(text="Stop sharing" if running else "Connect", state="disabled" if busy["on"] else "normal")
+            out_btn.config(state="normal" if signed_in else "disabled")
+            chg_btn.config(state="normal" if signed_in else "disabled")
         win.refresh = refresh
+
+        def run(task, then):
+            """Talk to the server in the background, then `then(result, error)`."""
+            busy["on"] = True
+            refresh()
+
+            def work():
+                try:
+                    res, err = task(), None
+                except mfm_shared.SharedError as e:
+                    res, err = None, str(e)
+                except Exception as e:
+                    res, err = None, f"{type(e).__name__}: {e}"
+                self.events.put(("call", lambda: (busy.update(on=False), then(res, err))))
+            threading.Thread(target=work, daemon=True).start()
 
         def connect():
             if self.shared is not None:
@@ -1750,35 +1785,64 @@ class App:
                 mfm.save_config(self.cfg)
                 self._stop_shared()
                 return
-            url, k = mfm_shared.normalize_url(addr.get()), key.get().strip()
-            busy["on"] = True
+            url, name, password = mfm_shared.normalize_url(addr.get()), user.get().strip(), pw.get()
+            saved = mfm_shared.load_login()
             self.on_shared({"ok": False, "text": "Connecting…"})
+            if password or not (saved.get("token") and saved.get("server") == url
+                                and saved.get("username", "").lower() == name.lower()):
+                task = lambda: mfm_shared.sign_in(url, name, password)
+            else:
+                task = lambda: mfm_shared.check_saved(url)
 
-            def work():
-                try:
-                    info = mfm_shared.check(url, k)
-                    self.events.put(("call", lambda: done(url, k, info)))
-                except mfm_shared.SharedError as e:
-                    msg = str(e)
-                    self.events.put(("call", lambda: done(url, k, None, msg)))
-                except Exception as e:
-                    msg = f"{type(e).__name__}: {e}"
-                    self.events.put(("call", lambda: done(url, k, None, msg)))
-            threading.Thread(target=work, daemon=True).start()
+            def done(info, error):
+                pw.set("")
+                if error:
+                    self.on_shared({"ok": False, "text": error})
+                    return
+                addr.set(url)
+                self.cfg.update(shared_server=url, shared_on=True)
+                self.cfg.pop("shared_key", None)
+                mfm.save_config(self.cfg)
+                self._start_shared()
+                self._set_status(f"Shared Database: connected to {info.get('name') or url}.")
+            run(task, done)
 
-        def done(url, k, info, error=None):
-            busy["on"] = False
-            if error:
-                self.on_shared({"ok": False, "text": error})
-                return
-            addr.set(url)
-            self.cfg.update(shared_server=url, shared_key=k, shared_on=True)
+        def sign_out():
+            saved = mfm_shared.load_login()
+            self.cfg["shared_on"] = False
             mfm.save_config(self.cfg)
-            self._start_shared()
-            self._set_status(f"Shared Database: connected to {info.get('name') or url}.")
+            self._stop_shared()
+
+            def task():
+                try:
+                    mfm_shared.Server(saved.get("server", ""), saved.get("token")).logout()
+                finally:
+                    mfm_shared.forget_login()
+            run(task, lambda res, err: self.on_shared({"ok": False, "text": "Signed out."}))
+
+        def change_password():
+            saved = mfm_shared.load_login()
+            old = ask_value(win, "Change password", "Your current password:", "", secret=True)
+            if not old:
+                return
+            new = ask_value(win, "Change password", "A new password (at least 8 characters):", "",
+                            check=lambda v: len(v) >= 8, secret=True)
+            if not new:
+                return
+            again = ask_value(win, "Change password", "The new password again:", "", secret=True)
+            if again != new:
+                messagebox.showerror("Change password", "The two new passwords aren't the same.", parent=win)
+                return
+            run(lambda: mfm_shared.Server(saved.get("server", ""), saved.get("token")).change_password(old, new),
+                lambda res, err: messagebox.showerror("Change password", err, parent=win) if err else
+                messagebox.showinfo("Change password", "Password changed. Your other devices need to sign in "
+                                    "again.", parent=win))
         go.config(command=connect)
+        out_btn.config(command=sign_out)
+        chg_btn.config(command=change_password)
+        e3.bind("<Return>", lambda e: connect())
         refresh()
-        e1.focus_set()
+        (e1 if not addr.get() else e2 if not user.get() else e3).focus_set()
 
     # ------------------------------------------------------------------ megaphones
     def _build_megaphones_tab(self):

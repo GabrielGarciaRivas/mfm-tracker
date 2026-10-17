@@ -1,6 +1,6 @@
 # Free Market Tracker shared price server.
 # Start it with:  docker compose up -d
-# Make an access key per player:  docker compose exec mfm-server mfm-server add-key Alice
+# Make an account per player:  docker compose exec mfm-server mfm-server add-user Alice
 services:
   mfm-server:
     image: ghcr.io/jayee88/mfm-tracker-server:latest

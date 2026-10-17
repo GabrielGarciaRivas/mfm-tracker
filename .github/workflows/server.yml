@@ -31,14 +31,16 @@ jobs:
           docker run -d --name mfm-test -p 8765:8765 -v mfm-test:/data mfm-server:test
           for i in $(seq 1 20); do curl -fsS http://localhost:8765/health && break; sleep 1; done
           docker logs mfm-test
-          K1=$(docker exec mfm-test mfm-server add-key Alice | grep -o 'mfm_[A-Za-z0-9_-]*')
-          K2=$(docker exec mfm-test mfm-server add-key Bob | grep -o 'mfm_[A-Za-z0-9_-]*')
-          sh server/tests/smoke.sh http://localhost:8765 "$K1" "$K2"
+          P1=$(docker exec mfm-test mfm-server add-user Alice | sed -n 's/^Password: //p')
+          P2=$(docker exec mfm-test mfm-server add-user Bob | sed -n 's/^Password: //p')
+          sh server/tests/smoke.sh http://localhost:8765 Alice "$P1" Bob "$P2"
           # the data survives a restart
           docker restart mfm-test
           for i in $(seq 1 20); do curl -fsS http://localhost:8765/health >/dev/null && break; sleep 1; done
           docker exec mfm-test mfm-server stats | grep -q "1 sightings"
-          docker exec mfm-test mfm-server list-keys
+          docker exec mfm-test mfm-server list-users
+          docker exec mfm-test mfm-server user-info Alice
+          docker exec mfm-test mfm-server log
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
