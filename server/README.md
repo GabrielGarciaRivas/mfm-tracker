@@ -59,29 +59,6 @@ docker run -d --name mfm-server --restart unless-stopped -p 8765:8765 \
 docker exec mfm-server mfm-server add-user Alice
 ```
 
-## Unraid
-
-1. Make the data folder, in the Unraid terminal (`>_` at the top right):
-
-   ```
-   mkdir -p /mnt/user/appdata/mfm-server
-   chown 99:100 /mnt/user/appdata/mfm-server
-   ```
-
-2. **Docker** → **Add Container**, turn on **Advanced View**, and fill in:
-   - Name: `mfm-server`
-   - Repository: `ghcr.io/jayee88/mfm-tracker-server:latest`
-   - Network Type: `Bridge`
-   - Extra Parameters: `--user 99:100`
-   - **Add another Path, Port, Variable…**: a **Port** (TCP), container `8765`, host
-     `8765`; a **Path**, container `/data`, host `/mnt/user/appdata/mfm-server`;
-     optionally **Variables** such as `MFM_NAME`.
-3. **Apply**. The container's icon → **Logs** shows the `admin` password; the icon →
-   **Console** runs the commands below without `docker compose exec mfm-server`, e.g.
-   `mfm-server add-user Alice`.
-4. Players connect to `YOUR-UNRAID-IP:8765`. **Check for Updates** on the Docker tab
-   updates it; the data stays in `/mnt/user/appdata/mfm-server`.
-
 ## Ports
 
 | Port | Protocol | What it's for |
