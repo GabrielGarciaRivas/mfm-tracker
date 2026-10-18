@@ -15,6 +15,7 @@ from pathlib import Path
 import queue
 import threading
 import time
+import sqlite3
 import tkinter as tk
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
@@ -2099,6 +2100,7 @@ class App:
             more = hours > int(self.cfg.get("megaphone_hours", 72) or 72)
             self.cfg["megaphone_hours"] = hours
             mfm.save_config(self.cfg)
+            self._mega_purged = -1e9          # purge now for the new hours
             if more and self.cfg.get("shared_server"):
                 # get the older megaphones from the Shared Database too
                 import mfm_shared
@@ -2113,7 +2115,14 @@ class App:
         if not hasattr(self, "mega_trees"):
             return
         hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
-        mfm.purge_megaphones(self.con, hours)
+        # deleting old megaphones is a write: at most once a minute, and never worth an
+        # error if another thread is writing just then (it's done next time)
+        if time.monotonic() - getattr(self, "_mega_purged", -1e9) > 60:
+            try:
+                mfm.purge_megaphones(self.con, hours)
+                self._mega_purged = time.monotonic()
+            except sqlite3.OperationalError:
+                self.con.rollback()
         rows = self.con.execute(
             "SELECT m.id, m.ts, m.player, m.channel, m.message, m.kind, m.color, o.idx, o.side, o.item, o.phrase, "
             "o.price, o.note FROM megaphones m LEFT JOIN megaphone_offers o ON o.megaphone_id = m.id "

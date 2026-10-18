@@ -49,6 +49,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -6144,34 +6145,53 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
 
 def update_offers(con, force: bool = False) -> int:
     """Work out the offers of every stored megaphone whose message (or the nicknames)
-    changed since; returns how many megaphones were (re)read."""
-    ver = nickname_version(con)
-    nicks = None
-    n = 0
-    for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
-        want = hashlib_md5(f"{ver}|{kind}|{msg}".encode())
-        if sig == want and not force:
-            continue
-        if nicks is None:
-            nicks = load_nicknames(con)
-        offers = parse_offers(msg, kind, nicks)
-        con.execute("DELETE FROM megaphone_offers WHERE megaphone_id = ?", (mid,))
-        for i, o in enumerate(offers):
-            suggest, score = None, 0.0
-            if not o["item"] and o["how"] != "ignored" and has_item_list():
-                try:
-                    suggest, score = best_match(con, o["phrase"].title())
-                except Exception:
-                    pass
-            con.execute("INSERT INTO megaphone_offers (megaphone_id, idx, side, phrase, key, item, how, price, note, "
-                        "suggest, score) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"], o["note"],
-                         suggest, score))
-        con.execute("UPDATE megaphones SET offers_sig = ? WHERE id = ?", (want, mid))
-        n += 1
-    if n:
-        con.commit()
-    return n
+    changed since; returns how many megaphones were (re)read.
+
+    The slow part (finding a suggested item for each unknown phrase can take a few
+    seconds for a few hundred megaphones) runs with no lock on the database; only the
+    short write at the end does, so the app and the other threads aren't kept waiting
+    ("database is locked")."""
+    with _OFFERS_LOCK:                 # one at a time: a second run would redo the same work
+        ver = nickname_version(con)
+        todo = []
+        for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
+            want = hashlib_md5(f"{ver}|{kind}|{msg}".encode())
+            if sig != want or force:
+                todo.append((mid, msg, kind, want))
+        if not todo:
+            return 0
+        nicks = load_nicknames(con)
+        can_suggest = has_item_list()
+        results = []
+        for mid, msg, kind, want in todo:
+            rows = []
+            for i, o in enumerate(parse_offers(msg, kind, nicks)):
+                suggest, score = None, 0.0
+                if not o["item"] and o["how"] != "ignored" and can_suggest:
+                    try:
+                        suggest, score = best_match(con, o["phrase"].title())
+                    except Exception:
+                        pass
+                rows.append((mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"],
+                             o["note"], suggest, score))
+            results.append((mid, msg, want, rows))
+        # now the quick write, in batches so nobody waits long
+        n = 0
+        for b in range(0, len(results), 200):
+            for mid, msg, want, rows in results[b:b + 200]:
+                # skip it if it was deleted or its message changed meanwhile (read next time)
+                if not con.execute("UPDATE megaphones SET offers_sig = ? WHERE id = ? AND message = ?",
+                                   (want, mid, msg)).rowcount:
+                    continue
+                con.execute("DELETE FROM megaphone_offers WHERE megaphone_id = ?", (mid,))
+                con.executemany("INSERT INTO megaphone_offers (megaphone_id, idx, side, phrase, key, item, how, "
+                                "price, note, suggest, score) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+                n += 1
+            con.commit()
+        return n
+
+
+_OFFERS_LOCK = threading.Lock()
 
 
 def megaphone_prices(con, hours: float = 72) -> dict[str, dict]:

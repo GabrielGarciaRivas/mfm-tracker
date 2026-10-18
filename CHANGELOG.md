@@ -28,6 +28,8 @@
   discard them.
 
 ### Fixed
+- "Database is locked" errors while reviewing or scrolling megaphones: working out the
+  items in megaphones no longer keeps the database busy while it searches the item list.
 - The window no longer freezes while shops are being read or while you search in Items:
   the Deals, Items and Review tables are worked out in the background. The Deals
   checkboxes and the Items filter apply at once.
