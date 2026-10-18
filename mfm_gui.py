@@ -135,8 +135,8 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "saved": "Saved", "notes": "Notes", "qty": "Qty", "range": "Price range",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
-        "side": "Buying / Selling", "phrase": "In the megaphone", "mprice": "Price", "msell": "Megaphones: selling",
-        "mbuy": "Megaphones: buying", "nick": "Megaphone item", "nitem": "Matched item name",
+        "side": "Buying / Selling", "phrase": "Item", "mprice": "Price", "msell": "Megaphones: selling",
+        "mbuy": "Megaphones: buying", "nick": "Megaphone item", "nitem": "Matched item name", "ntype": "Type",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -146,7 +146,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
          "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600,
-         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "nick": 260, "nitem": 300, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "nick": 240, "nitem": 300, "ntype": 90, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
@@ -3463,39 +3463,52 @@ class App:
         return self._choose_item(parent, f"Which item is \"{text}\"?", text)
 
     NOT_ITEM = "(not an item)"
+    NOT_ITEM_WORDS = ("", "-", "(not an item)", "not an item")
 
     def nicknames_window(self):
-        """An editable sheet of nicknames: "Megaphone item" (what players write) and
-        "Matched item name". Click a cell (or press Enter / F2) to type in it."""
+        """An editable sheet of nicknames: "Megaphone item" (what players write),
+        "Matched item name", and "Type": Item (the phrase is that item) or Words (the
+        phrase stands for other words, used to read any item's name: "60%" =
+        "Intermediate", "att" = "Attack"). Click a cell to type in it."""
         if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():
             self._nick_win.lift()
             return
         win = tk.Toplevel(self.root)
         self._nick_win = win
         win.title("Nicknames")
-        win.geometry("760x520")
+        win.geometry("860x560")
         win.transient(self.root)
-        ttk.Label(win, padding=(10, 8), wraplength=720, justify="left", text=(
-            "What players write in megaphones, and the item it means. Click a cell to type in it "
-            "(Enter saves, Esc cancels). Type the item's name in \"Matched item name\"; if it isn't an "
-            "exact name you'll be asked to pick. Leave it empty for \"not an item\". The last row adds a "
-            "new nickname. Delete removes the selected ones.")).pack(anchor="w")
-        t = make_tree(win, ("nick", "nitem"))
+        ttk.Label(win, padding=(10, 8), wraplength=820, justify="left", text=(
+            "What players write in megaphones, and what it means. Click a cell to type in it (Enter "
+            "saves, Esc cancels); the last row adds a new one; Delete removes the selected ones.\n"
+            "Type \"Item\": the phrase is that item (\"kumbis\" = Kumbi Throwing-Stars). Leave the item "
+            "empty for \"not an item\".\n"
+            "Type \"Words\": the phrase stands for other words, for any item (\"60%\" = Intermediate, "
+            "\"att\" = Attack): \"60% gloves att\" then matches Gloves Attack Scroll: Intermediate. "
+            "Click the Type cell to switch.")).pack(anchor="w")
+        t = make_tree(win, ("nick", "nitem", "ntype"))
         t.column("nitem", stretch=True)
+        t.column("ntype", anchor="center")
         t.tag_configure("new", foreground="#888")
         t.tag_configure("ignored", foreground="#888")
+        t.tag_configure("words", foreground="#1f4e9a")
         t.frame.pack(fill="both", expand=True, padx=10)
         NEW = "__new__"
-        pending = {}                     # rows with a nickname typed but no item yet
+        WP = mfm.WORDS_PREFIX
+        pending = {}                     # rows with a nickname typed but nothing else yet
 
         def fill(select=None):
             t.delete(*t.get_children())
-            for key, item in sorted(mfm.load_nicknames(self.con).items()):
-                t.insert("", "end", iid="k:" + key, image=self.icon_for(item) if item else "",
-                         tags=() if item else ("ignored",), values=(key, item or self.NOT_ITEM))
-            for pid, phrase in pending.items():
-                t.insert("", "end", iid=pid, values=(phrase, ""))
-            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add a nickname)", ""))
+            rows = sorted(mfm.load_nicknames(self.con).items(), key=lambda kv: (kv[1].startswith(WP), kv[0]))
+            for key, val in rows:
+                if val.startswith(WP):
+                    t.insert("", "end", iid="k:" + key, tags=("words",), values=(key, val[len(WP):], "Words"))
+                else:
+                    t.insert("", "end", iid="k:" + key, image=self.icon_for(val) if val else "",
+                             tags=() if val else ("ignored",), values=(key, val or self.NOT_ITEM, "Item"))
+            for pid, p in pending.items():
+                t.insert("", "end", iid=pid, values=(p["phrase"], "", "Words" if p["words"] else "Item"))
+            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add a nickname)", "", ""))
             if select and t.exists(select):
                 t.selection_set(select)
                 t.focus(select)
@@ -3505,44 +3518,66 @@ class App:
             fill("k:" + key)
             self._nicknames_changed()
 
+        def value_for(raw, words):
+            """What to store for what was typed (None = cancelled)."""
+            if words:
+                return WP + raw
+            if raw.lower() in self.NOT_ITEM_WORDS:
+                return ""
+            return self._item_named(win, raw)
+
         def on_done(tree, row, col, raw):
             raw = " ".join((raw or "").split())
             if row == NEW:
                 if col != "nick" or not mfm.nick_key(raw):
                     return
                 pid = f"p:{len(pending) + 1}:{time.monotonic()}"
-                pending[pid] = raw
+                pending[pid] = {"phrase": raw, "words": False}
                 fill(pid)
-                win.after(50, lambda: start_edit(pid, "nitem"))   # straight on to its item
+                win.after(50, lambda: start_edit(pid, "nitem"))   # straight on to its meaning
                 return
             if row in pending:
+                p = pending[row]
                 if col == "nick":
                     if mfm.nick_key(raw):
-                        pending[row] = raw
+                        p["phrase"] = raw
                     fill(row)
                     return
-                item = None if raw.lower() in ("", self.NOT_ITEM, "-", "not an item") else \
-                    self._item_named(win, raw)
-                if raw and item is None and raw.lower() not in (self.NOT_ITEM, "-", "not an item"):
+                val = value_for(raw, p["words"])
+                if val is None:
                     return                      # cancelled the pick
-                phrase = pending.pop(row)
-                saved(mfm.set_nickname(self.con, phrase, item))
+                pending.pop(row)
+                saved(mfm.set_nickname(self.con, p["phrase"], val or None))
                 return
             key = row[2:]
+            cur = mfm.load_nicknames(self.con).get(key, "")
             if col == "nick":
                 new = mfm.nick_key(raw)
                 if not new or new == key:
                     return
-                item = mfm.load_nicknames(self.con).get(key, "")
                 mfm.delete_nickname(self.con, key)
-                saved(mfm.set_nickname(self.con, new, item or None))
+                saved(mfm.set_nickname(self.con, new, cur or None))
             else:
-                if raw.lower() in ("", self.NOT_ITEM, "-", "not an item"):
-                    saved(mfm.set_nickname(self.con, key, None))
+                val = value_for(raw, cur.startswith(WP))
+                if val is not None:
+                    saved(mfm.set_nickname(self.con, key, val or None))
+
+        def toggle_type(row):
+            if row in pending:
+                pending[row]["words"] = not pending[row]["words"]
+                fill(row)
+                return
+            if not row.startswith("k:"):
+                return
+            key = row[2:]
+            cur = mfm.load_nicknames(self.con).get(key, "")
+            if cur.startswith(WP):              # Words -> Item: the words should name an item
+                val = value_for(cur[len(WP):], False)
+                if val is None:
                     return
-                item = self._item_named(win, raw)
-                if item:
-                    saved(mfm.set_nickname(self.con, key, item))
+            else:                               # Item -> Words: the item's name as the words
+                val = WP + cur
+            saved(mfm.set_nickname(self.con, key, val or None))
 
         def start_edit(row, col):
             if t.exists(row):
@@ -3554,9 +3589,16 @@ class App:
 
         def on_double(e):
             row, col = t.identify_row(e.y), self._clicked_column(t, e)
-            if row and col:
+            if row and col and col != "ntype":
                 self._cancel_inline(t)
                 start_edit(row, col)
+
+        def on_click(e):
+            row, col = t.identify_row(e.y), self._clicked_column(t, e)
+            if row == NEW:               # one click on the last row starts a new nickname
+                win.after(10, lambda: start_edit(NEW, "nick"))
+            elif row and col == "ntype":
+                win.after(10, lambda: toggle_type(row))
 
         def remove():
             keys = [k for k in t.selection() if k.startswith("k:")]
@@ -3573,25 +3615,6 @@ class App:
             if sel:
                 start_edit(sel[0], col)
 
-        self._inline_editing(t, ("nick", "nitem"), on_done)
-        t.inline_state["before"] = ()
-        t.bind("<Double-1>", on_double)
-        t.bind("<Return>", lambda e: edit_selected("nitem"))
-        t.bind("<F2>", lambda e: edit_selected("nick"))
-        t.bind("<Delete>", lambda e: remove())
-        t.bind("<BackSpace>", lambda e: remove())
-
-        def click_new(e):                # one click on the last row starts a new nickname
-            if t.identify_row(e.y) == NEW:
-                win.after(10, lambda: start_edit(NEW, "nick"))
-        t.bind("<ButtonRelease-1>", click_new, add="+")
-        bar = ttk.Frame(win, padding=10)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Add a nickname", command=lambda: start_edit(NEW, "nick")).pack(side="left")
-        ttk.Button(bar, text="Pick the item…", command=lambda: pick()).pack(side="left", padx=6)
-        ttk.Button(bar, text="Remove", command=remove).pack(side="left")
-        ttk.Button(bar, text="Close", command=win.destroy).pack(side="right")
-
         def pick():
             sel = [k for k in t.selection() if k != NEW]
             if not sel:
@@ -3599,8 +3622,31 @@ class App:
             cur = t.set(sel[0], "nitem")
             name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'nick')}\"?",
                                      "" if cur == self.NOT_ITEM else cur)
-            if name:
-                on_done(t, sel[0], "nitem", name)
+            if not name:
+                return
+            row = sel[0]
+            if row in pending:                  # a picked item makes it an Item nickname
+                pending[row]["words"] = False
+                on_done(t, row, "nitem", name)
+            elif row.startswith("k:"):
+                saved(mfm.set_nickname(self.con, row[2:], name))
+
+        self._inline_editing(t, ("nick", "nitem"), on_done)
+        t.on_done = on_done
+        t.bind("<Double-1>", on_double)
+        t.bind("<ButtonRelease-1>", on_click, add="+")
+        t.bind("<Return>", lambda e: edit_selected("nitem"))
+        t.bind("<F2>", lambda e: edit_selected("nick"))
+        t.bind("<Delete>", lambda e: remove())
+        t.bind("<BackSpace>", lambda e: remove())
+        bar = ttk.Frame(win, padding=10)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Add a nickname", command=lambda: start_edit(NEW, "nick")).pack(side="left")
+        ttk.Button(bar, text="Pick the item…", command=pick).pack(side="left", padx=6)
+        ttk.Button(bar, text="Item / Words", command=lambda: [toggle_type(k) for k in t.selection()[:1]]
+                   ).pack(side="left")
+        ttk.Button(bar, text="Remove", command=remove).pack(side="left", padx=6)
+        ttk.Button(bar, text="Close", command=win.destroy).pack(side="right")
         fill()
 
     # ------------------------------------------------------------------ review

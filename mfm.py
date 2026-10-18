@@ -6055,8 +6055,88 @@ def _price_of(text: str) -> tuple[int | None, str]:
     return price, ", ".join(note)
 
 
-def _find_item(phrase: str, links: list[str], nicks: dict[str, str]) -> tuple[str | None, str]:
-    """(item, how) for a phrase: how = "link", "nickname", "name", "ignored" or ""."""
+WORDS_PREFIX = "="          # a nickname whose value starts with this stands for words, not an item
+_OPTIONAL_WORDS = {"scroll", "for", "of", "the", "a", "an"}
+
+
+def _plain(w: str) -> str:
+    return w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
+    """Item names by each of their words: {"gloves": [(name, its words), ...]}."""
+    d = _dict()
+    if not d or not d.names:
+        return {}
+    idx = getattr(d, "token_index", None)
+    if idx is None:
+        idx = {}
+        for n in d.names:
+            words = frozenset(_plain(w) for w in nick_key(n).split()) - _OPTIONAL_WORDS
+            if len(words) >= 2:
+                for w in words:
+                    idx.setdefault(w, []).append((n, words))
+        d.token_index = idx
+    return idx
+
+
+def split_nicknames(nicks: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """({phrase: item}, {phrase: words}): nicknames for items, and ones that stand for words
+    ("60%" = "intermediate", "att" = "attack") used to read any item's name."""
+    items, words = {}, {}
+    for k, v in nicks.items():
+        if v.startswith(WORDS_PREFIX):
+            words[k] = nick_key(v[len(WORDS_PREFIX):])
+        else:
+            items[k] = v
+    return items, words
+
+
+def apply_words(key: str, words: dict[str, str]) -> str:
+    """A phrase key with the word nicknames put in ("60% gloves att" -> "intermediate
+    gloves attack"); the longest match wins."""
+    if not words:
+        return key
+    toks, out, i = key.split(), [], 0
+    longest = max(len(k.split()) for k in words)
+    while i < len(toks):
+        for n in range(min(longest, len(toks) - i), 0, -1):
+            sub = " ".join(toks[i:i + n])
+            if sub in words:
+                if words[sub]:
+                    out.append(words[sub])
+                i += n
+                break
+        else:
+            out.append(toks[i])
+            i += 1
+    return " ".join(out)
+
+
+def _by_words(key: str) -> str | None:
+    """The item whose every word is in the phrase, in any order ("intermediate gloves
+    attack" -> "Gloves Attack Scroll: Intermediate"); the one that uses the most words,
+    and only if there's exactly one such."""
+    have = {_plain(w) for w in key.split()}
+    idx = _token_index()
+    best, best_n, tie = None, 0, False
+    seen = set()
+    for w in have:
+        for name, words in idx.get(w, ()):
+            if name in seen:
+                continue
+            seen.add(name)
+            if words <= have:
+                if len(words) > best_n:
+                    best, best_n, tie = name, len(words), False
+                elif len(words) == best_n and name != best:
+                    tie = True
+    return None if tie else best
+
+
+def _find_item(phrase: str, links: list[str], nicks: dict[str, str],
+               words: dict[str, str] | None = None) -> tuple[str | None, str]:
+    """(item, how) for a phrase: how = "link", "nickname", "name", "words", "ignored" or ""."""
     key = nick_key(phrase)
     for link in links:
         lk = nick_key(link)
@@ -6073,26 +6153,40 @@ def _find_item(phrase: str, links: list[str], nicks: dict[str, str]) -> tuple[st
     if key in nicks:
         return (nicks[key] or None), ("nickname" if nicks[key] else "ignored")
     idx = _item_index()
-    for k in (key, " ".join(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in key.split())):
-        if k in idx:
-            return idx[k], "name"                      # "mithril polearms" -> Mithril Polearm
-    words = key.split()
-    # the longest run of words that is a nickname or an item's name
-    for n in range(min(len(words), 8), 0, -1):
-        for i in range(len(words) - n + 1):
-            sub = " ".join(words[i:i + n])
-            if sub in nicks and nicks[sub] and (n > 1 or len(sub) >= 3):
-                return nicks[sub], "nickname"
-            if sub in idx and (n > 1 or len(sub) >= 4):
-                return idx[sub], "name"
-            single = " ".join(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words[i:i + n])
-            if single != sub and single in idx and (n > 1 or len(single) >= 4):
-                return idx[single], "name"
+    # as written, then with the word nicknames put in
+    keys = [key]
+    swapped = apply_words(key, words or {})
+    if swapped != key:
+        keys.append(swapped)
+    for k0 in keys:
+        how = "name" if k0 == key else "words"
+        if k0 != key and k0 in nicks:
+            return (nicks[k0] or None), ("nickname" if nicks[k0] else "ignored")
+        for k in (k0, " ".join(_plain(w) for w in k0.split())):
+            if k in idx:
+                return idx[k], how                     # "mithril polearms" -> Mithril Polearm
+        ws = k0.split()
+        # the longest run of words that is a nickname or an item's name
+        for n in range(min(len(ws), 8), 0, -1):
+            for i in range(len(ws) - n + 1):
+                sub = " ".join(ws[i:i + n])
+                if sub in nicks and nicks[sub] and (n > 1 or len(sub) >= 3):
+                    return nicks[sub], "nickname"
+                if sub in idx and (n > 1 or len(sub) >= 4):
+                    return idx[sub], how
+                single = " ".join(_plain(w) for w in ws[i:i + n])
+                if single != sub and single in idx and (n > 1 or len(single) >= 4):
+                    return idx[single], how
+    # every word of one item's name, in any order (after the word nicknames)
+    item = _by_words(keys[-1])
+    if item:
+        return item, "words"
     return None, ""
 
 
 def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[dict]:
     """The offers in a megaphone: [{side, phrase, key, item, how, price, note}]."""
+    nicks, words = split_nicknames(nicks)
     links = re.findall(r"\[([^\[\]]{2,60})\]", message or "")
     text = re.sub(r"\[([^\[\]]{2,60})\]", r" \1 ", message or "")
     text = re.sub(r"\bc\s?/\s?o\b", "c_o", text, flags=re.I)        # don't split "c/o"
@@ -6129,7 +6223,7 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
                 if price is not None and offers and offers[-1]["side"] == side and offers[-1]["price"] is None:
                     offers[-1]["price"], offers[-1]["note"] = price, note   # "Item / 200k"
                 continue
-            item, how = _find_item(phrase, links, nicks)
+            item, how = _find_item(phrase, links, nicks, words)
             offers.append({"side": side, "phrase": phrase, "key": nick_key(phrase), "item": item, "how": how,
                            "price": price, "note": note})
     # "[Korean Fan] S>Korean Fan 90k": the same item twice on one side is one offer

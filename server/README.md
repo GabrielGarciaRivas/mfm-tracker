@@ -258,7 +258,7 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
-| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item" |
+| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
 | `GET /api/v1/nicknames?since=SEQ` | `{"nicknames": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,

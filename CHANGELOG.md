@@ -12,9 +12,13 @@
 - **Add manual nicknames:** a sheet of nicknames (Megaphone item, Matched item name) to
   type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
   matches every megaphone again with the current nicknames.
+- **Word nicknames:** a nickname can stand for words instead of an item ("60%" =
+  Intermediate, "att" = Attack), so "60% gloves att" matches Gloves Attack Scroll:
+  Intermediate without a nickname for each scroll. Switch a nickname with its Type cell.
+  Megaphone items also match when every word of the item's name is there, in any order.
 - **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
   a Buying / Selling column. Shop listings shows the price, shop, player and channel in
-  their own columns. "Match" is now "Match manually".
+  their own columns. "Match" is now "Match manually", and "In the megaphone" is now "Item".
 - A megaphone that isn't matched to an item yet shows its message as it was read until
   you match it in Review.
 - The Items tab shows the median megaphone selling and buying prices, and the price

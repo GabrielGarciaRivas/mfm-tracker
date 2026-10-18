@@ -164,14 +164,21 @@ found, click **Chat area** and draw a box around the chat messages.
 Players call items many things ("kumbis" for Kumbi Throwing-Stars). When you match a
 megaphone phrase to an item (in **Review → Megaphones**, or by right-clicking it), the app
 learns it as a nickname and uses it for every megaphone from then on, including older ones.
-"Not an item" teaches it to ignore a phrase.
+"Not an item" teaches it to ignore a phrase. A phrase also matches an item when it has
+every word of the item's name, in any order ("gloves attack scroll intermediate").
 
 Two buttons at the top of the Megaphones tab and of Review → Megaphones:
 
-- **Add manual nicknames** opens a sheet of every nickname, with two columns:
-  **Megaphone item** (what players write) and **Matched item name**. Click a cell to type
-  in it; the last row adds a new one, and **Delete** removes the selected ones. If the item
-  name you type isn't exact, you're asked to pick the item. Leave it empty for "not an item".
+- **Add manual nicknames** opens a sheet of every nickname: **Megaphone item** (what
+  players write), **Matched item name** and **Type**. Click a cell to type in it; the last
+  row adds a new one, and **Delete** removes the selected ones. Click the Type cell to
+  switch between:
+  - **Item:** the phrase is that item ("kumbis" = Kumbi Throwing-Stars). If the name you
+    type isn't exact, you're asked to pick the item. Leave it empty for "not an item".
+  - **Words:** the phrase stands for other words, for any item. For example "60%" =
+    Intermediate, "10%" = Greater, "100%" = Lesser and "att" = Attack: then "60% gloves att"
+    matches Gloves Attack Scroll: Intermediate, and "10% claw att" matches Claw Attack
+    Scroll: Greater, without a nickname for each scroll.
 - **Refresh** matches every megaphone again with the current nicknames. Phrases that now
   match an item leave Review → Megaphones.
 
