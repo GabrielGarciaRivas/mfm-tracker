@@ -2165,6 +2165,12 @@ class App:
                                  player, ch or "", msg if item else ""))
                 t.offer_of[iid] = (mid, idx, phrase)
             restore()
+        # items only seen in megaphones may have no icon here yet: fetch them (once)
+        asked = self.__dict__.setdefault("_mega_icon_asked", set())
+        missing = [i for i in markets if i not in asked and mfm.load_icon(self.con, i) is None]
+        if missing:
+            asked.update(missing)
+            self.fetch_icons_async(missing)
 
     def _offer_phrases(self, tree) -> list[str]:
         return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
@@ -4194,6 +4200,8 @@ class App:
         for k in self.live.get_children():
             self.live.item(k, image=self.icon_for(self.live.set(k, "item")))
         self.refresh_tables()
+        self.refresh_megaphones()
+        self.refresh_megaphone_review()
 
     def request_icons(self, names):
         """Download meowdb icons for search suggestions that have none yet: one at a
