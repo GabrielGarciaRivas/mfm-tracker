@@ -673,7 +673,9 @@ class App:
         self.chan_popup = None
 
         root.title("Free Market Tracker")
-        root.geometry("1300x700")
+        # wide enough for the Megaphones tab's Message column next to its preview
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{min(1880, max(1000, sw - 40))}x{min(760, max(560, sh - 100))}")
         root.minsize(980, 500)
         self._build()
         self.refresh_tables()
@@ -724,8 +726,15 @@ class App:
         self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground="#c62828")
         self.shared_dot.pack(side="right", padx=(0, 2))
         tip("Green: connected to the Shared Database and syncing. Red: not connected.", self.shared_dot)
-        self.start_btn = ttk.Button(bar, text="▶  Start monitoring", command=self.toggle, width=17)
+        self.start_btn = ttk.Button(bar, text="Start monitoring", command=self.toggle, width=16)
         self.start_btn.pack(side="left")
+        # next to it: a green arrow while monitoring, a red square when stopped
+        # (drawn, not a text symbol, so it shows whatever fonts there are)
+        self.run_mark = tk.Canvas(bar, width=18, height=18, highlightthickness=0, bd=0,
+                                  background=ttk.Style().lookup("TFrame", "background") or None)
+        self.run_mark.pack(side="left", padx=(5, 0))
+        self._run_mark(False)
+        tip("Green arrow: monitoring. Red square: stopped.", self.run_mark)
         ttk.Button(bar, text="Shop area", command=self.calibrate).pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Map area",
                    command=lambda: self.calibrate(key="map_region")).pack(side="left", padx=(6, 0))
@@ -878,9 +887,19 @@ class App:
         self.monitor.chan_watch = self.chan_watch
         self.worker = threading.Thread(target=self.monitor.run, args=(self.stop_event,), daemon=True)
         self.worker.start()
-        self.start_btn.config(text="■  Stop monitoring")
+        self.start_btn.config(text="Stop monitoring")
+        self._run_mark(True)
         self._set_status("Monitoring — open shops and scroll through them normally.")
         self._mega_status_text(None)
+
+    def _run_mark(self, running: bool) -> None:
+        """The mark next to Start/Stop monitoring: green arrow, or red square."""
+        c = self.run_mark
+        c.delete("all")
+        if running:
+            c.create_polygon(4, 2, 16, 9, 4, 16, fill="#2e7d32", outline="#1b5e20")
+        else:
+            c.create_rectangle(3, 3, 15, 15, fill="#c62828", outline="#8e0000")
 
     def stop(self):
         aborting = False
@@ -889,7 +908,8 @@ class App:
                 self.monitor.abort = True   # pressed again while finishing: drop the queue
                 aborting = True
             self.stop_event.set()
-        self.start_btn.config(text="▶  Start monitoring")
+        self.start_btn.config(text="Start monitoring")
+        self._run_mark(False)
         if not aborting and self.worker and self.worker.is_alive() and self.backlog:
             self._set_status(f"Stopped — still reading {self.backlog} captured frames "
                              "(press Stop again to discard them).")
@@ -1941,8 +1961,11 @@ class App:
                 text = (f"Connected to {st.get('server') or 'the server'}"
                         + (f" (v{st['version']})" if st.get("version") else "")
                         + (f" as {st['you']}" if st.get("you") else "") + ".\n"
-                        f"Prices sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,}\n"
-                        f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}\n"
+                        f"Prices sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,}"
+                        f" · purged: {(st.get('purged') or {}).get('prices', 0):,}\n"
+                        f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}"
+                        f" · purged: {(st.get('purged') or {}).get('megaphones', 0):,}\n"
+                        f"Nicknames purged: {(st.get('purged') or {}).get('nicknames', 0):,}\n"
                         "(since the app started)")
             status.config(text=text)
             signed_in = bool(saved.get("token"))

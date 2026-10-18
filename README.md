@@ -78,6 +78,8 @@ The finished app is in the `dist` folder.
    item and map lists. Say yes; they correct misread item and map names.
 2. Pick your **Channel**.
 3. Click **Start monitoring**, then play normally: open shops and scroll through them.
+   Next to the button, a green arrow means it's monitoring and a red square means it's
+   stopped.
 
 The shop window and the minimap are found automatically, on any monitor. Each listing is
 saved with its item, price, shop, player, map, channel and time. The panel on the right
@@ -304,8 +306,9 @@ read the same one, the clearest read is kept. Nicknames are shared as well, so a
 starts with everything the group has taught, including phrases marked "Not an item". The
 Review list itself isn't shared: it's worked out in each app from its megaphones. If the
 server's admin deletes data on the server (`mfm-server purge`), your app deletes the same
-from its own data the next time it syncs. When your app and the server disagree, the
-server's copy wins. The server keeps megaphones for 72 hours;
+from its own data the next time it syncs. The Shared Database window counts what was
+removed this way ("purged"), next to what was sent and received. When your app and the
+server disagree, the server's copy wins. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
 prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;

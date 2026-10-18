@@ -225,6 +225,7 @@ class SharedSync:
         self.thread: threading.Thread | None = None
         self.sent = self.received = 0
         self.mega_sent = self.mega_received = 0
+        self.purged = {"prices": 0, "megaphones": 0, "nicknames": 0}   # deleted here by server purges
         self.ok = False
         self.info: dict = {}
         self.caught_up = False
@@ -243,6 +244,7 @@ class SharedSync:
         you = self.info.get("you", "")
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
                         "mega_sent": self.mega_sent, "mega_received": self.mega_received,
+                        "purged": dict(self.purged),
                         "server": self.info.get("name", ""), "version": self.info.get("version", ""),
                         "you": you.get("name", "") if isinstance(you, dict) else you, **more})
 
@@ -492,6 +494,8 @@ class SharedSync:
         if last != row[0]:
             con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)", (key, last))
             con.commit()
+            for k, n in done.items():
+                self.purged[k] = self.purged.get(k, 0) + n
             if done["prices"]:
                 self.on_new_rows(0)
             if done["megaphones"] or done["nicknames"]:

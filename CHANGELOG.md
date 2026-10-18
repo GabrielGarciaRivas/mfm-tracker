@@ -5,7 +5,12 @@
 ### Changed
 - **Shared Database:** when the server's admin deletes data (`mfm-server purge`), the app
   deletes the same prices, megaphones and nicknames from its own data on its next sync.
-  When the app and the server disagree, the server's copy wins.
+  When the app and the server disagree, the server's copy wins. The Shared Database
+  window shows how many prices, megaphones and nicknames were purged this way.
+- **Monitoring:** a green arrow next to the button while monitoring, a red square when
+  stopped.
+- **Window:** opens wider (up to 1880 pixels, to fit your screen), so the Megaphones tab's
+  Message column isn't cut off.
 - **Downloads** are now a zip (Windows, macOS) or tar.gz (Linux) with the version in the
   file name. The app itself keeps its plain name.
 
