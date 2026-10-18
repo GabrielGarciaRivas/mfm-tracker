@@ -2040,7 +2040,7 @@ class App:
         for kind, title in (("sell", "Selling"), ("buy", "Buying")):
             f = ttk.Frame(panes)
             ttk.Label(f, text=title, style="Bold.TLabel").pack(anchor="w", pady=(4, 2))
-            t = make_tree(f, ("item", "mprice", "market", "time", "player", "channel", "message"))
+            t = make_tree(f, ("time", "item", "mprice", "market", "player", "channel", "message"))
             t.column("message", stretch=True)
             t.column("item", width=300, stretch=False)
             t.column("player", width=120)
@@ -2135,7 +2135,13 @@ class App:
             t.delete(*t.get_children())
             t.matched = set()
             t.offer_of = {}
+            t.info = {}                           # row -> (message, player)
             seen_mega = set()
+            last_mid = None
+            lines = {}                            # how many lines each megaphone has here
+            for r in rows:
+                if r[7] is not None and r[8] == kind:
+                    lines[r[0]] = lines.get(r[0], 0) + 1
             for mid, ts, player, ch, msg, k, color, idx, side, item, phrase, price, note in rows:
                 if idx is None:                       # no offers read from it: show it by its kind
                     if k not in (kind, "both"):
@@ -2168,12 +2174,21 @@ class App:
                     if price and note and "c/o" in note:
                         price_txt = "c/o " + price_txt
                     shown = item
+                elif lines.get(mid, 0) > 1:           # one of several: what it says, and its price
+                    price_txt, shown = (mfm.fmt(price) if price else ""), f"\"{phrase}\""
                 else:                                 # not matched yet: the message as it was read
                     price_txt, shown = "", msg
+                # several items in one megaphone: one line each; the time, player, channel
+                # and message only on its first line
+                first = mid != last_mid
+                last_mid = mid
                 t.insert("", "end", iid=iid, tags=tags, image=self.icon_for(item) if item else "",
-                         values=(shown, price_txt, mfm.fmt(mkt) if mkt else "", mfm.local_time(ts),
-                                 player, ch or "", msg if item else ""))
+                         values=(mfm.local_time(ts) if first else "", shown, price_txt,
+                                 mfm.fmt(mkt) if mkt else "", player if first else "",
+                                 (ch or "") if first else "",
+                                 msg if first and (item or lines.get(mid, 0) > 1) else ""))
                 t.offer_of[iid] = (mid, idx, phrase)
+                t.info[iid] = (msg, player)
             restore()
         # items only seen in megaphones may have no icon here yet: fetch them (once)
         asked = self.__dict__.setdefault("_mega_icon_asked", set())
@@ -2226,8 +2241,9 @@ class App:
             self._set_status("This megaphone isn't matched to an item yet: match it first.")
 
     def _copy_megaphone(self, tree, col):
-        # (a megaphone not matched to an item shows its message in the Item column)
-        vals = [tree.set(k, col) or (tree.set(k, "item") if col == "message" else "") for k in tree.selection()]
+        info = getattr(tree, "info", {})
+        vals = list(dict.fromkeys(info[k][0 if col == "message" else 1] if k in info else tree.set(k, col)
+                                  for k in tree.selection()))
         if vals:
             self.root.clipboard_clear()
             self.root.clipboard_append("\n".join(vals))

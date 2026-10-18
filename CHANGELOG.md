@@ -3,8 +3,9 @@
 ## 2610.17.001 — 2026-10-17
 
 ### New
-- **Megaphone items and prices:** each item a megaphone sells or buys gets its own row in
-  the Megaphones tab, with the item's icon, name, price and market price. Items are found
+- **Megaphone items and prices:** each item a megaphone sells or buys gets its own line in
+  the Megaphones tab, with the item's icon, name, price and market price. The time is the
+  first column; a megaphone's other items are the lines below it. Items are found
   from item links, names and learned nicknames.
 - **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,

@@ -140,9 +140,10 @@ shows what's being read.
 - Long megaphones that wrap onto more lines are read in full. Repeated symbols at the end
   (like @@@@@@) are left out.
 
-Each item in a megaphone gets its own row, with the item's icon, name, price and market
-price, plus the date and time, player, channel and message, in the megaphone's in-game
-colour. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the beanie at
+Each item in a megaphone gets its own line, with the item's icon, name, price and market
+price, in the megaphone's in-game colour. The date and time come first; the time, player,
+channel and message are shown on a megaphone's first line only, so the lines below it are
+its other items. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the beanie at
 520,000 under Selling and the scepter under Buying. The app finds the item from:
 
 - an item link in brackets, like `[Korean Fan]`;
