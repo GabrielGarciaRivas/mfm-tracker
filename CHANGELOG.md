@@ -8,6 +8,10 @@
   5.1% of characters wrong to 1.6% (lines read exactly right: 16 of 91 → 51 of 91), and
   shop lines from 4.4% to 2.8%. Reading a megaphone takes a bit longer.
 
+### Changed
+- **Channel:** when you change channel in the game, the app reads the highlighted channel
+  in the Change Channel window and sets it. It only asks when it can't read it.
+
 ### Fixed
 - The window froze ("Not responding"), mostly on Windows with many megaphones from the
   Shared Database. The Megaphones tab is now worked out in the background and only

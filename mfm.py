@@ -2022,6 +2022,78 @@ def find_channel_dialog(full: Image.Image) -> list | None:
     return None
 
 
+def _grey_button_mask(img: Image.Image) -> Image.Image:
+    """The flat grey of the change-channel dialog's channel buttons (CH.1 ...)."""
+    from PIL import ImageChops
+
+    r, g, b = img.convert("RGB").split()
+    spread = ImageChops.subtract(ImageChops.lighter(ImageChops.lighter(r, g), b),
+                                 ImageChops.darker(ImageChops.darker(r, g), b))
+    lum = img.convert("L")
+    return ImageChops.multiply(lum.point(lambda v: 255 if 140 <= v <= 200 else 0),
+                               spread.point(lambda v: 255 if v <= 12 else 0))
+
+
+def read_dialog_channel(full: Image.Image, pair: list | None = None) -> str | None:
+    """The channel highlighted (blue) in the game's change-channel dialog: read from
+    the button ("CH.19"), or else worked out from where it sits in the grid of
+    channel buttons (8 to a row). None when it can't be told."""
+    import pytesseract
+
+    pair = pair or find_channel_dialog(full)
+    if not pair:
+        return None
+    img = full.convert("RGB")
+    px0, py0, pw, ph = pair
+    # the grid of channel buttons is above the CHANGE CHANNEL / CANCEL pair
+    area = (max(0, int(px0 + pw - 3.6 * pw)), max(0, int(py0 - 1.1 * pw)), px0 + pw, py0 - 2)
+    if area[3] - area[1] < 2 * ph:
+        return None
+    sub = img.crop(area)
+    blues = [b for b in _blobs(_blue_button_mask(sub), min_w=max(6, int(0.15 * pw)), min_h=max(4, int(0.5 * ph)))
+             if 0.6 * ph <= b[3] - b[1] <= 1.4 * ph and 2.0 <= (b[2] - b[0]) / (b[3] - b[1]) <= 6]
+    if len(blues) != 1:
+        return None
+    bx = blues[0]
+    # 1. read it: white lettering on blue
+    inset = max(2, (bx[3] - bx[1]) // 6)     # the button's light edge isn't lettering
+    btn = sub.crop((bx[0] + inset, bx[1] + inset, bx[2] - inset, bx[3] - inset))
+    white = btn.convert("L").point(lambda v: 0 if v >= 200 else 255)
+    box = ImageOps.invert(white).getbbox()
+    if box:
+        white = white.crop(box)
+    up = white.resize((white.width * 4, white.height * 4), Image.LANCZOS)
+    try:
+        text = pytesseract.image_to_string(ImageOps.expand(up, border=10, fill=255),
+                                           config="--psm 7 -c tessedit_char_whitelist=CHch.0123456789").strip()
+    except Exception:
+        text = ""
+    m = re.search(r"(\d{1,3})\s*$", text.replace(" ", ""))
+    if m and 1 <= int(m.group(1)) <= 100:
+        return str(int(m.group(1)))
+    # 2. its place among the grey buttons: about the same size, in rows of 8
+    bw_, bh_ = bx[2] - bx[0], bx[3] - bx[1]
+    greys = [b for b in _blobs(_grey_button_mask(sub), min_w=max(6, int(0.15 * pw)), min_h=max(4, int(0.5 * ph)))
+             if 0.75 <= (b[3] - b[1]) / bh_ <= 1.35 and 0.85 <= (b[2] - b[0]) / bw_ <= 1.2]
+    if len(greys) < 3:
+        return None
+    centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in greys + [bx]]
+    xs = sorted({round(c[0]) for c in centers})
+    ys = sorted({round(c[1]) for c in centers})
+    steps_x = [b - a for a, b in zip(xs, xs[1:]) if b - a > 0.5 * bw_]
+    steps_y = [b - a for a, b in zip(ys, ys[1:]) if b - a > 0.5 * bh_]
+    if not steps_x:
+        return None
+    sx = min(steps_x)
+    sy = min(steps_y) if steps_y else bh_ * 1.25
+    x0_, y0_ = min(c[0] for c in centers), min(c[1] for c in centers)
+    cols = {round((c[0] - x0_) / sx) for c in centers}
+    if max(cols) + 1 != 8:
+        return None                      # not the whole grid in view
+    cx, cy = (bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2
+    return str(round((cy - y0_) / sy) * 8 + round((cx - x0_) / sx) + 1)
+
+
 class ChannelWatch:
     """Notices a channel change: the change-channel dialog (find_channel_dialog)
     was on screen and has gone away, i.e. you changed channel (or cancelled).
@@ -2033,6 +2105,8 @@ class ChannelWatch:
         self.seen = False
         self.gone = 0
         self.last = 0.0
+        self.picked: str | None = None      # the channel highlighted while the dialog was open
+        self.channel: str | None = None     # ... when it closed: the channel you changed to
 
     paused = False
 
@@ -2065,13 +2139,23 @@ class ChannelWatch:
         if self._off():
             self.seen, self.gone = False, 0
             return False
-        if find_channel_dialog(full):
+        pair = find_channel_dialog(full)
+        if pair:
+            if not self.seen:
+                self.picked = None
             self.seen, self.gone = True, 0
+            try:
+                ch = read_dialog_channel(full, pair)
+            except Exception:
+                ch = None
+            if ch:
+                self.picked = ch
             return False
         if self.seen:
             self.gone += 1
             if self.gone >= self.misses:
                 self.seen, self.gone = False, 0
+                self.channel, self.picked = self.picked, None
                 return True
         return False
 
@@ -6951,7 +7035,7 @@ class Monitor:
                     if self.cfg.get("channel_prompt") and self.chan_watch.due():
                         try:
                             if self.chan_watch.feed(full):
-                                self.on_event("channel_change", None)
+                                self.on_event("channel_change", self.chan_watch.channel)
                         except Exception as e:
                             self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
                     if self.megaphones.due():

@@ -925,11 +925,21 @@ class App:
                 if mfm.session_type() not in ("windows", "x11", "macos") or not mfm.mac_screen_access():
                     continue
                 if self.chan_watch.feed(mfm.grab_full_screen()):
-                    self.events.put(("channel_change", None))
+                    self.events.put(("channel_change", self.chan_watch.channel))
             except Exception:
                 time.sleep(5)
 
-    def on_channel_change(self, _p=None):
+    def on_channel_change(self, channel=None):
+        """The game's Change Channel window was closed. The channel highlighted in it
+        (read off the screen) is the one you changed to; only if it couldn't be read
+        does the app ask."""
+        if channel and mfm.parse_channel(channel):
+            if self.chan_popup is not None and self.chan_popup.winfo_exists() and self.chan_popup.mode == "prompt":
+                self.chan_popup.destroy()
+            if self.channel() != str(channel):
+                self.channel_var.set(str(channel))
+            self._set_status(f"Channel {channel}: read from the game's Change Channel window.")
+            return
         if self.chan_popup is not None and self.chan_popup.winfo_exists():
             return                    # the channel picker is already open
         self.ask_channel(changed=True)
