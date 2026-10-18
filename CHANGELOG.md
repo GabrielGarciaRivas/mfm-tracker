@@ -1,5 +1,10 @@
 # Changelog
 
+## 2610.18.005 — 2026-10-18
+
+### Changed
+- **Shared Database:** the window also counts nicknames sent and received.
+
 ## 2610.18.004 — 2026-10-18
 
 ### Fixed

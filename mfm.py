@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.004"
+VERSION = "2610.18.005"
 CODENAME = "npcprices"
 
 DATA = data_dir()

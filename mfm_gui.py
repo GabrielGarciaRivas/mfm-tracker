@@ -1977,7 +1977,8 @@ class App:
                         f" · purged: {(st.get('purged') or {}).get('prices', 0):,}\n"
                         f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}"
                         f" · purged: {(st.get('purged') or {}).get('megaphones', 0):,}\n"
-                        f"Nicknames purged: {(st.get('purged') or {}).get('nicknames', 0):,}\n"
+                        f"Nicknames sent: {st.get('nick_sent', 0):,} · received: {st.get('nick_received', 0):,}"
+                        f" · purged: {(st.get('purged') or {}).get('nicknames', 0):,}\n"
                         "(since the app started)")
             status.config(text=text)
             signed_in = bool(saved.get("token"))

@@ -225,6 +225,7 @@ class SharedSync:
         self.thread: threading.Thread | None = None
         self.sent = self.received = 0
         self.mega_sent = self.mega_received = 0
+        self.nick_sent = self.nick_received = 0
         self.purged = {"prices": 0, "megaphones": 0, "nicknames": 0}   # deleted here by server purges
         self.ok = False
         self.info: dict = {}
@@ -244,6 +245,7 @@ class SharedSync:
         you = self.info.get("you", "")
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
                         "mega_sent": self.mega_sent, "mega_received": self.mega_received,
+                        "nick_sent": self.nick_sent, "nick_received": self.nick_received,
                         "purged": dict(self.purged),
                         "server": self.info.get("name", ""), "version": self.info.get("version", ""),
                         "you": you.get("name", "") if isinstance(you, dict) else you, **more})
@@ -528,6 +530,7 @@ class SharedSync:
         for k, i, d, _, _ in rows:
             con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (_nick_sig(i, d), k))
         con.commit()
+        self.nick_sent += len(rows)
         return len(rows)
 
     def _receive_nicknames(self, con) -> None:
@@ -565,6 +568,7 @@ class SharedSync:
             con.commit()
             if not res.get("more"):
                 break
+        self.nick_received += changed
         if changed and mfm.update_offers(con):
             self.on_megaphones(0)
 

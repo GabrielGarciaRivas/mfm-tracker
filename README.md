@@ -307,8 +307,8 @@ read the same one, the clearest read is kept. Nicknames are shared as well, so a
 starts with everything the group has taught, including phrases marked "Not an item". The
 Review list itself isn't shared: it's worked out in each app from its megaphones. If the
 server's admin deletes data on the server (`mfm-server purge`), your app deletes the same
-from its own data the next time it syncs. The Shared Database window counts what was
-removed this way ("purged"), next to what was sent and received. When your app and the
+from its own data the next time it syncs. The Shared Database window counts the prices,
+megaphones and nicknames sent, received, and removed this way ("purged"). When your app and the
 server disagree, the server's copy wins. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
 prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
