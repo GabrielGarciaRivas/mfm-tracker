@@ -1923,8 +1923,11 @@ class App:
             text = st.get("text", "")
             if running and st.get("ok"):
                 text = (f"Connected to {st.get('server') or 'the server'}"
-                        + (f" as {st['you']}" if st.get("you") else "") + ". "
-                        f"Sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,} (since the app started).")
+                        + (f" (v{st['version']})" if st.get("version") else "")
+                        + (f" as {st['you']}" if st.get("you") else "") + ".\n"
+                        f"Prices sent: {st.get('sent', 0):,} · received: {st.get('received', 0):,}\n"
+                        f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}\n"
+                        "(since the app started)")
             status.config(text=text)
             signed_in = bool(saved.get("token"))
             pw_note.config(text="(saved: no need to enter it)" if signed_in else "")
@@ -3462,6 +3465,11 @@ class App:
         self.mreview_more = ttk.Label(bottom, foreground="#666")
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
+        # common shorthand ("att" = attack, "ohs" = one handed sword) as word nicknames
+        try:
+            mfm.seed_default_words(self.con)
+        except sqlite3.Error:
+            pass
         # read items and prices from megaphones saved before (or by an older version)
         self.root.after(800, self._nicknames_changed)
 
@@ -3525,7 +3533,7 @@ class App:
 
     def _nickname_buttons(self, parent):
         bar = ttk.Frame(parent)
-        b = ttk.Button(bar, text="Add manual nicknames", command=self.nicknames_window)
+        b = ttk.Button(bar, text="Edit nicknames", command=self.nicknames_window)
         b.pack(side="left")
         tip("A sheet of every nickname: what megaphones call an item, and the item it is. "
             "Add, change or remove them.", b)

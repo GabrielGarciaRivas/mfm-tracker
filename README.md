@@ -170,7 +170,7 @@ every word of the item's name, in any order ("gloves attack scroll intermediate"
 
 Two buttons at the top of the Megaphones tab and of Review → Megaphones:
 
-- **Add manual nicknames** opens a sheet of every nickname: **Megaphone term** (what
+- **Edit nicknames** opens a sheet of every nickname: **Megaphone term** (what
   players write), **Nickname** (what it means) and **Type**. Click a cell to type in it; the last
   row adds a new one, and **Delete** removes the selected ones. Click the Type cell to
   switch between:
@@ -179,7 +179,11 @@ Two buttons at the top of the Megaphones tab and of Review → Megaphones:
   - **Words:** the phrase stands for other words, for any item. For example "60%" =
     Intermediate, "10%" = Greater, "100%" = Lesser and "att" = Attack: then "60% gloves att"
     matches Gloves Attack Scroll: Intermediate, and "10% claw att" matches Claw Attack
-    Scroll: Greater, without a nickname for each scroll.
+    Scroll: Greater, without a nickname for each scroll. Common shorthand comes already
+    filled in as word nicknames ("att"/"atk" = attack, "matk" = magic attack, "acc",
+    "avoid", "ohs", "2h", "bw", "xbow", "overall", "top", "pants", "helm" and more); change
+    or remove them like any other. The scroll grades ("60%" = Intermediate and so on) are
+    yours to fill in.
 - **Refresh** matches every megaphone again with the current nicknames. Phrases that now
   match an item leave Review → Megaphones.
 

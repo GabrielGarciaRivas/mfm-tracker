@@ -10,6 +10,16 @@
 - Review → Megaphones shows the 500 most-seen phrases (the count on the tab is still all
   of them), and their suggested items are only worked out for those.
 - Bits of 1-2 letters ("CH") are no longer listed as megaphone items.
+- Scrolls in megaphones match much more often: "att 60%" no longer loses its "60",
+  "60 %" and "60%atk" are read as "60%", and common shorthand comes as word nicknames
+  ("att", "atk", "matk", "acc", "avoid", "ohs", "2h", "bw", "xbow", "overall", "top",
+  "pants", "helm" and more). With your grade nicknames, "60% glove att" matches Gloves
+  Attack Scroll: Intermediate.
+
+### Changed
+- **Shared Database:** the window shows "Connected to (server name) (version) as (you)",
+  and how many megaphones were sent and received as well as prices.
+- "Add manual nicknames" is now "Edit nicknames".
 
 ## 2610.18.001 — 2026-10-18
 
@@ -21,7 +31,7 @@
 - **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
-- **Add manual nicknames:** a sheet of nicknames (Megaphone term, Nickname) to
+- **Edit nicknames:** a sheet of nicknames (Megaphone term, Nickname) to
   type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
   matches every megaphone again with the current nicknames.
 - **Word nicknames:** a nickname can stand for words instead of an item ("60%" =

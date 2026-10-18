@@ -221,6 +221,7 @@ class SharedSync:
         self.wake = threading.Event()
         self.thread: threading.Thread | None = None
         self.sent = self.received = 0
+        self.mega_sent = self.mega_received = 0
         self.ok = False
         self.info: dict = {}
         self.caught_up = False
@@ -238,8 +239,9 @@ class SharedSync:
         self.ok = ok
         you = self.info.get("you", "")
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
-                        "server": self.info.get("name", ""), "you": you.get("name", "") if isinstance(you, dict) else you,
-                        **more})
+                        "mega_sent": self.mega_sent, "mega_received": self.mega_received,
+                        "server": self.info.get("name", ""), "version": self.info.get("version", ""),
+                        "you": you.get("name", "") if isinstance(you, dict) else you, **more})
 
     def _run(self) -> None:
         con = mfm.db()
@@ -406,6 +408,7 @@ class SharedSync:
         if not rows:
             return 0
         rows = rows[:500]
+        fresh = sum(1 for r in rows if not r["uid"])
         for r in rows:
             if not r["uid"]:
                 r["uid"] = uuid.uuid4().hex
@@ -415,6 +418,7 @@ class SharedSync:
             con.execute("UPDATE megaphones SET uid = ?, shared_sig = ? WHERE id = ?",
                         (same.get(r["uid"], r["uid"]), _mega_sig(r), r["id"]))
         con.commit()
+        self.mega_sent += fresh
         return len(rows)
 
     def _receive_megaphones(self, con) -> None:
@@ -453,6 +457,7 @@ class SharedSync:
             if not res.get("more"):
                 break
         # work out the items and prices of new or better-read megaphones
+        self.mega_received += new
         if mfm.update_offers(con) or new:
             self.on_megaphones(new)
 

@@ -6042,7 +6042,7 @@ _FILLER_RE = re.compile(
     r"(?<![A-Za-z])(?:c\s?/\s?o|cfo|ea|each|per|for|pmo|pm|me|offers?|price|best|highest|bid|win|cheap|"
     r"fm\d*|ch\s?\d+|channel\s?\d+|x\s?\d+|\d+\s?x|@+|nx|obo|or|trade|trading|the|a|an|my|your|"
     r"plz|pls|please|anyone|all|below|average|selling|buying|have|need|want)(?![A-Za-z])", re.I)
-_STAT_RE = re.compile(r"(?<![A-Za-z])(?:lv\.?\s?\d+|lvl\s?\d+|\+\d+|att\s?\d+(?:\(\S*\))?|"
+_STAT_RE = re.compile(r"(?<![A-Za-z])(?:lv\.?\s?\d+|lvl\s?\d+|\+\d+|att\s?\d+(?![\d%])(?:\(\S*\))?|"
                       r"\d+\s?(?:str|dex|int|luk|att|matk|acc|avoid|speed|jump|slots?))(?![A-Za-z])", re.I)
 
 
@@ -6089,6 +6089,32 @@ def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
                     idx.setdefault(w, []).append((n, words))
         d.token_index = idx
     return idx
+
+
+# Common shorthand in megaphones, put in once as word nicknames (they can be changed or
+# removed in Edit nicknames like any other; see seed_default_words).
+DEFAULT_WORDS = {
+    "att": "attack", "atk": "attack", "attk": "attack",
+    "matk": "magic attack", "matt": "magic attack", "m att": "magic attack", "m atk": "magic attack",
+    "acc": "accuracy", "avoid": "evasion", "avoi": "evasion", "avo": "evasion", "eva": "evasion",
+    "spd": "speed", "mdef": "magic def", "m def": "magic def", "wdef": "weapon def", "w def": "weapon def",
+    "overall": "overall armor", "ovr": "overall armor", "top": "topwear", "bottom": "bottomwear",
+    "bottoms": "bottomwear", "btm": "bottomwear", "pants": "bottomwear", "helm": "hat", "helmet": "hat",
+    "1h": "one handed", "2h": "two handed", "ohs": "one handed sword", "ths": "two handed sword",
+    "oha": "one handed axe", "tha": "two handed axe", "ohbw": "one handed blunt weapon",
+    "thbw": "two handed blunt weapon", "bw": "blunt weapon", "xbow": "crossbow", "cbow": "crossbow",
+}
+_SEED_TIME = "2000-01-01T00:00:00Z"     # older than any real change, so those always win
+
+
+def seed_default_words(con) -> int:
+    """Put in DEFAULT_WORDS that aren't there (or weren't removed) yet."""
+    have = {r[0] for r in con.execute("SELECT key FROM nicknames")}
+    rows = [(k, WORDS_PREFIX + v, _SEED_TIME, "app", _SEED_TIME) for k, v in DEFAULT_WORDS.items() if k not in have]
+    if rows:
+        con.executemany("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?)", rows)
+        con.commit()
+    return len(rows)
 
 
 def split_nicknames(nicks: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -6218,6 +6244,9 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
         parsed = []
         for c in chunks:
             c = c.replace("c_o", "c/o")
+            # scroll percentages: "60 %", "60 percent", "60°/o" -> "60%"; "60%atk" -> "60% atk"
+            c = re.sub(r"(?<![\d.])(\d{1,3})\s*(?:%|percent\b|pct\b|°/o|o/o)", r"\1%", c, flags=re.I)
+            c = re.sub(r"(\d%)(?=[A-Za-z])", r"\1 ", c)
             price, note = _price_of(c)
             phrase = _PRICE_RE.sub(" ", c)
             phrase = _STAT_RE.sub(" ", phrase)
@@ -6290,7 +6319,7 @@ def update_offers(con, force: bool = False) -> int:
 
 
 _OFFERS_LOCK = threading.Lock()
-OFFERS_VERSION = 2          # bump when parse_offers changes: megaphones are read again
+OFFERS_VERSION = 3          # bump when parse_offers changes: megaphones are read again
 
 # While the window is redrawing a big table, background threads doing pure-Python work
 # pause: otherwise every one of the window's thousands of small Tk calls waits for its
