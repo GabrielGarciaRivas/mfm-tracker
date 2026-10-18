@@ -5,7 +5,8 @@
 #
 # Run it from the Actions tab (or: gh workflow run ocr-train.yml). It tests the new
 # model against the standard one on lines it wasn't trained on, and commits
-# ocr/mfm.traineddata (and ocr/eval.md) only when the new model reads them better.
+# ocr/mfm.traineddata (and ocr/eval.md) only when the new model reads them better
+# than both the standard model and the one the app has now.
 name: Train OCR
 
 on:
@@ -16,7 +17,7 @@ on:
         default: "10000"
       data:
         description: "Encrypted training lines"
-        default: "ocr/lines-v2.zip.enc"
+        default: "ocr/lines-v3.zip.enc"
 
 permissions:
   contents: write
@@ -73,6 +74,7 @@ jobs:
         run: |
           mkdir -p /tmp/td && cp /tmp/mfm.traineddata /tmp/mfmbest.traineddata /tmp/td/
           cp "$(dirname "$(find /usr/share -name eng.traineddata | head -1)")/eng.traineddata" /tmp/td/
+          [ -f ocr/mfm.traineddata ] && cp ocr/mfm.traineddata /tmp/td/current.traineddata   # the model the app has now
           python3 .github/scripts/ocr_eval.py /tmp/lines/eval /tmp/td > /tmp/eval.md
           cat /tmp/eval.md >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/eval.md
@@ -90,6 +92,9 @@ jobs:
           best=$(sed -n 's/^BEST //p' /tmp/eval.md)
           if [ -n "$best" ]; then
             model=${best%%+*}
+            if [ "$model" = current ]; then
+              echo "The model the app has now still reads best: not changed."; exit 0
+            fi
             cp /tmp/$model.traineddata ocr/mfm.traineddata
             echo "$best" | sed "s/^$model/mfm/" > ocr/lang.txt      # what the app passes to -l
             grep -v '^BEST' /tmp/eval.md > ocr/eval.md
