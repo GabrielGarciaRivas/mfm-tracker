@@ -1,0 +1,93 @@
+# Fine-tunes Tesseract's English model on lines from the game's chat (megaphones),
+# so the app reads them better. The training lines (screenshots of public chat, with
+# their text typed in) are kept encrypted in ocr/*.zip.enc; the key is the repository
+# secret OCR_DATA_KEY. The trained model has no screenshots or text in it.
+#
+# Run it from the Actions tab (or: gh workflow run ocr-train.yml). It tests the new
+# model against the standard one on lines it wasn't trained on, and commits
+# ocr/mfm.traineddata (and ocr/eval.md) only when the new model reads them better.
+name: Train OCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Training iterations"
+        default: "3000"
+      data:
+        description: "Encrypted training lines"
+        default: "ocr/chat-lines-v1.zip.enc"
+
+permissions:
+  contents: write
+
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng python3-pil make wget unzip bc >/dev/null
+          tesseract --version | head -1
+          which lstmtraining combine_tessdata
+
+      - name: Training lines
+        env:
+          KEY: ${{ secrets.OCR_DATA_KEY }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::Add the repository secret OCR_DATA_KEY first."; exit 1; }
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:KEY -in "${{ inputs.data }}" -out /tmp/lines.zip
+          mkdir -p /tmp/lines && unzip -q /tmp/lines.zip -d /tmp/lines
+          echo "train: $(ls /tmp/lines/train/*.png | wc -l) lines, eval: $(ls /tmp/lines/eval/*.png | wc -l) lines"
+
+      - name: Start model and tesstrain
+        run: |
+          mkdir -p /tmp/best
+          wget -q -O /tmp/best/eng.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata
+          git clone -q --depth 1 https://github.com/tesseract-ocr/tesstrain /tmp/tesstrain
+          mkdir -p /tmp/tesstrain/data/mfm-ground-truth
+          cp /tmp/lines/train/* /tmp/tesstrain/data/mfm-ground-truth/
+
+      - name: Train
+        working-directory: /tmp/tesstrain
+        run: |
+          make training MODEL_NAME=mfm START_MODEL=eng TESSDATA=/tmp/best \
+            MAX_ITERATIONS=${{ inputs.iterations }} PSM=7 RATIO_TRAIN=0.95 2>&1 | tail -40
+          ls -la data/ data/mfm/checkpoints | head -30
+          lstmtraining --stop_training --convert_to_int \
+            --continue_from data/mfm/checkpoints/mfm_checkpoint \
+            --traineddata data/mfm/mfm.traineddata \
+            --model_output /tmp/mfm.traineddata
+          ls -la /tmp/mfm.traineddata
+
+      - name: Test against the standard model
+        run: |
+          mkdir -p /tmp/td && cp /tmp/mfm.traineddata /tmp/td/
+          python3 .github/scripts/ocr_eval.py /tmp/lines/eval /tmp/td > /tmp/eval.md
+          cat /tmp/eval.md >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/eval.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocr-model
+          path: |
+            /tmp/mfm.traineddata
+            /tmp/eval.md
+
+      - name: Keep the model if it's better
+        run: |
+          if grep -q '^BETTER' /tmp/eval.md; then
+            cp /tmp/mfm.traineddata ocr/mfm.traineddata
+            grep -v '^BETTER' /tmp/eval.md > ocr/eval.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ocr/mfm.traineddata ocr/eval.md
+            git commit -m "OCR model trained on ${{ inputs.data }} (${{ inputs.iterations }} iterations)"
+            git push
+          else
+            echo "The new model isn't better: not kept."
+          fi
