@@ -310,6 +310,21 @@ def db() -> sqlite3.Connection:
             color TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_megaphones_ts ON megaphones(ts);
+        CREATE TABLE IF NOT EXISTS megaphone_offers (
+            megaphone_id INTEGER NOT NULL,
+            idx INTEGER NOT NULL,
+            side TEXT, phrase TEXT, key TEXT, item TEXT, how TEXT,
+            price INTEGER, note TEXT, suggest TEXT, score REAL,
+            PRIMARY KEY (megaphone_id, idx)
+        );
+        CREATE INDEX IF NOT EXISTS idx_offers_item ON megaphone_offers(item);
+        CREATE TABLE IF NOT EXISTS nicknames (
+            key TEXT PRIMARY KEY,
+            item TEXT,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            added TEXT, by TEXT, updated TEXT,
+            shared_sig TEXT
+        );
         CREATE TABLE IF NOT EXISTS reference (
             item TEXT PRIMARY KEY,
             price INTEGER NOT NULL,
@@ -319,7 +334,7 @@ def db() -> sqlite3.Connection:
         """
     )
     mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
-    for col, typ in (("color", "TEXT"), ("votes", "TEXT"), ("conf", "REAL"),
+    for col, typ in (("color", "TEXT"), ("votes", "TEXT"), ("conf", "REAL"), ("offers_sig", "TEXT"),
                      # Shared Database: id on the server, synced values
                      ("uid", "TEXT"), ("shared_sig", "TEXT")):
         if col not in mcols:
@@ -4970,7 +4985,7 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
       (sold, pct or 999, item, qty, each, market, verdict, (shop, seller, map,
        channel), last_seen, price, shop, seller, notes). Outliers, ignored items
       and non-deals are all still in: the app filters them as its checkboxes say.
-    "items": every item ever logged, A-Z: (item, market, source, price_stats,
+    "items": every item ever logged (or seen in megaphones), A-Z: (item, market, source, price_stats,
       cheapest-for-sale tuple or None, npc buy price, npc sell price).
     "review": unmatched_items(con, show_kept)."""
     since = utc_ago(hours=hours)
@@ -4997,11 +5012,17 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
     scored.sort()
     best = cheapest(con, 24, cfg)
     items = []
-    for (item,) in con.execute("SELECT DISTINCT item FROM listings ORDER BY item COLLATE NOCASE"):
+    try:
+        mega = megaphone_prices(con, float(cfg.get("megaphone_hours", 72) or 72))
+    except sqlite3.Error:
+        mega = {}
+    names = {r[0] for r in con.execute("SELECT DISTINCT item FROM listings")} | set(mega)
+    for item in sorted(names, key=str.casefold):
         mkt, src = rates.get(item) or market_rate(con, item, cfg)
         info = item_info(item) or {}
         st = price_stats(con, item, cfg, bounds.get(item, "auto"))
-        items.append((item, mkt, src, st, best.get(item), info.get("npcBuy"), info.get("npcSell")))
+        items.append((item, mkt, src, st, best.get(item), info.get("npcBuy"), info.get("npcSell"),
+                      mega.get(item) or {}))
     return {"deals": scored, "items": items, "review": unmatched_items(con, include_kept=show_kept)}
 
 
@@ -5937,8 +5958,247 @@ def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
 def purge_megaphones(con, hours: float) -> int:
     """Delete megaphones older than `hours`."""
     n = con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(hours=hours),)).rowcount
+    con.execute("DELETE FROM megaphone_offers WHERE megaphone_id NOT IN (SELECT id FROM megaphones)")
     con.commit()
     return n
+
+
+# --------------------------------------------------------------------------- megaphone offers
+# What a megaphone sells or buys: "S> Black cat beanie 520k, B> Fondue Scepter" is two
+# offers, each with an item (when it can be told) and a price (when one is given).
+# Players' shorthand ("kumbis") is learned in Review as nicknames, which the Shared
+# Database shares, so the whole group only teaches each one once.
+
+def nick_key(phrase: str) -> str:
+    """How a phrase is compared: lower case, letters and digits only."""
+    return " ".join(re.sub(r"[^a-z0-9%]+", " ", (phrase or "").lower()).split())
+
+
+def nickname_version(con) -> str:
+    """Changes whenever any nickname does (so megaphones get read again)."""
+    rows = con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 ORDER BY key").fetchall()
+    return hashlib_md5("\n".join(f"{k}={i or ''}" for k, i in rows).encode())[:12]
+
+
+def load_nicknames(con) -> dict[str, str]:
+    """{phrase key: item} (item "" = not an item)."""
+    return {k: (i or "") for k, i in con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0")}
+
+
+def set_nickname(con, phrase: str, item: str | None, by: str | None = None) -> str:
+    """Teach a nickname: `item` None or "" = the phrase isn't an item. Returns its key."""
+    key = nick_key(phrase)
+    if not key:
+        return key
+    con.execute("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?) "
+                "ON CONFLICT (key) DO UPDATE SET item = excluded.item, deleted = 0, updated = excluded.updated",
+                (key, item or "", utc_now(), by, utc_now()))
+    con.commit()
+    return key
+
+
+def delete_nickname(con, key: str) -> None:
+    con.execute("UPDATE nicknames SET deleted = 1, updated = ? WHERE key = ?", (utc_now(), key))
+    con.commit()
+
+
+def _item_index() -> dict[str, str]:
+    """Item names by their phrase key ("ink and wash thought bubble ring" -> name)."""
+    d = _dict()
+    if not d or not d.names:
+        return {}
+    idx = getattr(d, "offer_index", None)
+    if idx is None:
+        idx = {}
+        for n in d.names:
+            idx.setdefault(nick_key(n), n)
+        d.offer_index = idx
+    return idx
+
+
+_SIDE_RE = re.compile(r"(?<![A-Za-z])(?:(?P<s>S\s?[>=]+|WTS\b|sell(?:s|ing)?\b)"
+                      r"|(?P<b>B\s?[>=]+|WTB\b|buy(?:s|ing)?\b|LF\b|looking\s+for\b))", re.I)
+_PRICE_RE = re.compile(r"(?<![\w.])(\d{1,4}(?:[.,]\d{1,3})?)\s*(k|m|mil|mill|b|bil)(?![a-z])"
+                       r"|(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d{4,})(?![\w%])", re.I)
+_NO_PRICE_RE = re.compile(r"\b(pmo|pm me|pm|offers?|best offer|highest bid|bid)\b", re.I)
+# words that aren't part of an item's name
+_FILLER_RE = re.compile(
+    r"(?<![A-Za-z])(?:c\s?/\s?o|cfo|ea|each|per|for|pmo|pm|me|offers?|price|best|highest|bid|win|cheap|"
+    r"fm\d*|ch\s?\d+|channel\s?\d+|x\s?\d+|\d+\s?x|@+|nx|obo|or|trade|trading|the|a|an|my|your|"
+    r"plz|pls|please|anyone|all|below|average|selling|buying|have|need|want)(?![A-Za-z])", re.I)
+_STAT_RE = re.compile(r"(?<![A-Za-z])(?:lv\.?\s?\d+|lvl\s?\d+|\+\d+|att\s?\d+(?:\(\S*\))?|"
+                      r"\d+\s?(?:str|dex|int|luk|att|matk|acc|avoid|speed|jump|slots?))(?![A-Za-z])", re.I)
+
+
+def _price_of(text: str) -> tuple[int | None, str]:
+    """The price in a piece of a megaphone, and a note ("c/o", "each", "offer")."""
+    note = []
+    if re.search(r"\b(c\s?/\s?o|cfo)\b", text, re.I):
+        note.append("c/o")
+    if re.search(r"\b(ea|each|per)\b", text, re.I):
+        note.append("each")
+    price = None
+    for m in _PRICE_RE.finditer(text):
+        if m.group(1):
+            n = float(m.group(1).replace(",", "."))
+            mult = {"k": 1e3, "m": 1e6, "mil": 1e6, "mill": 1e6, "b": 1e9, "bil": 1e9}[m.group(2).lower()]
+            price = int(round(n * mult))
+        else:
+            price = int(m.group(3).replace(",", ""))
+    if price is None and _NO_PRICE_RE.search(text):
+        note.append("offer")
+    return price, ", ".join(note)
+
+
+def _find_item(phrase: str, links: list[str], nicks: dict[str, str]) -> tuple[str | None, str]:
+    """(item, how) for a phrase: how = "link", "nickname", "name", "ignored" or ""."""
+    key = nick_key(phrase)
+    for link in links:
+        lk = nick_key(link)
+        if lk and (lk in key or key in lk or not key):
+            idx = _item_index()
+            item = idx.get(lk)
+            if item is None and has_item_list():
+                sugg = suggest_items(link, 1)
+                item = sugg[0] if sugg and difflib.SequenceMatcher(
+                    None, fold(nick_key(sugg[0])), fold(lk)).ratio() >= 0.8 else None
+            return (item or link), "link"
+    if not key:
+        return None, ""
+    if key in nicks:
+        return (nicks[key] or None), ("nickname" if nicks[key] else "ignored")
+    idx = _item_index()
+    for k in (key, " ".join(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in key.split())):
+        if k in idx:
+            return idx[k], "name"                      # "mithril polearms" -> Mithril Polearm
+    words = key.split()
+    # the longest run of words that is a nickname or an item's name
+    for n in range(min(len(words), 8), 0, -1):
+        for i in range(len(words) - n + 1):
+            sub = " ".join(words[i:i + n])
+            if sub in nicks and nicks[sub] and (n > 1 or len(sub) >= 3):
+                return nicks[sub], "nickname"
+            if sub in idx and (n > 1 or len(sub) >= 4):
+                return idx[sub], "name"
+            single = " ".join(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words[i:i + n])
+            if single != sub and single in idx and (n > 1 or len(single) >= 4):
+                return idx[single], "name"
+    return None, ""
+
+
+def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[dict]:
+    """The offers in a megaphone: [{side, phrase, key, item, how, price, note}]."""
+    links = re.findall(r"\[([^\[\]]{2,60})\]", message or "")
+    text = re.sub(r"\[([^\[\]]{2,60})\]", r" \1 ", message or "")
+    text = re.sub(r"\bc\s?/\s?o\b", "c_o", text, flags=re.I)        # don't split "c/o"
+    default = kind if kind in ("sell", "buy") else "sell"
+    # pieces by side: "S> ... B> ..." (no marker: the megaphone's own kind)
+    pieces, pos, side = [], 0, default
+    for m in _SIDE_RE.finditer(text):
+        if text[pos:m.start()].strip():
+            pieces.append((side, text[pos:m.start()]))
+        side = "sell" if m.group("s") else "buy"
+        pos = m.end()
+    if text[pos:].strip():
+        pieces.append((side, text[pos:]))
+    offers = []
+    for side, piece in pieces:
+        chunks = [c for c in re.split(r",\s+|;\s*|\s+/\s+|(?<=[A-Za-z]{2})/(?=[A-Za-z]{2})|\s+&\s+|\s+and\s+|"
+                                      r"\s*\|\s*|\s+\+\s+", piece, flags=re.I) if c and c.strip()]
+        parsed = []
+        for c in chunks:
+            c = c.replace("c_o", "c/o")
+            price, note = _price_of(c)
+            phrase = _PRICE_RE.sub(" ", c)
+            phrase = _STAT_RE.sub(" ", phrase)
+            phrase = _FILLER_RE.sub(" ", phrase)
+            phrase = re.sub(r"[^\w%'\- ]+", " ", phrase)
+            phrase = " ".join(w for w in phrase.split() if not w.isdigit()).strip(" -'")
+            parsed.append([phrase, price, note])
+        # "Angelwings and Slime shirt 50k each": a piece without a price takes the next one's
+        for i in range(len(parsed) - 2, -1, -1):
+            if parsed[i][1] is None and parsed[i + 1][1] is not None and "each" in parsed[i + 1][2]:
+                parsed[i][1], parsed[i][2] = parsed[i + 1][1], parsed[i + 1][2]
+        for phrase, price, note in parsed:
+            if len(re.sub(r"[^A-Za-z]", "", phrase)) < 2:
+                if price is not None and offers and offers[-1]["side"] == side and offers[-1]["price"] is None:
+                    offers[-1]["price"], offers[-1]["note"] = price, note   # "Item / 200k"
+                continue
+            item, how = _find_item(phrase, links, nicks)
+            offers.append({"side": side, "phrase": phrase, "key": nick_key(phrase), "item": item, "how": how,
+                           "price": price, "note": note})
+    # "[Korean Fan] S>Korean Fan 90k": the same item twice on one side is one offer
+    merged: list[dict] = []
+    for o in offers:
+        twin = next((m for m in merged if o["item"] and m["item"] == o["item"] and m["side"] == o["side"]), None)
+        if twin is None:
+            merged.append(o)
+        elif twin["price"] is None and o["price"] is not None:
+            twin.update(price=o["price"], note=o["note"])
+    return merged[:12]
+
+
+def update_offers(con, force: bool = False) -> int:
+    """Work out the offers of every stored megaphone whose message (or the nicknames)
+    changed since; returns how many megaphones were (re)read."""
+    ver = nickname_version(con)
+    nicks = None
+    n = 0
+    for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
+        want = hashlib_md5(f"{ver}|{kind}|{msg}".encode())
+        if sig == want and not force:
+            continue
+        if nicks is None:
+            nicks = load_nicknames(con)
+        offers = parse_offers(msg, kind, nicks)
+        con.execute("DELETE FROM megaphone_offers WHERE megaphone_id = ?", (mid,))
+        for i, o in enumerate(offers):
+            suggest, score = None, 0.0
+            if not o["item"] and o["how"] != "ignored" and has_item_list():
+                try:
+                    suggest, score = best_match(con, o["phrase"].title())
+                except Exception:
+                    pass
+            con.execute("INSERT INTO megaphone_offers (megaphone_id, idx, side, phrase, key, item, how, price, note, "
+                        "suggest, score) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"], o["note"],
+                         suggest, score))
+        con.execute("UPDATE megaphones SET offers_sig = ? WHERE id = ?", (want, mid))
+        n += 1
+    if n:
+        con.commit()
+    return n
+
+
+def megaphone_prices(con, hours: float = 72) -> dict[str, dict]:
+    """Per item, the median asking price in selling and buying megaphones:
+    {item: {"sell": median or None, "buy": ..., "sell_n": count, "buy_n": count}}."""
+    out: dict[str, dict] = {}
+    for item, side, price in con.execute(
+            "SELECT o.item, o.side, o.price FROM megaphone_offers o JOIN megaphones m ON m.id = o.megaphone_id "
+            "WHERE o.item IS NOT NULL AND o.price IS NOT NULL AND m.ts >= ?", (utc_ago(hours=hours),)):
+        out.setdefault(item, {"sell": [], "buy": []})[side].append(price)
+    return {item: {"sell": statistics.median(v["sell"]) if v["sell"] else None,
+                   "buy": statistics.median(v["buy"]) if v["buy"] else None,
+                   "sell_n": len(v["sell"]), "buy_n": len(v["buy"])} for item, v in out.items()}
+
+
+def unmatched_offers(con, hours: float = 72) -> list[dict]:
+    """Megaphone phrases not matched to an item yet (what Review → Megaphones shows),
+    most-seen first: {key, phrase, sides, price, suggest, score, count, example, last}."""
+    rows = {}
+    for key, phrase, side, price, suggest, score, msg, ts in con.execute(
+            "SELECT o.key, o.phrase, o.side, o.price, o.suggest, o.score, m.message, m.ts FROM megaphone_offers o "
+            "JOIN megaphones m ON m.id = o.megaphone_id WHERE o.item IS NULL AND COALESCE(o.how, '') != 'ignored' "
+            "AND m.ts >= ? ORDER BY m.ts", (utc_ago(hours=hours),)):
+        r = rows.setdefault(key, {"key": key, "phrase": phrase, "sides": set(), "price": None, "suggest": suggest,
+                                  "score": score or 0.0, "count": 0, "example": msg, "last": ts})
+        r["sides"].add(side)
+        r["count"] += 1
+        r["example"], r["last"] = msg, ts
+        if price is not None:
+            r["price"] = price
+    return sorted(rows.values(), key=lambda r: (-r["count"], r["key"]))
 
 
 class MegaphoneWatch:
@@ -5984,6 +6244,8 @@ class MegaphoneWatch:
                                       marks=marks)
                 n = save_megaphones(con, got) if got else 0
                 purge_megaphones(con, self.cfg.get("megaphone_hours", 72))
+                if got:
+                    update_offers(con)        # items and prices in the new megaphones
             finally:
                 con.close()
             self.on_event("chat_frame", {"image": img, "marks": marks, "count": len(got)})

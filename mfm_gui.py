@@ -134,6 +134,8 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "saved": "Saved", "notes": "Notes", "qty": "Qty", "range": "Price range",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
+        "side": "Buying / Selling", "phrase": "In the megaphone", "mprice": "Price", "msell": "Megaphones: selling",
+        "mbuy": "Megaphones: buying",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -142,10 +144,12 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "best": 90, "best_where": 230, "status": 66, "listed_med": 95, "sold_med": 90,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
-         "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600,
+         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
-           "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price"}
+           "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
+           "mprice", "msell", "mbuy"}
 CENTER = {"channel", "best_channel"}
 
 
@@ -820,7 +824,8 @@ class App:
         self._build_item_filter(items)
         self.items = make_tree(items, ("item", "best", "best_shop", "best_player", "best_map", "best_channel",
                                        "listed_med", "listed_n",
-                                       "sold_med", "sold_n", "market", "npc_buy", "npc_sell", "source"))
+                                       "sold_med", "sold_n", "market", "msell", "mbuy", "npc_buy", "npc_sell",
+                                       "source"))
         self.items.frame.pack(fill="both", expand=True)
         self.items.bind("<Double-1>", lambda e: self.open_history(self.items))
         self.items.bind("<Delete>", lambda e: self.forget_selected())
@@ -1520,9 +1525,17 @@ class App:
             return
         self._stale = {"deals", "items", "review"}
         if hasattr(self, "review_tab"):
-            n = sum(1 for r in data["review"] if not r["kept"])
-            self.nb.tab(self.review_tab, text=f"  Review ({n})  " if n else "  Review  ")
+            self._shop_review_n = sum(1 for r in data["review"] if not r["kept"])
+            self._review_title()
         self._fill_stale()
+
+    def _review_title(self):
+        """The Review tab's count: shop names plus megaphone phrases waiting."""
+        a, b = getattr(self, "_shop_review_n", 0), getattr(self, "_mega_review_n", 0)
+        self.nb.tab(self.review_tab, text=f"  Review ({a + b})  " if a + b else "  Review  ")
+        if hasattr(self, "review_nb"):
+            self.review_nb.tab(self.review_shop_tab, text=f"  Shop listings ({a})  " if a else "  Shop listings  ")
+            self.review_nb.tab(self.review_mega_tab, text=f"  Megaphones ({b})  " if b else "  Megaphones  ")
 
     def _fill_stale(self):
         data = self._tables_data
@@ -1581,7 +1594,7 @@ class App:
         filt = self.item_filter() if hasattr(self, "f_name") else {}
         threshold = self.cfg["deal_threshold_pct"]
         shown = total = 0
-        for item, mkt, src, st, b, npc_buy, npc_sell in rows:
+        for item, mkt, src, st, b, npc_buy, npc_sell, mg in rows:
             total += 1
             if filt and not mfm.item_matches(item, filt):
                 continue
@@ -1599,6 +1612,7 @@ class App:
                 (b[3] or "") if b else "", (b[4] or "") if b else "",
                 mfm.fmt(st["listed_median"]), st["listed_n"],
                 mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt),
+                mfm.fmt(mg["sell"]) if mg.get("sell") else "-", mfm.fmt(mg["buy"]) if mg.get("buy") else "-",
                 mfm.fmt(npc_buy) if npc_buy else "-", mfm.fmt(npc_sell) if npc_sell else "-", src))
         if hasattr(self, "f_count"):
             self.f_count.config(text=f"{shown:,} of {total:,} items" if shown != total else
@@ -2024,18 +2038,23 @@ class App:
         for kind, title in (("sell", "Selling"), ("buy", "Buying")):
             f = ttk.Frame(panes)
             ttk.Label(f, text=title, style="Bold.TLabel").pack(anchor="w", pady=(4, 2))
-            t = make_tree(f, ("time", "player", "channel", "message"))
-            t.configure(show="headings")
+            t = make_tree(f, ("item", "mprice", "market", "time", "player", "channel", "message"))
             t.column("message", stretch=True)
-            t.column("player", width=130)
+            t.column("item", width=210, stretch=False)
+            t.column("player", width=120)
             t.column("time", width=140)
             t.frame.pack(fill="both", expand=True)
-            self._list_menu(t, [("Copy message", lambda tr: self._copy_megaphone(tr, "message"), False),
+            self._list_menu(t, [("Match to an item", lambda tr: self.match_megaphone_item(tr), True),
+                                ("Not an item", lambda tr: self.megaphone_not_item(tr), False),
+                                ("Show item history", lambda tr: self.open_history(tr), True),
+                                None,
+                                ("Copy message", lambda tr: self._copy_megaphone(tr, "message"), False),
                                 ("Copy player name", lambda tr: self._copy_megaphone(tr, "player"), False),
                                 None,
                                 ("Delete", lambda tr: self.delete_megaphones(tr), False)])
             t.bind("<Delete>", lambda e, tr=t: self.delete_megaphones(tr))
-            t.bind("<Double-1>", lambda e, tr=t: self._copy_megaphone(tr, "message"))
+            t.bind("<Double-1>", lambda e, tr=t: self.open_history(tr) if tr.set(tr.focus(), "item")
+                   and tr.focus() in getattr(tr, "matched", set()) else self._copy_megaphone(tr, "message"))
             panes.add(f, weight=1)
             self.mega_trees[kind] = t
         self._mega_status_text(None)
@@ -2056,6 +2075,7 @@ class App:
 
     def on_megaphones(self, n):
         self.refresh_megaphones()
+        self.refresh_megaphone_review()
 
     def on_chat_frame(self, p):
         from PIL import ImageDraw
@@ -2088,19 +2108,34 @@ class App:
         self.refresh_megaphones()
 
     def refresh_megaphones(self):
+        """One row per offer in a megaphone (an item it sells or buys), with the item's
+        icon, name and price once it's matched to an item."""
         if not hasattr(self, "mega_trees"):
             return
         hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
         mfm.purge_megaphones(self.con, hours)
         rows = self.con.execute(
-            "SELECT id, ts, player, channel, message, kind, color FROM megaphones WHERE ts >= ? "
-            "AND kind IS NOT NULL ORDER BY ts DESC, id DESC", (mfm.utc_ago(hours=hours),)).fetchall()
+            "SELECT m.id, m.ts, m.player, m.channel, m.message, m.kind, m.color, o.idx, o.side, o.item, o.phrase, "
+            "o.price, o.note FROM megaphones m LEFT JOIN megaphone_offers o ON o.megaphone_id = m.id "
+            "WHERE m.ts >= ? AND m.kind IS NOT NULL ORDER BY m.ts DESC, m.id DESC, o.idx",
+            (mfm.utc_ago(hours=hours),)).fetchall()
+        markets: dict = {}
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())
-            for mid, ts, player, ch, msg, k, color in rows:
-                if k not in (kind, "both"):
+            t.matched = set()
+            t.offer_of = {}
+            seen_mega = set()
+            for mid, ts, player, ch, msg, k, color, idx, side, item, phrase, price, note in rows:
+                if idx is None:                       # no offers read from it: show it by its kind
+                    if k not in (kind, "both"):
+                        continue
+                elif side != kind:
                     continue
+                iid = f"{mid}:{idx if idx is not None else -1}"
+                if iid in seen_mega:
+                    continue
+                seen_mega.add(iid)
                 tags = ()
                 if color and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
                     tag = "mc" + color[1:].lower()
@@ -2110,8 +2145,57 @@ class App:
                         t.tag_configure(tag, background=color, foreground="white" if dark else "black")
                         t.color_tags = getattr(t, "color_tags", set()) | {tag}
                     tags = (tag,)
-                t.insert("", "end", iid=str(mid), tags=tags, values=(mfm.local_time(ts), player, ch or "", msg))
+                mkt = None
+                if item:
+                    if item not in markets:
+                        markets[item] = mfm.market_rate(self.con, item, self.cfg)[0]
+                    mkt = markets[item]
+                    t.matched.add(iid)
+                price_txt = mfm.fmt(price) if price else ("offer" if note and "offer" in note else "")
+                if price and note and "c/o" in note:
+                    price_txt = "c/o " + price_txt
+                t.insert("", "end", iid=iid, tags=tags, image=self.icon_for(item) if item else "",
+                         values=(item or "", price_txt, mfm.fmt(mkt) if mkt else "", mfm.local_time(ts),
+                                 player, ch or "", msg))
+                t.offer_of[iid] = (mid, idx, phrase)
             restore()
+
+    def _offer_phrases(self, tree) -> list[str]:
+        return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
+
+    def _nicknames_changed(self, note: str = ""):
+        """Nicknames were taught or changed: read every megaphone again (in the
+        background), then show the result."""
+        if note:
+            self._set_status(note)
+
+        def work():
+            con = mfm.db()
+            try:
+                mfm.update_offers(con)
+            finally:
+                con.close()
+            self.events.put(("megaphones", 0))
+            self.events.put(("call", self.refresh_megaphone_review))
+        threading.Thread(target=work, daemon=True).start()
+        if self.shared:
+            self.shared.wake.set()
+
+    def match_megaphone_item(self, tree):
+        phrases = self._offer_phrases(tree)
+        if not phrases:
+            return
+        name = self._choose_item(self.root, f"Which item is \"{phrases[0]}\"?", phrases[0].title())
+        if name:
+            mfm.set_nickname(self.con, phrases[0], name)
+            self._nicknames_changed(f"\"{phrases[0]}\" is now a nickname for {name}.")
+
+    def megaphone_not_item(self, tree):
+        phrases = self._offer_phrases(tree)
+        for ph in phrases:
+            mfm.set_nickname(self.con, ph, None)
+        if phrases:
+            self._nicknames_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
 
     def _copy_megaphone(self, tree, col):
         vals = [tree.set(k, col) for k in tree.selection()]
@@ -2121,10 +2205,11 @@ class App:
             self._set_status(f"Copied {mfm.plural(len(vals), 'line')}.")
 
     def delete_megaphones(self, tree):
-        ids = [int(k) for k in tree.selection()]
+        ids = sorted({int(str(k).split(":")[0]) for k in tree.selection()})
         if not ids:
             return
         self.con.executemany("DELETE FROM megaphones WHERE id = ?", [(i,) for i in ids])
+        self.con.executemany("DELETE FROM megaphone_offers WHERE megaphone_id = ?", [(i,) for i in ids])
         self.con.commit()
         self.refresh_megaphones()
 
@@ -3197,10 +3282,161 @@ class App:
                              + (f" at {mfm.fmt(cap)} or less each" if cap else "") + ".")
 
     # ------------------------------------------------------------------ review unmatched
+    # ------------------------------------------------------------------ review: megaphones
+    def _build_megaphone_review(self):
+        tab = ttk.Frame(self.review_nb, padding=6)
+        self.review_mega_tab = tab
+        self.review_nb.add(tab, text="  Megaphones  ")
+        ttk.Label(tab, wraplength=1040, justify="left", text=(
+            "Things megaphones sell or buy that aren't matched to an item yet. Matching one teaches the "
+            "app a nickname, used for every megaphone from then on (and shared through the Shared "
+            "Database). Enter = accept the suggestion · M = pick an item · Delete = not an item.")
+                  ).pack(anchor="w", pady=(0, 6))
+        t = make_tree(tab, ("phrase", "side", "mprice", "suggest", "score", "count", "message"))
+        t.heading("count", text="Seen")
+        t.column("message", stretch=True)
+        t.frame.pack(fill="both", expand=True)
+        t.tag_configure("good", foreground="#145c2c")
+        t.tag_configure("weak", foreground="#8a6d1a")
+        self.mreview = t
+        t.bind("<Return>", lambda e: self.mreview_accept())
+        t.bind("<KP_Enter>", lambda e: self.mreview_accept())
+        t.bind("<Delete>", lambda e: self.mreview_not_item())
+        t.bind("<BackSpace>", lambda e: self.mreview_not_item())
+        for k in ("m", "M"):
+            t.bind(f"<KeyPress-{k}>", lambda e: self.mreview_match())
+        t.bind("<Double-1>", lambda e: self.mreview_match())
+        self._list_menu(t, [("Accept suggestion  (Enter)", lambda tr: self.mreview_accept(), False),
+                            ("Pick an item  (M)", lambda tr: self.mreview_match(), True),
+                            ("Not an item  (Delete)", lambda tr: self.mreview_not_item(), False)])
+        bottom = ttk.Frame(tab)
+        bottom.pack(fill="x", pady=(6, 0))
+        ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
+        ttk.Button(bottom, text="Match", command=self.mreview_match).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
+        b = ttk.Button(bottom, text="Nicknames", command=self.nicknames_window)
+        b.pack(side="right")
+        tip("Every nickname the app has learned: change or remove them.", b)
+        self.refresh_megaphone_review()
+        # read items and prices from megaphones saved before (or by an older version)
+        self.root.after(800, self._nicknames_changed)
+
+    def refresh_megaphone_review(self):
+        if not hasattr(self, "mreview"):
+            return
+        t = self.mreview
+        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
+        rows = mfm.unmatched_offers(self.con, hours)
+        restore = self._keep_selection(t, lambda tr, k: k)
+        t.delete(*t.get_children())
+        self.mreview_rows = {}
+        for r in rows:
+            sides = r["sides"]
+            side = "Buying and selling" if len(sides) > 1 else ("Buying" if "buy" in sides else "Selling")
+            score = r["score"] or 0
+            tag = "good" if score >= 0.85 else "weak" if r["suggest"] else ""
+            t.insert("", "end", iid=r["key"], tags=(tag,) if tag else (),
+                     image=self.icon_for(r["suggest"]) if r["suggest"] else "",
+                     values=(r["phrase"], side, mfm.fmt(r["price"]) if r["price"] else "", r["suggest"] or "",
+                             f"{score:.0%}" if r["suggest"] else "", r["count"], r["example"]))
+            self.mreview_rows[r["key"]] = r
+        restore()
+        self._mega_review_n = len(rows)
+        if hasattr(self, "review_tab"):
+            self._review_title()
+
+    def mreview_accept(self):
+        done = 0
+        for key in self.mreview.selection():
+            r = self.mreview_rows.get(key)
+            if r and r["suggest"]:
+                mfm.set_nickname(self.con, r["phrase"], r["suggest"])
+                done += 1
+        if done:
+            self._nicknames_changed(f"Learned {mfm.plural(done, 'nickname')}.")
+        else:
+            self.root.bell()
+
+    def mreview_match(self):
+        sel = self.mreview.selection()
+        if not sel:
+            return
+        r = self.mreview_rows.get(sel[0])
+        if not r:
+            return
+        name = self._choose_item(self.root, f"Which item is \"{r['phrase']}\"?", r["suggest"] or r["phrase"].title())
+        if name:
+            for key in sel:                       # the same item for every selected phrase
+                rr = self.mreview_rows.get(key)
+                if rr:
+                    mfm.set_nickname(self.con, rr["phrase"], name)
+            self._nicknames_changed(f"\"{r['phrase']}\" is now a nickname for {name}.")
+
+    def mreview_not_item(self):
+        sel = list(self.mreview.selection())
+        for key in sel:
+            r = self.mreview_rows.get(key)
+            if r:
+                mfm.set_nickname(self.con, r["phrase"], None)
+        if sel:
+            self._nicknames_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
+
+    def nicknames_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("Nicknames")
+        win.geometry("640x480")
+        win.transient(self.root)
+        ttk.Label(win, padding=(10, 8), wraplength=600, justify="left", text=(
+            "What players call items in megaphones, as the app has learned it. \"Not an item\" means the "
+            "phrase is ignored.")).pack(anchor="w")
+        t = make_tree(win, ("phrase", "item"))
+        t.heading("phrase", text="Nickname")
+        t.heading("item", text="Item")
+        t.column("item", width=300)
+        t.frame.pack(fill="both", expand=True, padx=10)
+
+        def fill():
+            t.delete(*t.get_children())
+            for key, item in sorted(mfm.load_nicknames(self.con).items()):
+                t.insert("", "end", iid=key, image=self.icon_for(item) if item else "",
+                         values=(key, item or "(not an item)"))
+
+        def change():
+            sel = t.selection()
+            if not sel:
+                return
+            name = self._choose_item(win, f"Which item is \"{sel[0]}\"?", t.set(sel[0], "item"))
+            if name:
+                mfm.set_nickname(self.con, sel[0], name)
+                fill()
+                self._nicknames_changed()
+
+        def remove():
+            for key in t.selection():
+                mfm.delete_nickname(self.con, key)
+            fill()
+            self._nicknames_changed()
+        t.bind("<Double-1>", lambda e: change())
+        t.bind("<Delete>", lambda e: remove())
+        bar = ttk.Frame(win, padding=10)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Change item", command=change).pack(side="left")
+        ttk.Button(bar, text="Remove", command=remove).pack(side="left", padx=6)
+        ttk.Button(bar, text="Close", command=win.destroy).pack(side="right")
+        fill()
+
+    # ------------------------------------------------------------------ review
     def _build_review_tab(self):
-        tab = ttk.Frame(self.nb, padding=6)
-        self.review_tab = tab
-        self.nb.add(tab, text="  Review  ")
+        outer = ttk.Frame(self.nb, padding=6)
+        self.review_tab = outer
+        self.nb.add(outer, text="  Review  ")
+        # two kinds of names to review: from shops, and from megaphones
+        self.review_nb = ttk.Notebook(outer)
+        self.review_nb.pack(fill="both", expand=True)
+        tab = ttk.Frame(self.review_nb, padding=6)
+        self.review_shop_tab = tab
+        self.review_nb.add(tab, text="  Shop listings  ")
+        self._build_megaphone_review()
         ttk.Label(tab, wraplength=1040, justify="left", text=(
             "Names not in the item list, with the closest item. Enter = accept · M = pick an "
             "item · K = keep the name · Delete = delete its listings.")).pack(anchor="w", pady=(0, 6))
@@ -4508,12 +4744,55 @@ class App:
         except Exception:
             messagebox.showinfo("Data folder", path)
 
+    def _megaphone_offers_table(self, parent, item):
+        """A list of the megaphones that sell or buy `item`; returns (frame, how many)."""
+        t = make_tree(parent, ("time", "side", "mprice", "player", "channel", "message"))
+        t.column("#0", width=0, minwidth=0)
+        t.column("message", stretch=True, width=520)
+        t.column("time", width=150)
+        t.heading("side", text="Buying / Selling")
+        hours = max(1, float(self.cfg.get("megaphone_hours", 72) or 72))
+        rows = self.con.execute(
+            "SELECT m.ts, o.side, o.price, o.note, m.player, m.channel, m.message FROM megaphone_offers o "
+            "JOIN megaphones m ON m.id = o.megaphone_id WHERE o.item = ? AND m.ts >= ? ORDER BY m.ts DESC",
+            (item, mfm.utc_ago(hours=hours))).fetchall()
+        for ts, side, price, note, player, channel, msg in rows:
+            p = mfm.fmt(price) if price else ""
+            if note:
+                p = f"{note} {p}".strip()
+            t.insert("", "end", values=(mfm.local_time(ts), "Buying" if side == "buy" else "Selling", p,
+                                        player or "", mfm.channel_label(channel) if channel else "", msg))
+
+        def copy(_=None):
+            vals = [t.set(k, "message") for k in t.selection()]
+            if vals:
+                self.root.clipboard_clear()
+                self.root.clipboard_append("\n".join(vals))
+        t.bind("<Double-1>", copy)
+        return t.frame, len(rows)
+
+    def _megaphone_history(self, item):
+        """An item only seen in megaphones (no shop listings yet)."""
+        win = tk.Toplevel(self.root)
+        win.title(item)
+        win.geometry("1000x480")
+        head = ttk.Frame(win, padding=(12, 10, 12, 0))
+        head.pack(fill="x")
+        ttk.Label(head, text="  " + item, image=self.icon_for(item, 48), compound="left",
+                  style="Big.TLabel").pack(side="left")
+        ttk.Label(win, padding=(12, 4), text="Not seen in any shop yet. Megaphones that mention it "
+                  "(double-click one to copy it):").pack(anchor="w")
+        frame, _ = self._megaphone_offers_table(win, item)
+        frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+
     def open_history(self, tree):
         sel = tree.selection()
         if not sel:
             return
         item = tree.set(sel[0], "item")
         if not self.con.execute("SELECT 1 FROM listings WHERE item = ?", (item,)).fetchone():
+            if self.con.execute("SELECT 1 FROM megaphone_offers WHERE item = ?", (item,)).fetchone():
+                return self._megaphone_history(item)
             messagebox.showinfo(item, f"'{item}' hasn't been seen in any shop yet.", parent=self.root)
             return
         win = tk.Toplevel(self.root)
@@ -4539,10 +4818,14 @@ class App:
             + ("Option+click" if MAC else "Alt+click") + " selects several."))
         hint.pack(anchor="w", fill="x")
         hint.bind("<Configure>", lambda e: hint.config(wraplength=max(e.width - 24, 200)))
-        table = make_tree(win, ("each", "status", "notes", "shop", "player", "map", "channel", "time"))
+        tabs = ttk.Notebook(win)
+        tabs.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        table = make_tree(tabs, ("each", "status", "notes", "shop", "player", "map", "channel", "time"))
         table.column("#0", width=0, minwidth=0)   # one item: no per-row icon needed
         table.column("status", width=130)
-        table.frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        tabs.add(table.frame, text="  Shop listings  ")
+        n_mega = self._megaphone_offers_table(tabs, item)
+        tabs.add(n_mega[0], text=f"  Megaphones ({n_mega[1]})  " if n_mega[1] else "  Megaphones  ")
         st = {"rows": [], "out": [], "mkt": None, "bounds": None}
 
         def load():

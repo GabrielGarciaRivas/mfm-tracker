@@ -126,8 +126,9 @@ server's VPN IP as the address. No port forwarding is needed then.
   then `reset-password NAME` and `enable-user NAME` to give it back.
 - Plain HTTP sends passwords and tokens unencrypted. That's fine on your home network or
   over a VPN. Over the internet, use HTTPS (below).
-- Only price sightings and megaphones are stored: item, price, shop, player name, map,
-  channel, times, notes and megaphone messages, plus who sent them and from where.
+- Only price sightings, megaphones and nicknames are stored: item, price, shop, player
+  name, map, channel, times, notes, megaphone messages and item nicknames, plus who sent
+  them and from where.
 
 ## HTTPS (optional)
 
@@ -252,11 +253,13 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `POST /api/v1/login` with `{"username", "password"}` | `{"token", "user": {"id", "name"}, "expires"}` |
 | `POST /api/v1/logout` | ends this token |
 | `POST /api/v1/password` with `{"password", "new_password"}` | changes it; signs out your other devices |
-| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "seq", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
+| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "nicknames", "seq", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
+| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item" |
+| `GET /api/v1/nicknames?since=SEQ` | `{"nicknames": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,
 last_seen, notes}`, with times in UTC (`2026-10-17T20:00:00Z`). Every new or changed

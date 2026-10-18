@@ -150,6 +150,12 @@ class Server:
     def megaphone_changes(self, since: int, hours: float) -> dict:
         return self.call("GET", "/api/v1/megaphones", query={"since": since, "hours": hours, "limit": 2000})
 
+    def send_nicknames(self, nicknames: list[dict]) -> dict:
+        return self.call("POST", "/api/v1/nicknames", {"nicknames": nicknames})
+
+    def nickname_changes(self, since: int) -> dict:
+        return self.call("GET", "/api/v1/nicknames", query={"since": since, "limit": 5000})
+
 
 # --------------------------------------------------------------------------- local side
 
@@ -172,6 +178,10 @@ def reset_megaphones(con, url: str) -> None:
     prepare(con)
     con.execute("DELETE FROM shared_state WHERE server = ?", (normalize_url(url) + "#megaphones",))
     con.commit()
+
+
+def _nick_sig(item, deleted) -> str:
+    return json.dumps([item or "", 1 if deleted else 0])
 
 
 def _sig(r: dict) -> str:
@@ -250,6 +260,8 @@ class SharedSync:
                 self._receive(con)
                 self._send_megaphones(con)
                 self._receive_megaphones(con)
+                self._send_nicknames(con)
+                self._receive_nicknames(con)
                 self._status(True, "Connected")
             except SignedOut as e:
                 forget_login()                # the token is no good any more
@@ -311,7 +323,8 @@ class SharedSync:
         """Catch up after being offline (or on first connecting):
         - sightings logged here while not connected are sent (as far back as sightings
           are kept), and so are changes made to shared ones (sold, seen again, notes);
-        - megaphones read here while not connected are sent;
+        - megaphones read here while not connected are sent, and so are nicknames
+          taught here;
         - everything on the server is read again, so nothing missed while offline (or
           deleted here) is left out."""
         days = self._keep_days()
@@ -322,11 +335,15 @@ class SharedSync:
             self._status(True, f"Catching up with the server… sent {self.sent:,}")
         while not self.stop_event.is_set() and self._send_megaphones(con):
             pass
+        while not self.stop_event.is_set() and self._send_nicknames(con):
+            pass
         url = self.server.url
-        con.execute("DELETE FROM shared_state WHERE server IN (?, ?)", (url, url + "#megaphones"))
+        con.execute("DELETE FROM shared_state WHERE server IN (?, ?, ?)", (url, url + "#megaphones",
+                                                                           url + "#nicknames"))
         con.commit()
         self._receive(con)
         self._receive_megaphones(con)
+        self._receive_nicknames(con)
 
     # -- server -> local
     def _receive(self, con) -> None:
@@ -433,8 +450,66 @@ class SharedSync:
             con.commit()
             if not res.get("more"):
                 break
-        if new:
+        # work out the items and prices of new or better-read megaphones
+        if mfm.update_offers(con) or new:
             self.on_megaphones(new)
+
+    # -- nicknames (what players call items in megaphones)
+    def _has_nicknames(self) -> bool:
+        return "nicknames" in self.info       # servers before 2.2.0 don't keep them
+
+    def _send_nicknames(self, con) -> int:
+        if not self._has_nicknames():
+            return 0
+        rows = [r for r in con.execute("SELECT key, item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames")
+                if _nick_sig(r[1], r[2]) != r[4]][:500]
+        if not rows:
+            return 0
+        self.server.send_nicknames([{"key": k, "item": i or "", "deleted": bool(d), "updated": u}
+                                    for k, i, d, u, _ in rows])
+        for k, i, d, _, _ in rows:
+            con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (_nick_sig(i, d), k))
+        con.commit()
+        return len(rows)
+
+    def _receive_nicknames(self, con) -> None:
+        if not self._has_nicknames():
+            return
+        key = self.server.url + "#nicknames"
+        row = con.execute("SELECT seq FROM shared_state WHERE server = ?", (key,)).fetchone()
+        seq = row[0] if row else 0
+        changed = 0
+        while True:
+            res = self.server.nickname_changes(seq)
+            for n in res.get("nicknames", []):
+                k, item, deleted = str(n.get("key") or ""), n.get("item") or "", 1 if n.get("deleted") else 0
+                if not k:
+                    continue
+                sig = _nick_sig(item, deleted)
+                local = con.execute("SELECT item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames "
+                                    "WHERE key = ?", (k,)).fetchone()
+                if local:
+                    if _nick_sig(local[0], local[1]) == sig:
+                        con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (sig, k))
+                        continue
+                    unsent = _nick_sig(local[0], local[1]) != local[3]
+                    if unsent and (local[2] or "") > (n.get("updated") or ""):
+                        continue              # changed here more recently: ours gets sent
+                    con.execute("UPDATE nicknames SET item = ?, deleted = ?, updated = ?, by = ?, shared_sig = ? "
+                                "WHERE key = ?", (item, deleted, n.get("updated") or mfm.utc_now(), n.get("by"),
+                                                  sig, k))
+                else:
+                    con.execute("INSERT INTO nicknames (key, item, deleted, added, by, updated, shared_sig) "
+                                "VALUES (?,?,?,?,?,?,?)", (k, item, deleted, mfm.utc_now(), n.get("by"),
+                                                           n.get("updated") or mfm.utc_now(), sig))
+                changed += 1
+            seq = res.get("seq", seq)
+            con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)", (key, seq))
+            con.commit()
+            if not res.get("more"):
+                break
+        if changed and mfm.update_offers(con):
+            self.on_megaphones(0)
 
 
 def sign_in(url: str, username: str, password: str) -> dict:

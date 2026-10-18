@@ -34,8 +34,8 @@ API (JSON over HTTP):
   Every other /api call needs "Authorization: Bearer <token>":
   POST /api/v1/logout                      ends this sign-in
   POST /api/v1/password  {"password", "new_password"}   change your password
-  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "seq", "you",
-                                           "keep_days", "megaphone_hours"}
+  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "nicknames", "seq",
+                                           "you", "keep_days", "megaphone_hours"}
   POST /api/v1/sightings                   {"sightings": [ {uid, ts, item, price, qty, shop,
                                            seller, map, channel, sold, sold_ts, last_seen,
                                            notes}, ... ]}  (at most 500 at a time)
@@ -45,6 +45,10 @@ API (JSON over HTTP):
   POST /api/v1/megaphones                  {"megaphones": [ {uid, ts, player, channel, message, kind,
                                            color, conf}, ... ]}  -> {"seq", "same": {...}}
   GET  /api/v1/megaphones?since=SEQ&hours=H -> {"megaphones": [...], "seq", "more"}
+  POST /api/v1/nicknames                   {"nicknames": [ {key, item, deleted, updated}, ... ]}
+                                           (item "" = "not an item"; the newest change wins)
+                                           -> {"seq", "same": {}}
+  GET  /api/v1/nicknames?since=SEQ         -> {"nicknames": [...], "seq", "more"}
 Every stored or changed sighting (or megaphone) gets the next "seq" number, so a
 client asks for everything after the last number it has seen.
 """
@@ -67,7 +71,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -153,6 +157,16 @@ def db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_mega_seq ON megaphones(seq);
         CREATE INDEX IF NOT EXISTS idx_mega_ts ON megaphones(ts);
+        CREATE TABLE IF NOT EXISTS nicknames (      -- what players call items in megaphones
+            key TEXT PRIMARY KEY,
+            seq INTEGER NOT NULL,
+            item TEXT NOT NULL DEFAULT '',          -- '' = "not an item"
+            deleted INTEGER NOT NULL DEFAULT 0,
+            updated TEXT,                           -- when the player changed it (newest wins)
+            added_by TEXT, added_by_id TEXT, added_ip TEXT, added TEXT,
+            updated_by TEXT, updated_by_id TEXT, updated_ip TEXT, stored TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_nick_seq ON nicknames(seq);
     """)
     # who sent each row: the account's id and name, and the IP it came from
     for table, cols in (("sightings", ("added_by_id", "added_ip", "updated_by_id", "updated_ip")),
@@ -523,6 +537,55 @@ def prune_megaphones(con, hours: float) -> int:
     return n
 
 
+# --------------------------------------------------------------------------- nicknames
+# Players teach their app what a megaphone phrase means ("kumbis" = Kumbi
+# Throwing-Stars). Those are shared here so a new player starts with them.
+
+_KEY_RE = re.compile(r"^[a-z0-9% ]{1,80}$")
+
+
+def store_nicknames(con, nicknames: list[dict], by: dict) -> tuple[int, dict]:
+    now = utc_now()
+    with _lock:
+        for raw in nicknames:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or "").strip().lower()
+            if not _KEY_RE.match(key):
+                continue
+            item = str(raw.get("item") or "").strip()[:120]
+            deleted = 1 if raw.get("deleted") else 0
+            updated = str(raw.get("updated") or now)[:25]
+            if updated > now:                       # a clock ahead of ours can't win forever
+                updated = now
+            row = con.execute("SELECT item, deleted, updated FROM nicknames WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                con.execute("INSERT INTO nicknames (key, seq, item, deleted, updated, added_by, added_by_id, "
+                            "added_ip, added, updated_by, updated_by_id, updated_ip, stored) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (key, next_seq(con), item, deleted, updated, by["name"], by["id"], by["ip"], now,
+                             by["name"], by["id"], by["ip"], now))
+            elif (row[0], row[1]) != (item, deleted) and updated >= (row[2] or ""):
+                con.execute("UPDATE nicknames SET seq=?, item=?, deleted=?, updated=?, updated_by=?, "
+                            "updated_by_id=?, updated_ip=?, stored=? WHERE key=?",
+                            (next_seq(con), item, deleted, updated, by["name"], by["id"], by["ip"], now, key))
+        con.commit()
+        return last_seq(con), {}
+
+
+def nickname_changes(con, since: int, limit: int) -> tuple[list[dict], int, bool]:
+    cols = ("key", "seq", "item", "deleted", "updated", "updated_by")
+    with _lock:
+        newest = last_seq(con)
+        rows = con.execute(f"SELECT {', '.join(cols)} FROM nicknames WHERE seq > ? ORDER BY seq LIMIT ?",
+                           (since, limit + 1)).fetchall()
+    more = len(rows) > limit
+    out = [dict(zip(cols, r)) for r in rows[:limit]]
+    for r in out:
+        r["by"] = r.pop("updated_by")
+    return out, (out[-1]["seq"] if more else newest), more
+
+
 # --------------------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -580,8 +643,9 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/v1/status":
             n = self.con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
             m = self.con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
+            k = self.con.execute("SELECT COUNT(*) FROM nicknames WHERE deleted = 0").fetchone()[0]
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
-                                    "sightings": n, "megaphones": m, "megaphone_hours": MEGA_HOURS,
+                                    "sightings": n, "megaphones": m, "nicknames": k, "megaphone_hours": MEGA_HOURS,
                                     "keep_days": int(os.environ.get("MFM_KEEP_DAYS", "30")),
                                     "seq": last_seq(self.con), "you": {"id": user["id"], "name": user["name"]}})
         if url.path == "/api/v1/sightings":
@@ -603,6 +667,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "since, hours and limit must be numbers"})
             rows, seq, more = megaphone_changes(self.con, since, hours, limit)
             return self._send(200, {"megaphones": rows, "seq": seq, "more": more})
+        if url.path == "/api/v1/nicknames":
+            q = parse_qs(url.query)
+            try:
+                since = int(q.get("since", ["0"])[0])
+                limit = max(1, min(5000, int(q.get("limit", ["5000"])[0])))
+            except ValueError:
+                return self._send(400, {"error": "since and limit must be numbers"})
+            rows, seq, more = nickname_changes(self.con, since, limit)
+            return self._send(200, {"nicknames": rows, "seq": seq, "more": more})
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -645,7 +718,7 @@ class Handler(BaseHTTPRequestHandler):
             end_sessions(self.con, user["id"], keep=user["token_hash"])   # other devices sign in again
             event(self.con, user, ip, "password changed")
             return self._send(200, {"ok": True})
-        if path not in ("/api/v1/sightings", "/api/v1/megaphones"):
+        if path not in ("/api/v1/sightings", "/api/v1/megaphones", "/api/v1/nicknames"):
             return self._send(404, {"error": "not found"})
         what = path.rsplit("/", 1)[1]
         body = self._body()
@@ -653,7 +726,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(items, list) or len(items) > MAX_BATCH:
             return self._send(400, {"error": f'send {{"{what}": [...]}} with at most {MAX_BATCH}'})
         try:
-            seq, same = (store if what == "sightings" else store_megaphones)(self.con, items, user)
+            fn = {"sightings": store, "megaphones": store_megaphones, "nicknames": store_nicknames}[what]
+            seq, same = fn(self.con, items, user)
         except Exception as e:
             log(f"store failed: {type(e).__name__}: {e}")
             return self._send(500, {"error": "server error"})
@@ -798,7 +872,8 @@ def main(argv: list[str]) -> int:
         n = con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         items = con.execute("SELECT COUNT(DISTINCT item) FROM sightings").fetchone()[0]
         m = con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
-        print(f"{n} sightings of {items} items, {m} megaphones; {DB_PATH.stat().st_size / 1e6:.1f} MB")
+        k = con.execute("SELECT COUNT(*) FROM nicknames WHERE deleted = 0").fetchone()[0]
+        print(f"{n} sightings of {items} items, {m} megaphones, {k} nicknames; {DB_PATH.stat().st_size / 1e6:.1f} MB")
         _table(con.execute("SELECT added_by, added_by_id, COUNT(*) FROM sightings GROUP BY added_by_id "
                            "ORDER BY 3 DESC").fetchall(), ("user", "id", "sightings"))
         return 0

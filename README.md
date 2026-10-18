@@ -106,15 +106,20 @@ channels the picker shows, in **Settings**.
 - **Deals:** listings still for sale, best deals first. Tick **Include sold** to see sold
   ones.
 - **Items:** every item you've seen: the cheapest listing still for sale and where it is,
-  listed and sold prices, market price, and the NPC buy / sell prices. Filter by name,
+  listed and sold prices, market price, the median prices in selling and buying
+  megaphones, and the NPC buy / sell prices. Filter by name,
   category, class, level or "Sold by NPCs" with the bar above it.
-- **Review:** names that didn't match an item in the database. Press **Enter** to accept
-  the suggested item, **M** to pick one yourself, **K** to keep the name, **Delete** to
-  remove it.
+- **Review:** things that didn't match an item in the database, in two tabs:
+  - **Shop listings:** names read from shops. Press **Enter** to accept the suggested
+    item, **M** to pick one yourself, **K** to keep the name, **Delete** to remove it.
+  - **Megaphones:** what megaphones sell or buy that isn't matched to an item yet, with a
+    **Buying / Selling** column. **Enter** accepts the suggested item, **M** picks one,
+    **Delete** marks it as "not an item". See [Nicknames](#nicknames).
 - **Watched**, **Ignored** and **My Inventory:** see below.
 
-Double-click any item for its **price history**: a chart and every sighting. Right-click a
-sighting to change its price or channel, add a note, watch it, or delete it.
+Double-click any item for its **price history**: a chart and every sighting, plus a
+**Megaphones** tab with every megaphone selling or buying it. Right-click a sighting to
+change its price or channel, add a note, watch it, or delete it.
 
 Right-click items in any table for more options: watch the item, add a note, watch the
 listing, ignore, match to the right item, delete a bad read, or look the item up on meowdb.
@@ -134,9 +139,30 @@ shows what's being read.
 - Long megaphones that wrap onto more lines are read in full. Repeated symbols at the end
   (like @@@@@@) are left out.
 
+Each item in a megaphone gets its own row, with the item's icon, name, price and market
+price. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the beanie at
+520,000 under Selling and the scepter under Buying. The app finds the item from:
+
+- an item link in brackets, like `[Korean Fan]`;
+- a nickname it has learned, like "kumbis";
+- the item's name, even with a plural "s".
+
+Prices like 90k, 1.5m, 3,2 mil and 250,000 are read. "c/o" (current offer), "each" and
+"PM offer" are shown next to the price. If the item isn't found, the row shows the
+message with no item, and the phrase goes to **Review → Megaphones**.
+
 Megaphones are kept for 72 hours and then deleted; change this with the box at the top of
-the tab. Right-click a megaphone to copy its message or player name, or delete it. If the chat
-window isn't found, click **Chat area** and draw a box around the chat messages.
+the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
+item's history, copy its message or player name, or delete it. If the chat window isn't
+found, click **Chat area** and draw a box around the chat messages.
+
+### Nicknames
+
+Players call items many things ("kumbis" for Kumbi Throwing-Stars). When you match a
+megaphone phrase to an item (in **Review → Megaphones**, or by right-clicking it), the app
+learns it as a nickname and uses it for every megaphone from then on, including older ones.
+"Not an item" teaches it to ignore a phrase. **Nicknames** (at the bottom of
+Review → Megaphones) lists everything learned, to change or remove.
 
 ## Notes
 
@@ -244,9 +270,10 @@ While connected, your new sightings are saved both here and on the server, sold 
 seen-again updates go to it too, and everyone else's sightings are copied into your
 prices every few seconds. Only items from the item list are shared: a name in Review is
 shared once you match it to an item. Megaphones are shared too: when several players
-read the same one, the clearest read is kept. The server keeps megaphones for 72 hours;
+read the same one, the clearest read is kept. Nicknames are shared as well, so a new player
+starts with everything the group has taught. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
-prices and megaphones logged while you weren't connected are sent, and anything you
+prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;
 **Stop sharing** disconnects. Everything you send is marked with your account, so use
 your own.

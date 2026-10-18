@@ -2,6 +2,20 @@
 
 ## 2610.17.001 — 2026-10-17
 
+### New
+- **Megaphone items and prices:** each item a megaphone sells or buys gets its own row in
+  the Megaphones tab, with the item's icon, name, price and market price. Items are found
+  from item links, names and learned nicknames.
+- **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
+  in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
+  Delete marks it as not an item. Older megaphones are updated right away.
+- **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
+  a Buying / Selling column.
+- The Items tab shows the median megaphone selling and buying prices, and the price
+  history window has a Megaphones tab.
+- **Shared Database:** nicknames are shared too, so new players don't have to teach them
+  again (needs server 2.2.0).
+
 ### Changed
 - Megaphones are kept for 72 hours by default (was 24).
 - **Scroll as fast as you like.** The screen is captured continuously, like a recording,
