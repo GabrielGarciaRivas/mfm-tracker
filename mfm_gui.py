@@ -136,7 +136,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
         "side": "Buying / Selling", "phrase": "In the megaphone", "mprice": "Price", "msell": "Megaphones: selling",
-        "mbuy": "Megaphones: buying",
+        "mbuy": "Megaphones: buying", "nick": "Megaphone item", "nitem": "Matched item name",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -146,7 +146,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
          "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600,
-         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "nick": 260, "nitem": 300, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
@@ -2022,6 +2022,7 @@ class App:
         sp.bind("<FocusOut>", lambda e: self._mega_hours_changed())
         tip("Megaphones older than this are deleted.", sp)
         ttk.Label(top, text="hours. Newest first, read from the chat window while monitoring.").pack(side="left")
+        self._nickname_buttons(top).pack(side="left", padx=(12, 0))
         self.mega_status = ttk.Label(top, foreground="#666")
         self.mega_status.pack(side="right")
         # right: what the OCR sees (the chat window, megaphones outlined)
@@ -3320,6 +3321,7 @@ class App:
             "app a nickname, used for every megaphone from then on (and shared through the Shared "
             "Database). Enter = accept the suggestion · M = pick an item · Delete = not an item.")
                   ).pack(anchor="w", pady=(0, 6))
+        self._nickname_buttons(tab).pack(fill="x", pady=(0, 6))
         t = make_tree(tab, ("phrase", "side", "mprice", "suggest", "score", "count", "message"))
         t.heading("count", text="Seen")
         t.column("message", stretch=True)
@@ -3340,11 +3342,8 @@ class App:
         bottom = ttk.Frame(tab)
         bottom.pack(fill="x", pady=(6, 0))
         ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
-        ttk.Button(bottom, text="Match", command=self.mreview_match).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Match manually", command=self.mreview_match).pack(side="left", padx=4)
         ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
-        b = ttk.Button(bottom, text="Nicknames", command=self.nicknames_window)
-        b.pack(side="right")
-        tip("Every nickname the app has learned: change or remove them.", b)
         self.refresh_megaphone_review()
         # read items and prices from megaphones saved before (or by an older version)
         self.root.after(800, self._nicknames_changed)
@@ -3409,48 +3408,199 @@ class App:
         if sel:
             self._nicknames_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
 
-    def nicknames_window(self):
-        win = tk.Toplevel(self.root)
-        win.title("Nicknames")
-        win.geometry("640x480")
-        win.transient(self.root)
-        ttk.Label(win, padding=(10, 8), wraplength=600, justify="left", text=(
-            "What players call items in megaphones, as the app has learned it. \"Not an item\" means the "
-            "phrase is ignored.")).pack(anchor="w")
-        t = make_tree(win, ("phrase", "item"))
-        t.heading("phrase", text="Nickname")
-        t.heading("item", text="Item")
-        t.column("item", width=300)
-        t.frame.pack(fill="both", expand=True, padx=10)
+    def _nickname_buttons(self, parent):
+        bar = ttk.Frame(parent)
+        b = ttk.Button(bar, text="Add manual nicknames", command=self.nicknames_window)
+        b.pack(side="left")
+        tip("A sheet of every nickname: what megaphones call an item, and the item it is. "
+            "Add, change or remove them.", b)
+        b = ttk.Button(bar, text="Refresh", command=self.reapply_nicknames)
+        b.pack(side="left", padx=(6, 0))
+        tip("Match every megaphone again with the current nicknames. Phrases that now match "
+            "leave Review.", b)
+        return bar
 
-        def fill():
+    def reapply_nicknames(self):
+        """Read every megaphone again with the current nicknames (in the background)."""
+        if getattr(self, "_reapplying", False):
+            return
+        self._reapplying = True
+        self._set_status("Matching megaphones with the nicknames…")
+        hours = max(1, float(self.cfg.get("megaphone_hours", 72) or 72))
+
+        def work():
+            con = mfm.db()
+            try:
+                before = {r["key"] for r in mfm.unmatched_offers(con, hours)}
+                mfm.update_offers(con, force=True)
+                after = {r["key"] for r in mfm.unmatched_offers(con, hours)}
+                n = len(before - after)
+                msg = (f"Refreshed: {mfm.plural(n, 'phrase')} matched and removed from Review." if n
+                       else "Refreshed: no new matches.")
+            except Exception as e:
+                msg = f"Refresh failed: {e}"
+            finally:
+                con.close()
+
+            def done():
+                self._reapplying = False
+                self.refresh_megaphones()
+                self.refresh_megaphone_review()
+                self._set_status(msg)
+            self.events.put(("call", done))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _item_named(self, parent, text):
+        """The item for what was typed: the exact name (any capitals), else ask."""
+        text = " ".join((text or "").split())
+        if not text:
+            return None
+        hit = mfm._item_index().get(mfm.nick_key(text))   # the name as the item list spells it
+        if hit:
+            return hit
+        if mfm.is_known_item(text):
+            return text
+        return self._choose_item(parent, f"Which item is \"{text}\"?", text)
+
+    NOT_ITEM = "(not an item)"
+
+    def nicknames_window(self):
+        """An editable sheet of nicknames: "Megaphone item" (what players write) and
+        "Matched item name". Click a cell (or press Enter / F2) to type in it."""
+        if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():
+            self._nick_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        self._nick_win = win
+        win.title("Nicknames")
+        win.geometry("760x520")
+        win.transient(self.root)
+        ttk.Label(win, padding=(10, 8), wraplength=720, justify="left", text=(
+            "What players write in megaphones, and the item it means. Click a cell to type in it "
+            "(Enter saves, Esc cancels). Type the item's name in \"Matched item name\"; if it isn't an "
+            "exact name you'll be asked to pick. Leave it empty for \"not an item\". The last row adds a "
+            "new nickname. Delete removes the selected ones.")).pack(anchor="w")
+        t = make_tree(win, ("nick", "nitem"))
+        t.column("nitem", stretch=True)
+        t.tag_configure("new", foreground="#888")
+        t.tag_configure("ignored", foreground="#888")
+        t.frame.pack(fill="both", expand=True, padx=10)
+        NEW = "__new__"
+        pending = {}                     # rows with a nickname typed but no item yet
+
+        def fill(select=None):
             t.delete(*t.get_children())
             for key, item in sorted(mfm.load_nicknames(self.con).items()):
-                t.insert("", "end", iid=key, image=self.icon_for(item) if item else "",
-                         values=(key, item or "(not an item)"))
+                t.insert("", "end", iid="k:" + key, image=self.icon_for(item) if item else "",
+                         tags=() if item else ("ignored",), values=(key, item or self.NOT_ITEM))
+            for pid, phrase in pending.items():
+                t.insert("", "end", iid=pid, values=(phrase, ""))
+            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add a nickname)", ""))
+            if select and t.exists(select):
+                t.selection_set(select)
+                t.focus(select)
+                t.see(select)
 
-        def change():
-            sel = t.selection()
-            if not sel:
+        def saved(key):
+            fill("k:" + key)
+            self._nicknames_changed()
+
+        def on_done(tree, row, col, raw):
+            raw = " ".join((raw or "").split())
+            if row == NEW:
+                if col != "nick" or not mfm.nick_key(raw):
+                    return
+                pid = f"p:{len(pending) + 1}:{time.monotonic()}"
+                pending[pid] = raw
+                fill(pid)
+                win.after(50, lambda: start_edit(pid, "nitem"))   # straight on to its item
                 return
-            name = self._choose_item(win, f"Which item is \"{sel[0]}\"?", t.set(sel[0], "item"))
-            if name:
-                mfm.set_nickname(self.con, sel[0], name)
-                fill()
-                self._nicknames_changed()
+            if row in pending:
+                if col == "nick":
+                    if mfm.nick_key(raw):
+                        pending[row] = raw
+                    fill(row)
+                    return
+                item = None if raw.lower() in ("", self.NOT_ITEM, "-", "not an item") else \
+                    self._item_named(win, raw)
+                if raw and item is None and raw.lower() not in (self.NOT_ITEM, "-", "not an item"):
+                    return                      # cancelled the pick
+                phrase = pending.pop(row)
+                saved(mfm.set_nickname(self.con, phrase, item))
+                return
+            key = row[2:]
+            if col == "nick":
+                new = mfm.nick_key(raw)
+                if not new or new == key:
+                    return
+                item = mfm.load_nicknames(self.con).get(key, "")
+                mfm.delete_nickname(self.con, key)
+                saved(mfm.set_nickname(self.con, new, item or None))
+            else:
+                if raw.lower() in ("", self.NOT_ITEM, "-", "not an item"):
+                    saved(mfm.set_nickname(self.con, key, None))
+                    return
+                item = self._item_named(win, raw)
+                if item:
+                    saved(mfm.set_nickname(self.con, key, item))
+
+        def start_edit(row, col):
+            if t.exists(row):
+                if row == NEW:
+                    t.set(NEW, "nick", "")
+                t.see(row)
+                t.update_idletasks()
+                self._inline_edit(t, row, col, on_done)
+
+        def on_double(e):
+            row, col = t.identify_row(e.y), self._clicked_column(t, e)
+            if row and col:
+                self._cancel_inline(t)
+                start_edit(row, col)
 
         def remove():
-            for key in t.selection():
-                mfm.delete_nickname(self.con, key)
+            keys = [k for k in t.selection() if k.startswith("k:")]
+            for k in t.selection():
+                pending.pop(k, None)
+            for k in keys:
+                mfm.delete_nickname(self.con, k[2:])
             fill()
-            self._nicknames_changed()
-        t.bind("<Double-1>", lambda e: change())
+            if keys:
+                self._nicknames_changed(f"Removed {mfm.plural(len(keys), 'nickname')}.")
+
+        def edit_selected(col):
+            sel = t.selection()
+            if sel:
+                start_edit(sel[0], col)
+
+        self._inline_editing(t, ("nick", "nitem"), on_done)
+        t.inline_state["before"] = ()
+        t.bind("<Double-1>", on_double)
+        t.bind("<Return>", lambda e: edit_selected("nitem"))
+        t.bind("<F2>", lambda e: edit_selected("nick"))
         t.bind("<Delete>", lambda e: remove())
+        t.bind("<BackSpace>", lambda e: remove())
+
+        def click_new(e):                # one click on the last row starts a new nickname
+            if t.identify_row(e.y) == NEW:
+                win.after(10, lambda: start_edit(NEW, "nick"))
+        t.bind("<ButtonRelease-1>", click_new, add="+")
         bar = ttk.Frame(win, padding=10)
         bar.pack(fill="x")
-        ttk.Button(bar, text="Change item", command=change).pack(side="left")
-        ttk.Button(bar, text="Remove", command=remove).pack(side="left", padx=6)
+        ttk.Button(bar, text="Add a nickname", command=lambda: start_edit(NEW, "nick")).pack(side="left")
+        ttk.Button(bar, text="Pick the item…", command=lambda: pick()).pack(side="left", padx=6)
+        ttk.Button(bar, text="Remove", command=remove).pack(side="left")
         ttk.Button(bar, text="Close", command=win.destroy).pack(side="right")
+
+        def pick():
+            sel = [k for k in t.selection() if k != NEW]
+            if not sel:
+                return
+            cur = t.set(sel[0], "nitem")
+            name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'nick')}\"?",
+                                     "" if cur == self.NOT_ITEM else cur)
+            if name:
+                on_done(t, sel[0], "nitem", name)
         fill()
 
     # ------------------------------------------------------------------ review
@@ -3515,7 +3665,8 @@ class App:
         bottom = ttk.Frame(tab)
         bottom.pack(fill="x", pady=(6, 0))
         ttk.Button(bottom, text="Accept suggestion", command=self.review_accept).pack(side="left")
-        ttk.Button(bottom, text="Match", command=lambda: self.match_dialog(self.review)).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Match manually", command=lambda: self.match_dialog(self.review)).pack(side="left",
+                                                                                               padx=4)
         ttk.Button(bottom, text="Keep as is", command=self.review_keep).pack(side="left")
         ttk.Button(bottom, text="Delete listings", command=self.review_delete).pack(side="left", padx=4)
         ttk.Button(bottom, text="Accept all 90%+ alike", command=self.review_accept_confident

@@ -164,8 +164,16 @@ found, click **Chat area** and draw a box around the chat messages.
 Players call items many things ("kumbis" for Kumbi Throwing-Stars). When you match a
 megaphone phrase to an item (in **Review → Megaphones**, or by right-clicking it), the app
 learns it as a nickname and uses it for every megaphone from then on, including older ones.
-"Not an item" teaches it to ignore a phrase. **Nicknames** (at the bottom of
-Review → Megaphones) lists everything learned, to change or remove.
+"Not an item" teaches it to ignore a phrase.
+
+Two buttons at the top of the Megaphones tab and of Review → Megaphones:
+
+- **Add manual nicknames** opens a sheet of every nickname, with two columns:
+  **Megaphone item** (what players write) and **Matched item name**. Click a cell to type
+  in it; the last row adds a new one, and **Delete** removes the selected ones. If the item
+  name you type isn't exact, you're asked to pick the item. Leave it empty for "not an item".
+- **Refresh** matches every megaphone again with the current nicknames. Phrases that now
+  match an item leave Review → Megaphones.
 
 ## Notes
 

@@ -9,9 +9,12 @@
 - **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
+- **Add manual nicknames:** a sheet of nicknames (Megaphone item, Matched item name) to
+  type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
+  matches every megaphone again with the current nicknames.
 - **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
   a Buying / Selling column. Shop listings shows the price, shop, player and channel in
-  their own columns.
+  their own columns. "Match" is now "Match manually".
 - A megaphone that isn't matched to an item yet shows its message as it was read until
   you match it in Review.
 - The Items tab shows the median megaphone selling and buying prices, and the price
