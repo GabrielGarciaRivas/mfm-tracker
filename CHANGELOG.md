@@ -1,5 +1,16 @@
 # Changelog
 
+## 2610.18.002 — 2026-10-18
+
+### Fixed
+- The window froze ("Not responding"), mostly on Windows with many megaphones from the
+  Shared Database. The Megaphones tab is now worked out in the background and only
+  redrawn when it's on screen, several new megaphones make one redraw, and background
+  work pauses while a big table is redrawn.
+- Review → Megaphones shows the 500 most-seen phrases (the count on the tab is still all
+  of them), and their suggested items are only worked out for those.
+- Bits of 1-2 letters ("CH") are no longer listed as megaphone items.
+
 ## 2610.18.001 — 2026-10-18
 
 ### New

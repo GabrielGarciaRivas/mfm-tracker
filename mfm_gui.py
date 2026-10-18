@@ -631,6 +631,10 @@ class ItemSearch(ttk.Frame):
 
 class App:
     def __init__(self, root: tk.Tk):
+        import sys
+        # threads take turns at Python's lock more often (default 5 ms): the window's
+        # many small Tk calls wait less while a background thread is busy
+        sys.setswitchinterval(0.001)
         self.root = root
         self.cfg = mfm.load_config()
         self.con = mfm.db()
@@ -842,6 +846,7 @@ class App:
         self.nb.select(live)
         # a table is only filled while its tab is showing; the others catch up when opened
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._fill_stale(), add="+")
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self._mega_tab_shown(), add="+")
         self._build_review_tab()
         self._build_watched_tab()
         self._build_ignore_tab()
@@ -1548,7 +1553,8 @@ class App:
         for name, tab, fill in tabs:
             if name in self._stale and hasattr(self, tab) and showing == str(getattr(self, tab)):
                 self._stale.discard(name)
-                fill(data[name])
+                with self._ui_busy():
+                    fill(data[name])
 
     def _fill_deals(self, scored):
         """The Deals table can run to thousands of rows (every listing seen in the
@@ -2011,6 +2017,7 @@ class App:
     def _build_megaphones_tab(self):
         tab = ttk.Frame(self.nb, padding=6)
         self.nb.insert(0, tab, text="  Megaphones  ")
+        self.mega_tab = tab
         top = ttk.Frame(tab)
         top.pack(fill="x", pady=(0, 6))
         ttk.Label(top, text="Keep megaphones for").pack(side="left")
@@ -2110,26 +2117,126 @@ class App:
                     self.shared.wake.set()
         self.refresh_megaphones()
 
-    def refresh_megaphones(self):
+    REVIEW_SHOWN = 500        # Review → Megaphones shows the most-seen phrases, at most this many
+
+    def refresh_megaphones(self, delay: int = 400):
+        """Bring the Megaphones tab and Review → Megaphones up to date. Asks are
+        gathered (several megaphones arriving at once make one refresh), the data is
+        read on a background thread, and only the tables on screen are redrawn: with
+        thousands of megaphones from the Shared Database this kept the window busy."""
+        self._mega_dirty = True
+        if getattr(self, "_mega_job", None) is None:
+            self._mega_job = self.root.after(delay, self._mega_start)
+
+    refresh_megaphone_review = refresh_megaphones
+
+    def _mega_visible(self) -> tuple[bool, bool]:
+        try:
+            showing = self.nb.select()
+            mega = hasattr(self, "mega_tab") and showing == str(self.mega_tab)
+            review = (hasattr(self, "review_nb") and showing == str(self.review_tab)
+                      and self.review_nb.select() == str(self.review_mega_tab))
+            return mega, review
+        except tk.TclError:
+            return False, False
+
+    def _mega_start(self):
+        self._mega_job = None
+        if not hasattr(self, "mega_trees") or not getattr(self, "_mega_dirty", False):
+            return
+        if getattr(self, "_mega_running", False):
+            return                                # it runs again when this one is done
+        mega, review = self._mega_visible()
+        self._mega_dirty = False
+        self._mega_running = True
+        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
+        purge = time.monotonic() - getattr(self, "_mega_purged", -1e9) > 60
+        cache = self.__dict__.setdefault("_mkt_cache", {})
+        asked = self.__dict__.setdefault("_mega_icon_asked", set())
+        cfg = dict(self.cfg)
+
+        def work():
+            data = {"mega": mega, "review": review}
+            con = mfm.db()
+            try:
+                if purge:
+                    try:
+                        mfm.purge_megaphones(con, hours)
+                        data["purged"] = True
+                    except sqlite3.OperationalError:
+                        con.rollback()
+                data["count"] = mfm.count_unmatched_offers(con, hours)
+                if mega:
+                    rows = con.execute(
+                        "SELECT m.id, m.ts, m.player, m.channel, m.message, m.kind, m.color, o.idx, o.side, o.item, "
+                        "o.phrase, o.price, o.note FROM megaphones m LEFT JOIN megaphone_offers o "
+                        "ON o.megaphone_id = m.id WHERE m.ts >= ? AND m.kind IS NOT NULL "
+                        "ORDER BY m.ts DESC, m.id DESC, o.idx", (mfm.utc_ago(hours=hours),)).fetchall()
+                    now = time.monotonic()
+                    markets = {}
+                    for item in {r[9] for r in rows if r[9]}:
+                        hit = cache.get(item)
+                        if hit is None or now - hit[1] > 120:      # market prices: once every 2 minutes
+                            hit = cache[item] = (mfm.market_rate(con, item, cfg)[0], now)
+                        markets[item] = hit[0]
+                    data["rows"], data["markets"] = rows, markets
+                    data["missing"] = [i for i in markets if i not in asked and mfm.load_icon(con, i) is None]
+                if review:
+                    data["review_rows"] = mfm.unmatched_offers(con, hours, limit=self.REVIEW_SHOWN)
+            except Exception as e:
+                data["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                con.close()
+            self.events.put(("call", lambda: self._mega_apply(data)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mega_apply(self, data):
+        self._mega_running = False
+        if data.get("purged"):
+            self._mega_purged = time.monotonic()
+        if "error" in data:
+            self._set_status("Megaphones: " + data["error"])
+        with self._ui_busy():
+            if "rows" in data:
+                self._fill_megaphones(data["rows"], data["markets"])
+            if "review_rows" in data:
+                self._fill_megaphone_review(data["review_rows"], data["count"])
+        self._mega_review_n = data.get("count", getattr(self, "_mega_review_n", 0))
+        if hasattr(self, "review_tab"):
+            self._review_title()
+        missing = data.get("missing") or []
+        if missing:
+            self._mega_icon_asked.update(missing)
+            self.fetch_icons_async(missing)
+        # what isn't on screen now is drawn when its tab is opened
+        mega, review = self._mega_visible()
+        if (mega and not data["mega"]) or (review and not data["review"]):
+            self._mega_dirty = True
+        if self._mega_dirty:
+            self.refresh_megaphones(delay=1000)
+
+    def _mega_tab_shown(self):
+        mega, review = self._mega_visible()
+        if mega or review:
+            self._mega_dirty = True
+            self.refresh_megaphones(delay=10)
+
+    def _ui_busy(self):
+        """While redrawing a big table: background threads pause (see mfm.ui_pause)."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def cm():
+            mfm.UI_FREE.clear()
+            try:
+                yield
+            finally:
+                mfm.UI_FREE.set()
+        return cm()
+
+    def _fill_megaphones(self, rows, markets):
         """One row per offer in a megaphone (an item it sells or buys), with the item's
         icon, name and price once it's matched to an item."""
-        if not hasattr(self, "mega_trees"):
-            return
-        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
-        # deleting old megaphones is a write: at most once a minute, and never worth an
-        # error if another thread is writing just then (it's done next time)
-        if time.monotonic() - getattr(self, "_mega_purged", -1e9) > 60:
-            try:
-                mfm.purge_megaphones(self.con, hours)
-                self._mega_purged = time.monotonic()
-            except sqlite3.OperationalError:
-                self.con.rollback()
-        rows = self.con.execute(
-            "SELECT m.id, m.ts, m.player, m.channel, m.message, m.kind, m.color, o.idx, o.side, o.item, o.phrase, "
-            "o.price, o.note FROM megaphones m LEFT JOIN megaphone_offers o ON o.megaphone_id = m.id "
-            "WHERE m.ts >= ? AND m.kind IS NOT NULL ORDER BY m.ts DESC, m.id DESC, o.idx",
-            (mfm.utc_ago(hours=hours),)).fetchall()
-        markets: dict = {}
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())
@@ -2165,9 +2272,7 @@ class App:
                     tags = (tag,)
                 mkt = None
                 if item:
-                    if item not in markets:
-                        markets[item] = mfm.market_rate(self.con, item, self.cfg)[0]
-                    mkt = markets[item]
+                    mkt = markets.get(item)
                     t.matched.add(iid)
                 if item:
                     price_txt = mfm.fmt(price) if price else ("offer" if note and "offer" in note else "")
@@ -2190,12 +2295,6 @@ class App:
                 t.offer_of[iid] = (mid, idx, phrase)
                 t.info[iid] = (msg, player)
             restore()
-        # items only seen in megaphones may have no icon here yet: fetch them (once)
-        asked = self.__dict__.setdefault("_mega_icon_asked", set())
-        missing = [i for i in markets if i not in asked and mfm.load_icon(self.con, i) is None]
-        if missing:
-            asked.update(missing)
-            self.fetch_icons_async(missing)
 
     def _offer_phrases(self, tree) -> list[str]:
         return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
@@ -3360,16 +3459,16 @@ class App:
         ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
         ttk.Button(bottom, text="Match manually", command=self.mreview_match).pack(side="left", padx=4)
         ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
+        self.mreview_more = ttk.Label(bottom, foreground="#666")
+        self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
         # read items and prices from megaphones saved before (or by an older version)
         self.root.after(800, self._nicknames_changed)
 
-    def refresh_megaphone_review(self):
+    def _fill_megaphone_review(self, rows, total):
         if not hasattr(self, "mreview"):
             return
         t = self.mreview
-        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
-        rows = mfm.unmatched_offers(self.con, hours)
         restore = self._keep_selection(t, lambda tr, k: k)
         t.delete(*t.get_children())
         self.mreview_rows = {}
@@ -3384,9 +3483,9 @@ class App:
                              f"{score:.0%}" if r["suggest"] else "", r["count"], r["example"]))
             self.mreview_rows[r["key"]] = r
         restore()
-        self._mega_review_n = len(rows)
-        if hasattr(self, "review_tab"):
-            self._review_title()
+        if hasattr(self, "mreview_more"):
+            self.mreview_more.config(text=f"Showing the {len(rows):,} most seen of {total:,}." if total > len(rows)
+                                     else "")
 
     def mreview_accept(self):
         done = 0
@@ -3673,6 +3772,7 @@ class App:
         # two kinds of names to review: from shops, and from megaphones
         self.review_nb = ttk.Notebook(outer)
         self.review_nb.pack(fill="both", expand=True)
+        self.review_nb.bind("<<NotebookTabChanged>>", lambda e: self._mega_tab_shown(), add="+")
         tab = ttk.Frame(self.review_nb, padding=6)
         self.review_shop_tab = tab
         self.review_nb.add(tab, text="  Shop listings  ")

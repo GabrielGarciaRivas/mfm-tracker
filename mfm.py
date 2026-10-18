@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.001"
+VERSION = "2610.18.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -669,6 +669,7 @@ def ocr_words(img: Image.Image, cfg: dict, mode: str = "gray") -> list[list[Word
 
 
 def ocr_lines(img: Image.Image, cfg: dict) -> list[str]:
+    ui_pause()
     return [" ".join(w.text for w in ws) for ws in ocr_words(img, cfg)]
 
 
@@ -933,6 +934,7 @@ def reread_row(img: Image.Image, row: Row, col_x: int, cfg: dict):
 
 
 def _ocr_box(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
+    ui_pause()
     import pytesseract
 
     up = 4 if mode == "gray4" else 3
@@ -1506,6 +1508,7 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     3. Rows that are faded, or whose price line didn't parse, get a second
        OCR pass on just that row with locally normalised contrast.
     """
+    ui_pause()
     w, h = img.size
     if geom is None:
         first = ocr_words(img, cfg, "gray")
@@ -4678,6 +4681,7 @@ def unmatched_items(con, include_kept: bool = False) -> list[dict]:
             "FROM listings l1 GROUP BY item"):
         if is_known_item(item) or (item in kept and not include_kept):
             continue
+        ui_pause()
         # the newest listing with this name: where it was and for how much
         raw, price, qty, shop, seller, channel = con.execute(
             "SELECT raw, price, qty, shop, seller, channel FROM listings WHERE id = ?", (lid,)).fetchone()
@@ -5007,7 +5011,9 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
     scored = []
     bounds: dict[str, object] = {}
     rates: dict[str, tuple] = {}     # an item's market rate, once, not once per listing
-    for item, price, qty, shop, seller, mp, channel, sold, ts, notes in rows:
+    for n_, (item, price, qty, shop, seller, mp, channel, sold, ts, notes) in enumerate(rows):
+        if n_ % 50 == 0:
+            ui_pause()
         each = price
         if item not in rates:
             rates[item] = market_rate(con, item, cfg)
@@ -5026,6 +5032,7 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
         mega = {}
     names = {r[0] for r in con.execute("SELECT DISTINCT item FROM listings")} | set(mega)
     for item in sorted(names, key=str.casefold):
+        ui_pause()
         mkt, src = rates.get(item) or market_rate(con, item, cfg)
         info = item_info(item) or {}
         st = price_stats(con, item, cfg, bounds.get(item, "auto"))
@@ -5746,6 +5753,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     color}]. `unit` is about one line's height (from find_chat); `channel` is used for
     megaphones without a channel badge (the ones in your own channel). The boxes of
     the lines read are added to `marks` as (box, color name)."""
+    ui_pause()
     chat = chat.convert("RGB")
     W, H = chat.size
     badges = chat_badges(chat)
@@ -6222,7 +6230,7 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
             if parsed[i][1] is None and parsed[i + 1][1] is not None and "each" in parsed[i + 1][2]:
                 parsed[i][1], parsed[i][2] = parsed[i + 1][1], parsed[i + 1][2]
         for phrase, price, note in parsed:
-            if len(re.sub(r"[^A-Za-z]", "", phrase)) < 2:
+            if len(re.sub(r"[^A-Za-z]", "", phrase)) < 3:
                 if price is not None and offers and offers[-1]["side"] == side and offers[-1]["price"] is None:
                     offers[-1]["price"], offers[-1]["note"] = price, note   # "Item / 200k"
                 continue
@@ -6244,33 +6252,26 @@ def update_offers(con, force: bool = False) -> int:
     """Work out the offers of every stored megaphone whose message (or the nicknames)
     changed since; returns how many megaphones were (re)read.
 
-    The slow part (finding a suggested item for each unknown phrase can take a few
-    seconds for a few hundred megaphones) runs with no lock on the database; only the
-    short write at the end does, so the app and the other threads aren't kept waiting
-    ("database is locked")."""
+    Reading runs with no lock on the database; only the short write at the end does,
+    so the app and the other threads aren't kept waiting ("database is locked")."""
     with _OFFERS_LOCK:                 # one at a time: a second run would redo the same work
         ver = nickname_version(con)
         todo = []
         for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
-            want = hashlib_md5(f"{ver}|{kind}|{msg}".encode())
+            want = hashlib_md5(f"{OFFERS_VERSION}|{ver}|{kind}|{msg}".encode())
             if sig != want or force:
                 todo.append((mid, msg, kind, want))
         if not todo:
             return 0
         nicks = load_nicknames(con)
-        can_suggest = has_item_list()
         results = []
         for mid, msg, kind, want in todo:
+            ui_pause()
             rows = []
+            # (suggested items for Review are worked out only for the rows it shows)
             for i, o in enumerate(parse_offers(msg, kind, nicks)):
-                suggest, score = None, 0.0
-                if not o["item"] and o["how"] != "ignored" and can_suggest:
-                    try:
-                        suggest, score = best_match(con, o["phrase"].title())
-                    except Exception:
-                        pass
                 rows.append((mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"],
-                             o["note"], suggest, score))
+                             o["note"], None, 0.0))
             results.append((mid, msg, want, rows))
         # now the quick write, in batches so nobody waits long
         n = 0
@@ -6289,6 +6290,19 @@ def update_offers(con, force: bool = False) -> int:
 
 
 _OFFERS_LOCK = threading.Lock()
+OFFERS_VERSION = 2          # bump when parse_offers changes: megaphones are read again
+
+# While the window is redrawing a big table, background threads doing pure-Python work
+# pause: otherwise every one of the window's thousands of small Tk calls waits for its
+# turn at Python's global lock, and a redraw that takes 0.2 s takes minutes ("Not
+# responding"). Long loops call ui_pause(); the window clears UI_FREE while redrawing.
+UI_FREE = threading.Event()
+UI_FREE.set()
+
+
+def ui_pause() -> None:
+    if not UI_FREE.is_set() and threading.current_thread() is not threading.main_thread():
+        UI_FREE.wait(5)
 
 
 def megaphone_prices(con, hours: float = 72) -> dict[str, dict]:
@@ -6304,22 +6318,43 @@ def megaphone_prices(con, hours: float = 72) -> dict[str, dict]:
                    "sell_n": len(v["sell"]), "buy_n": len(v["buy"])} for item, v in out.items()}
 
 
-def unmatched_offers(con, hours: float = 72) -> list[dict]:
+def unmatched_offers(con, hours: float = 72, limit: int | None = None,
+                     suggest: bool = True) -> list[dict]:
     """Megaphone phrases not matched to an item yet (what Review → Megaphones shows),
-    most-seen first: {key, phrase, sides, price, suggest, score, count, example, last}."""
+    most-seen first: {key, phrase, sides, price, suggest, score, count, example, last}.
+    With `limit`, only that many (the suggested items are the slow part)."""
     rows = {}
-    for key, phrase, side, price, suggest, score, msg, ts in con.execute(
-            "SELECT o.key, o.phrase, o.side, o.price, o.suggest, o.score, m.message, m.ts FROM megaphone_offers o "
+    for key, phrase, side, price, msg, ts in con.execute(
+            "SELECT o.key, o.phrase, o.side, o.price, m.message, m.ts FROM megaphone_offers o "
             "JOIN megaphones m ON m.id = o.megaphone_id WHERE o.item IS NULL AND COALESCE(o.how, '') != 'ignored' "
             "AND m.ts >= ? ORDER BY m.ts", (utc_ago(hours=hours),)):
-        r = rows.setdefault(key, {"key": key, "phrase": phrase, "sides": set(), "price": None, "suggest": suggest,
-                                  "score": score or 0.0, "count": 0, "example": msg, "last": ts})
+        r = rows.get(key)
+        if r is None:
+            r = rows[key] = {"key": key, "phrase": phrase, "sides": set(), "price": None, "suggest": None,
+                             "score": 0.0, "count": 0, "example": msg, "last": ts}
         r["sides"].add(side)
         r["count"] += 1
         r["example"], r["last"] = msg, ts
         if price is not None:
             r["price"] = price
-    return sorted(rows.values(), key=lambda r: (-r["count"], r["key"]))
+    out = sorted(rows.values(), key=lambda r: (-r["count"], r["key"]))
+    if limit is not None:
+        out = out[:limit]
+    if suggest and has_item_list():
+        for r in out:
+            ui_pause()
+            try:
+                r["suggest"], r["score"] = best_match(con, r["phrase"].title())
+            except Exception:
+                pass
+    return out
+
+
+def count_unmatched_offers(con, hours: float = 72) -> int:
+    return con.execute(
+        "SELECT COUNT(DISTINCT o.key) FROM megaphone_offers o JOIN megaphones m ON m.id = o.megaphone_id "
+        "WHERE o.item IS NULL AND COALESCE(o.how, '') != 'ignored' AND m.ts >= ?",
+        (utc_ago(hours=hours),)).fetchone()[0]
 
 
 class MegaphoneWatch:
@@ -6346,6 +6381,7 @@ class MegaphoneWatch:
         threading.Thread(target=self._work, args=(full,), daemon=True).start()
 
     def _work(self, full):
+        ui_pause()
         try:
             region, unit = self.cfg.get("chat_region"), None
             if not region or is_auto(region, full.size):

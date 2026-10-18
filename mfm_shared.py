@@ -357,6 +357,7 @@ class SharedSync:
         while True:
             res = self.server.changes(seq)
             for r in res.get("sightings", []):
+                mfm.ui_pause()
                 if oldest and (r.get("last_seen") or r["ts"]) < oldest:
                     continue                  # older than you keep prices for
                 if has_list and not mfm.is_known_item(r["item"]):
@@ -425,6 +426,7 @@ class SharedSync:
         while True:
             res = self.server.megaphone_changes(seq, hours)
             for m in res.get("megaphones", []):
+                mfm.ui_pause()
                 conf = float(m.get("conf") or 0)
                 sig = _mega_sig(m)
                 local = con.execute("SELECT id, conf FROM megaphones WHERE uid = ?", (m["uid"],)).fetchone()
