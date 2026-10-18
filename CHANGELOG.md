@@ -2,6 +2,12 @@
 
 ## 2610.18.002 — 2026-10-18
 
+### New
+- **Better reading of megaphones and shops:** the app has its own OCR model, trained on
+  892 lines from the game's chat and shops. On lines it hadn't seen, megaphones went from
+  5.1% of characters wrong to 1.6% (lines read exactly right: 16 of 91 → 51 of 91), and
+  shop lines from 4.4% to 2.8%. Reading a megaphone takes a bit longer.
+
 ### Fixed
 - The window froze ("Not responding"), mostly on Windows with many megaphones from the
   Shared Database. The Megaphones tab is now worked out in the background and only
@@ -10,6 +16,7 @@
 - Review → Megaphones shows the 500 most-seen phrases (the count on the tab is still all
   of them), and their suggested items are only worked out for those.
 - Bits of 1-2 letters ("CH") are no longer listed as megaphone items.
+- A shop item's stack count is no longer read as part of its name ("4 Meba").
 - Scrolls in megaphones match much more often: "att 60%" no longer loses its "60",
   "60 %" and "60%atk" are read as "60%", and common shorthand comes as word nicknames
   ("att", "atk", "matk", "acc", "avoid", "ohs", "2h", "bw", "xbow", "overall", "top",

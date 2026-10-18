@@ -102,6 +102,10 @@ def main() -> None:
     td = out / "tessdata"
     td.mkdir()
     shutil.copy2(tessdata / "eng.traineddata", td)
+    # the app's own OCR model, trained on the game's chat and shops (used as "mfm+eng")
+    model = Path(__file__).resolve().parent.parent / "ocr" / "mfm.traineddata"
+    if model.exists():
+        shutil.copy2(model, td)
     if (tessdata / "configs").is_dir():
         shutil.copytree(tessdata / "configs", td / "configs")
     wrapper = out / "tesseract-run"

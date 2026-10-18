@@ -591,6 +591,8 @@ def bundled_tesseract() -> Path | None:
 def setup_tesseract(cfg: dict) -> None:
     import pytesseract
 
+    ocr_lang_arg.cfg = cfg
+
     if cfg.get("tesseract_cmd"):
         pytesseract.pytesseract.tesseract_cmd = cfg["tesseract_cmd"]
     elif bundled_tesseract():
@@ -652,9 +654,13 @@ _EXTRA_OCR_WORDS = ("for", "mesos", "Scroll", "Greater", "Intermediate", "Lesser
 
 
 def _short_path(p: Path) -> str | None:
-    """The path as Tesseract's command line can take it (no spaces): on Windows the
-    8.3 short name if needed; None if there's no such form."""
+    """The path as Tesseract's command line (via pytesseract) can take it: quoted on
+    macOS and Linux; on Windows the 8.3 short name if it has spaces (pytesseract
+    keeps quotes there), None if there's no such form."""
     s = str(p)
+    if os.name != "nt":
+        import shlex
+        return shlex.quote(s)
     if " " not in s:
         return s
     if os.name == "nt":
@@ -694,13 +700,79 @@ def ocr_words_arg() -> str:
 ocr_words_arg.state = {}
 
 
+# The app's own OCR model: Tesseract's English model fine-tuned on lines from the
+# game's chat and shops (ocr/mfm.traineddata, trained by .github/workflows/ocr-train.yml).
+# Used together with the standard English one ("mfm+eng"): on lines it wasn't trained
+# on it got 1.6% of chat characters wrong instead of 5.1%, and 2.8% of shop characters
+# instead of 4.4%.
+OCR_MODEL = "mfm"
+OCR_TESSDATA = CACHE_DIR / "tessdata"
+
+
+def _tessdata_dir() -> Path | None:
+    """A folder with both mfm.traineddata and eng.traineddata, or None."""
+    shipped = BUNDLE / "tesseract" / "tessdata"
+    if (shipped / f"{OCR_MODEL}.traineddata").exists() and (shipped / "eng.traineddata").exists():
+        return shipped                      # the packaged app
+    model = BUNDLE / "ocr" / f"{OCR_MODEL}.traineddata"
+    if not model.exists():
+        return None
+    # running from source: put the model next to a copy of Tesseract's own English data
+    import pytesseract
+
+    try:
+        out = subprocess.run([pytesseract.pytesseract.tesseract_cmd, "--list-langs"], capture_output=True,
+                             text=True, timeout=20)
+        m = re.search(r'languages in "([^"]+)"', out.stdout + out.stderr)
+        eng = Path(m.group(1)) / "eng.traineddata" if m else None
+        if not eng or not eng.exists():
+            return None
+        OCR_TESSDATA.mkdir(parents=True, exist_ok=True)
+        for src in (model, eng):
+            dst = OCR_TESSDATA / src.name
+            if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime or dst.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, dst)
+        return OCR_TESSDATA
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def ocr_lang_arg(cfg: dict | None = None) -> str:
+    """" --tessdata-dir DIR -l mfm+eng" when the app's own OCR model can be used (and
+    isn't turned off with "trained_ocr": false in settings), else ""."""
+    if cfg is None:
+        cfg = ocr_lang_arg.cfg
+    if not cfg.get("trained_ocr", True):
+        return ""
+    st = ocr_lang_arg.state
+    if "arg" not in st:
+        st["arg"] = ""
+        d = _tessdata_dir()
+        p = _short_path(d) if d else None
+        if p:
+            import pytesseract
+
+            try:
+                out = subprocess.run([pytesseract.pytesseract.tesseract_cmd, "--tessdata-dir", str(d), "--list-langs"],
+                                     capture_output=True, text=True, timeout=20)
+                if re.search(rf"^{OCR_MODEL}$", out.stdout, re.M) and re.search(r"^eng$", out.stdout, re.M):
+                    st["arg"] = f" --tessdata-dir {p} -l {OCR_MODEL}+eng"
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return st["arg"]
+
+
+ocr_lang_arg.state = {}
+ocr_lang_arg.cfg = {}            # the settings last given to setup_tesseract
+
+
 def ocr_words(img: Image.Image, cfg: dict, mode: str = "gray") -> list[list[Word]]:
     """OCR into lines of positioned words (coordinates in the original image)."""
     import pytesseract
 
     setup_tesseract(cfg)
     up = cfg.get("upscale", 3)
-    d = pytesseract.image_to_data(preprocess(img, up, mode), config="--psm 6" + ocr_words_arg(),
+    d = pytesseract.image_to_data(preprocess(img, up, mode), config="--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg(),
                                   output_type=pytesseract.Output.DICT)
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
@@ -992,7 +1064,8 @@ def _ocr_box(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
         cut = 120 if mode == "graybin120" else 150
         g = ImageOps.autocontrast(g, cutoff=1).point(lambda p, c=cut: 0 if p < c else 255)
     setup_tesseract(cfg)
-    d = pytesseract.image_to_data(g, config="--psm 6" + ocr_words_arg(), output_type=pytesseract.Output.DICT)
+    d = pytesseract.image_to_data(g, config="--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg(),
+                                  output_type=pytesseract.Output.DICT)
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
         if text.strip():
@@ -1586,6 +1659,15 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
                     name_words = [w for w in re_name if w.left >= col_x - 8]
         if not price or not qty:
             continue
+        # a bit of the icon (its stack count) read as part of the name: "4 Meba", "Z Blue
+        # Sauna Robe": a short, unsure word well to the left of the rest
+        while len(name_words) > 1:
+            first, nxt = name_words[0], name_words[1]
+            gap = nxt.left - (first.left + first.width)
+            if len(first.text) <= 3 and first.conf < 85 and gap >= 12:
+                name_words = name_words[1:]
+            else:
+                break
         name = _clean_name(name_words)
         if len(re.findall(r"[A-Za-z]", name)) < 3:
             continue
@@ -5599,13 +5681,14 @@ def _join_wrapped(a: str, b: str) -> str:
     return a + " " + b
 
 
-_DIGITISH = str.maketrans({"o": "0", "O": "0", "D": "0", "l": "1", "I": "1", "|": "1", "i": "1",
+_DIGITISH = str.maketrans({"/": "7", "o": "0", "O": "0", "D": "0", "l": "1", "I": "1", "|": "1", "i": "1",
                            "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2"})
 
 
 def parse_chat_line(text: str) -> tuple[str, str, str] | None:
     """'[04:01] Player : message' -> ("04:01", "Player", "message")."""
-    m = re.search(r"([0-9oOlIDSZz|]{2})\s*[:;.\-,]\s*([0-9oOlIDSZz|]{2})\s*[\]\)}|lI1J]?\s*(.+)$", text)
+    # (the trained OCR model sometimes reads a 7 as "/", or a stray digit before the "]")
+    m = re.search(r"([0-9oOlIDSZz|/]{2})\s*[:;.\-,]\s*([0-9oOlIDSZz|/]{2})[0-9/]?\s*[\]\)}|lI1J]?\s*(.+)$", text)
     if not m:
         return None
     hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
@@ -5617,7 +5700,8 @@ def parse_chat_line(text: str) -> tuple[str, str, str] | None:
     name, msg = rest.split(":", 1)
     # the ':' after the badge, read twice, and specks around it
     msg = re.sub(r"^\s*(?:[^\w\s\[@#$(]{1,3}\s+)*[^\w\s\[@#$(]*:[^\w\s\[@#$(]*\s*", "", msg)
-    name = re.sub(r"[^\w().'\-]+", "", name.strip().split()[0] if name.strip() else "")
+    # player names have no spaces, but OCR sometimes splits one ("OT COT C")
+    name = re.sub(r"[^\w().'\-]+", "", "".join(name.split()))
     if name.endswith(")") and "(" not in name:
         name = name[:-1]
     return f"{hh}:{mm}", name, msg.strip()
@@ -5712,7 +5796,8 @@ def _ocr_words(img: Image.Image) -> list[tuple[str, int, float]]:
     import pytesseract
 
     border = 12
-    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255), config="--psm 7" + ocr_words_arg(),
+    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255),
+                                  config="--psm 7" + ocr_lang_arg() + ocr_words_arg(),
                                   output_type=pytesseract.Output.DICT)
     return [(t.strip(), d["left"][i] - border, float(d["conf"][i])) for i, t in enumerate(d["text"])
             if t.strip()]

@@ -325,6 +325,11 @@ Rest the mouse on any setting for a short explanation.
 | Empty frames = shop closed | 3 | reads without a shop before it counts as closed |
 | Market median window (days) | 14 | how many days of sightings make the market price |
 | OCR upscale factor | 3 | raise it if small text is misread |
+
+Megaphones and shop names are read with the app's own OCR model (trained on the game's
+chat and shops) together with Tesseract's standard English one. On lines it hadn't seen,
+it got about 1.6% of chat characters wrong instead of 5.1%. To use only the standard
+model, put `"trained_ocr": false` in `settings/config.json`.
 | Required sightings before judging | 5 | sightings needed before an item gets a market price, DEAL / HIGH, and outliers |
 | Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
@@ -392,6 +397,9 @@ Also in the app: **Settings → About**.
 
 - [Tesseract OCR 5.3.4](https://github.com/tesseract-ocr/tesseract): reads the text in shop windows · Apache-2.0
 - [Tesseract English data (tessdata_fast)](https://github.com/tesseract-ocr/tessdata_fast): OCR language model · Apache-2.0
+- The app's own OCR model (`ocr/mfm.traineddata`) is [tessdata_best](https://github.com/tesseract-ocr/tessdata_best)
+  English, trained further on lines from the game's chat and shops with
+  [tesstrain](https://github.com/tesseract-ocr/tesstrain) · Apache-2.0
 - [Leptonica 1.87.0](https://github.com/DanBloomberg/leptonica): image library used by Tesseract · BSD-2-Clause
 - [libpng and zlib](https://github.com/pnggroup/libpng): image compression used by Leptonica · libpng and zlib licenses
 - [Python 3.13](https://www.python.org/): the language the app is written in · PSF License

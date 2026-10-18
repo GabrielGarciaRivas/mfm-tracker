@@ -32,6 +32,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Tess "tessdata") | Out-Nul
 Copy-Item (Join-Path $TessDir "tesseract.exe") $Tess
 Copy-Item (Join-Path $TessDir "*.dll") $Tess
 Copy-Item (Join-Path $TessDir "tessdata\eng.traineddata") (Join-Path $Tess "tessdata")
+# the app's own OCR model, trained on the game's chat and shops (used as "mfm+eng")
+if (Test-Path (Join-Path $Root "ocr\mfm.traineddata")) {
+  Copy-Item (Join-Path $Root "ocr\mfm.traineddata") (Join-Path $Tess "tessdata")
+}
 if (Test-Path (Join-Path $TessDir "tessdata\configs")) {
   Copy-Item -Recurse (Join-Path $TessDir "tessdata\configs") (Join-Path $Tess "tessdata")
 }

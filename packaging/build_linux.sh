@@ -36,6 +36,8 @@ for d in /usr/share/tessdata /usr/share/tesseract-ocr/*/tessdata /usr/local/shar
 done
 [ -n "$DATA" ] || { echo "eng.traineddata not found"; exit 1; }
 cp "$DATA/eng.traineddata" "$WORK/tesseract/tessdata/"
+# the app's own OCR model, trained on the game's chat and shops (used as "mfm+eng")
+[ -f "$PWD/ocr/mfm.traineddata" ] && cp "$PWD/ocr/mfm.traineddata" "$WORK/tesseract/tessdata/"
 [ -d "$DATA/configs" ] && cp -r "$DATA/configs" "$WORK/tesseract/tessdata/"
 cat > "$WORK/tesseract/tesseract-run" <<'SH'
 #!/bin/sh
