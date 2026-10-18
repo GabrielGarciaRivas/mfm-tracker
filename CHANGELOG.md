@@ -4,9 +4,9 @@
 
 ### New
 - **Better reading of megaphones and shops:** the app has its own OCR model, trained on
-  892 lines from the game's chat and shops. On lines it hadn't seen, megaphones went from
-  5.1% of characters wrong to 1.6% (lines read exactly right: 16 of 91 → 51 of 91), and
-  shop lines from 4.4% to 2.8%. Reading a megaphone takes a bit longer.
+  1,197 lines from the game's chat and shops. On 154 lines it hadn't seen, it went from
+  5.6% of characters wrong to 0.8% (lines read exactly right: 42 → 123). Reading a
+  megaphone takes a bit longer.
 
 ### Changed
 - **Channel:** when you change channel in the game, the app reads the highlighted channel

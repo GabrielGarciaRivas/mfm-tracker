@@ -331,17 +331,17 @@ Rest the mouse on any setting for a short explanation.
 | Empty frames = shop closed | 3 | reads without a shop before it counts as closed |
 | Market median window (days) | 14 | how many days of sightings make the market price |
 | OCR upscale factor | 3 | raise it if small text is misread |
-
-Megaphones and shop names are read with the app's own OCR model (trained on the game's
-chat and shops) together with Tesseract's standard English one. On lines it hadn't seen,
-it got about 1.6% of chat characters wrong instead of 5.1%. To use only the standard
-model, put `"trained_ocr": false` in `settings/config.json`.
 | Required sightings before judging | 5 | sightings needed before an item gets a market price, DEAL / HIGH, and outliers |
 | Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
 | Ask for the channel at launch and after a channel change | on | the channel prompt |
 | Channels in the channel picker | 20 | buttons in the channel picker |
 | Data retention | 30 days, archive | see below |
+
+Megaphones and shop names are read with the app's own OCR model (trained on the game's
+chat and shops) together with Tesseract's standard English one. On lines it hadn't seen,
+it got about 0.8% of characters wrong instead of 5.6%. To use only the standard
+model, put `"trained_ocr": false` in `settings/config.json`.
 
 **Data retention:** listings not seen for 30 days are copied to an archive file and then
 removed (or just deleted, or kept forever). This runs at start, every 6 hours, and when you
