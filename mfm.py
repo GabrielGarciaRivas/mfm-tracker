@@ -319,6 +319,7 @@ def db() -> sqlite3.Connection:
             PRIMARY KEY (megaphone_id, idx)
         );
         CREATE INDEX IF NOT EXISTS idx_offers_item ON megaphone_offers(item);
+        CREATE TABLE IF NOT EXISTS megaphones_deleted (uid TEXT PRIMARY KEY, ts TEXT);
         CREATE TABLE IF NOT EXISTS nicknames (
             key TEXT PRIMARY KEY,
             item TEXT,
@@ -2100,8 +2101,10 @@ class ChannelWatch:
     It only counts as gone after `misses` checks in a row without it, so a
     mouse over a button or one bad frame doesn't end it early."""
 
-    def __init__(self, misses: int = 2, every: float = 0.7):
-        self.misses, self.every = misses, every
+    def __init__(self, misses: int = 2, every: float | None = None, cfg: dict | None = None):
+        # how often to look: `every` seconds, or the Capture every (seconds) setting
+        self.misses, self._every, self.cfg = misses, every, cfg
+        self._read_memo: dict = {}
         self.seen = False
         self.gone = 0
         self.last = 0.0
@@ -2130,6 +2133,15 @@ class ChannelWatch:
     def _off(self) -> bool:
         return self.paused or time.monotonic() < self.quiet_until
 
+    @property
+    def every(self) -> float:
+        if self._every is not None:
+            return self._every
+        try:
+            return max(0.05, float((self.cfg or {}).get("interval_seconds", 0.1)))
+        except (TypeError, ValueError):
+            return 0.1
+
     def due(self) -> bool:
         return not self._off() and time.monotonic() - self.last >= self.every
 
@@ -2144,16 +2156,24 @@ class ChannelWatch:
             if not self.seen:
                 self.picked = None
             self.seen, self.gone = True, 0
-            try:
-                ch = read_dialog_channel(full, pair)
-            except Exception:
-                ch = None
+            key = (tuple(pair), hashlib_md5(full.crop((max(0, pair[0] - 3 * pair[2]), max(0, pair[1] - pair[2]),
+                                                       pair[0] + pair[2], pair[1])).resize((96, 32)).tobytes()))
+            if key in self._read_memo:
+                ch = self._read_memo[key]
+            else:
+                try:
+                    ch = read_dialog_channel(full, pair)
+                except Exception:
+                    ch = None
+                if len(self._read_memo) > 64:
+                    self._read_memo.clear()
+                self._read_memo[key] = ch
             if ch:
                 self.picked = ch
             return False
         if self.seen:
             self.gone += 1
-            if self.gone >= self.misses:
+            if self.gone >= max(self.misses, round(0.5 / self.every)):
                 self.seen, self.gone = False, 0
                 self.channel, self.picked = self.picked, None
                 return True
@@ -6187,9 +6207,24 @@ def save_megaphones(con, found: list[dict], now: datetime | None = None) -> int:
     return new
 
 
+def delete_megaphones(con, ids) -> int:
+    """Delete megaphones (and what was read from them). Shared ones are remembered, so
+    they aren't copied back from the Shared Database."""
+    ids = list(ids)
+    for i in ids:
+        row = con.execute("SELECT uid, ts FROM megaphones WHERE id = ?", (i,)).fetchone()
+        if row and row[0]:
+            con.execute("INSERT OR IGNORE INTO megaphones_deleted (uid, ts) VALUES (?, ?)", row)
+    con.executemany("DELETE FROM megaphones WHERE id = ?", [(i,) for i in ids])
+    con.executemany("DELETE FROM megaphone_offers WHERE megaphone_id = ?", [(i,) for i in ids])
+    con.commit()
+    return len(ids)
+
+
 def purge_megaphones(con, hours: float) -> int:
     """Delete megaphones older than `hours`."""
     n = con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(hours=hours),)).rowcount
+    con.execute("DELETE FROM megaphones_deleted WHERE ts < ?", (utc_ago(hours=max(hours, 96)),))
     con.execute("DELETE FROM megaphone_offers WHERE megaphone_id NOT IN (SELECT id FROM megaphones)")
     con.commit()
     return n
@@ -6712,7 +6747,7 @@ class Monitor:
         self.map_img = None
         self.layout: Layout | None = None
         self.map_fresh = False   # minimap measured since the last visit ended
-        self.chan_watch = ChannelWatch()   # the GUI may hand in its own (shared with its idle check)
+        self.chan_watch = ChannelWatch(cfg=cfg)   # the GUI may hand in its own (shared with its idle check)
         self.megaphones = MegaphoneWatch(cfg, self.on_event, channel=lambda: self.channel)
         self.map_tried = 0.0
         self.geom: dict | None = None

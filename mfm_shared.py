@@ -431,6 +431,8 @@ class SharedSync:
             res = self.server.megaphone_changes(seq, hours)
             for m in res.get("megaphones", []):
                 mfm.ui_pause()
+                if con.execute("SELECT 1 FROM megaphones_deleted WHERE uid = ?", (m["uid"],)).fetchone():
+                    continue                  # you deleted it here
                 conf = float(m.get("conf") or 0)
                 sig = _mega_sig(m)
                 local = con.execute("SELECT id, conf FROM megaphones WHERE uid = ?", (m["uid"],)).fetchone()

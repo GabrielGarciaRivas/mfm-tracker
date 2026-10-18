@@ -10,7 +10,11 @@
 
 ### Changed
 - **Channel:** when you change channel in the game, the app reads the highlighted channel
-  in the Change Channel window and sets it. It only asks when it can't read it.
+  in the Change Channel window and sets it. It only asks when it can't read it. The window
+  is looked for as often as **Capture every (seconds)** (0.1 by default).
+- **Review → Megaphones:** a **Delete megaphone** button deletes the megaphones the
+  selected rows came from, without adding a nickname. Deleted megaphones aren't copied
+  back from the Shared Database.
 
 ### Fixed
 - The window froze ("Not responding"), mostly on Windows with many megaphones from the

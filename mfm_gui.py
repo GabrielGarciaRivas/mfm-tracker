@@ -669,7 +669,7 @@ class App:
         self.logged_today = 0
         self.backlog = 0        # captured frames waiting for OCR (0 = reading live)
         self._behind = False    # "the OCR is behind" is showing in the status bar
-        self.chan_watch = mfm.ChannelWatch()   # change-channel dialog: seen, then gone
+        self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
         self.chan_popup = None
 
         root.title("Free Market Tracker")
@@ -916,7 +916,7 @@ class App:
         import time
 
         while True:
-            time.sleep(1.0)
+            time.sleep(self.chan_watch.every)
             try:
                 if not self.cfg.get("channel_prompt") or (self.worker and self.worker.is_alive()):
                     continue
@@ -2365,9 +2365,7 @@ class App:
         ids = sorted({int(str(k).split(":")[0]) for k in tree.selection()})
         if not ids:
             return
-        self.con.executemany("DELETE FROM megaphones WHERE id = ?", [(i,) for i in ids])
-        self.con.executemany("DELETE FROM megaphone_offers WHERE megaphone_id = ?", [(i,) for i in ids])
-        self.con.commit()
+        mfm.delete_megaphones(self.con, ids)
         self.refresh_megaphones()
 
     # ------------------------------------------------------------------ my inventory
@@ -3472,6 +3470,10 @@ class App:
         ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
         ttk.Button(bottom, text="Match manually", command=self.mreview_match).pack(side="left", padx=4)
         ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
+        b = ttk.Button(bottom, text="Delete megaphone", command=self.mreview_delete)
+        b.pack(side="left", padx=4)
+        tip("Delete the megaphones these rows came from (a misread line, spam). Nothing is "
+            "added to the nicknames.", b)
         self.mreview_more = ttk.Label(bottom, foreground="#666")
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
@@ -3597,6 +3599,31 @@ class App:
 
     NOT_ITEM = "(not an item)"
     NOT_ITEM_WORDS = ("", "-", "(not an item)", "not an item")
+
+    def mreview_delete(self):
+        """Delete the megaphones the selected Review rows came from."""
+        keys = [k for k in self.mreview.selection() if k in getattr(self, "mreview_rows", {})]
+        if not keys:
+            return
+        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
+        q = ",".join("?" * len(keys))
+        ids = [r[0] for r in self.con.execute(
+            f"SELECT DISTINCT o.megaphone_id FROM megaphone_offers o JOIN megaphones m ON m.id = o.megaphone_id "
+            f"WHERE o.key IN ({q}) AND o.item IS NULL AND m.ts >= ?", keys + [mfm.utc_ago(hours=hours)])]
+        if not ids:
+            return
+        if not messagebox.askyesno("Delete megaphones",
+                                   f"Delete {mfm.plural(len(ids), 'megaphone')} with "
+                                   + (f"\"{self.mreview_rows[keys[0]]['phrase']}\"" if len(keys) == 1
+                                      else f"these {len(keys)} phrases") + "?", parent=self.root):
+            return
+        nxt = self.mreview.next(keys[-1]) or self.mreview.prev(keys[0])
+        mfm.delete_megaphones(self.con, ids)
+        self._set_status(f"Deleted {mfm.plural(len(ids), 'megaphone')}.")
+        self.refresh_megaphones(delay=10)
+        if nxt and nxt not in keys:
+            self.root.after(600, lambda: self.mreview.exists(nxt) and (self.mreview.selection_set(nxt),
+                                                                       self.mreview.see(nxt)))
 
     def nicknames_window(self):
         """An editable sheet of nicknames: "Megaphone term" (what players write),
