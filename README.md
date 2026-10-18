@@ -214,8 +214,8 @@ price, it gets the note too.
 ## Watched
 
 Watched items and listings get an **alert**: a sound, and the app comes to the front. Their
-listings are highlighted in bright green in the shop tables. Megaphones with a watched item
-are highlighted the same way (all their lines): selling at or under your max price (or with
+listings are shown in bold red text in the shop tables. Megaphones with a watched item are
+shown the same way (all their lines): selling at or under your max price (or with
 no price given), or buying at any price. The **Watched** tab has two lists.
 
 **Watched items** (top): any listing of an item.

@@ -178,8 +178,7 @@ def num(s: str) -> float:
 
 
 
-WATCH_BG = "#9cff57"       # rows with a watched item for sale (shops and megaphones): a
-                           # bright green no megaphone colour or DEAL row uses
+WATCH_FG = "#d50000"       # rows with a watched item for sale (shops and megaphones): bold red
 
 # the capture areas you can draw (Settings → Window detection): config key, name, what
 # it's for
@@ -374,9 +373,10 @@ def make_tree(parent, cols) -> ttk.Treeview:
     tree.configure(xscrollcommand=xset)
     sb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
-    # a watched item for sale: the whole row highlighted. Configured first, so it wins
-    # over every other row colour (deal, high, a megaphone's own colour)
-    tree.tag_configure("watch", background=WATCH_BG, foreground="#000000", font="MfmBold")
+    # a watched item for sale: the whole row in bold red. Configured first, so its text
+    # colour wins over every other row's (deal, high, a megaphone's own colour), while
+    # the row keeps its own background
+    tree.tag_configure("watch", foreground=WATCH_FG, font="MfmBold")
     tree.tag_configure("deal", background="#d5f2dc", foreground="#145c2c")
     tree.tag_configure("high", background="#fadad7", foreground="#8c1d16")
     tree.tag_configure("unknown", foreground="#8a8a8a")
