@@ -28,34 +28,41 @@ def read(png: Path, lang: str, tessdata: str | None) -> str:
 
 
 def main() -> None:
+    """Every model in TESSDATA (and each with +eng) against the standard one; the best
+    goes first in the report as "BEST <lang>" when it's clearly better."""
     ev, td = Path(sys.argv[1]), sys.argv[2]
-    rows = []
+    langs = [p.stem for p in sorted(Path(td).glob("*.traineddata")) if p.stem != "eng"]
+    variants = [("standard", "eng", None)] + [(l, l, td) for l in langs] + [(l + "+eng", l + "+eng", td) for l in langs]
+    lines = []
     for png in sorted(ev.glob("*.png")):
         truth = " ".join(png.with_suffix(".gt.txt").read_text(encoding="utf-8").split())
-        rows.append((truth, read(png, "eng", None), read(png, "mfm", td)))
-    chars = sum(len(t) for t, _, _ in rows) or 1
+        lines.append((truth, {name: read(png, lang, d) for name, lang, d in variants}))
+    chars = sum(len(t) for t, _ in lines) or 1
     res = {}
-    for k, name in ((1, "standard"), (2, "trained")):
-        errs = sum(dist(r[k], r[0]) for r in rows)
-        exact = sum(r[k] == r[0] for r in rows)
+    for name, _, _ in variants:
+        errs = sum(dist(r[name], t) for t, r in lines)
+        exact = sum(r[name] == t for t, r in lines)
         res[name] = (errs, exact)
-    better = res["trained"][0] < res["standard"][0] * 0.9 and res["trained"][1] >= res["standard"][1]
+    std = res["standard"]
+    best = min((n for n in res if n != "standard"), key=lambda n: (res[n][0], -res[n][1]), default=None)
     out = []
-    if better:
-        out.append("BETTER")
-    out.append(f"## OCR test on {len(rows)} lines it wasn't trained on\n")
+    if best and res[best][0] < std[0] * 0.9 and res[best][1] >= std[1]:
+        lang = next(l for n, l, _ in variants if n == best)
+        out.append(f"BEST {lang}")
+    out.append(f"## OCR test on {len(lines)} lines it wasn't trained on\n")
     out.append("| Model | Wrong characters | Lines exactly right |")
     out.append("|---|---|---|")
     for name, (errs, exact) in res.items():
-        out.append(f"| {name} | {errs} of {chars} ({100 * errs / chars:.1f}%) | {exact} of {len(rows)} |")
+        out.append(f"| {name} | {errs} of {chars} ({100 * errs / chars:.1f}%) | {exact} of {len(lines)} |")
     out.append("")
-    out.append("<details><summary>Every line</summary>\n")
-    out.append("| Truth | Standard | Trained |")
-    out.append("|---|---|---|")
-    for t, a, b in rows:
+    if best:
+        out.append(f"<details><summary>Every line (standard vs {best})</summary>\n")
+        out.append(f"| Truth | Standard | {best} |")
+        out.append("|---|---|---|")
         esc = lambda s: s.replace("|", "\\|")
-        out.append(f"| {esc(t)} | {esc(a)} | {esc(b)} |")
-    out.append("\n</details>")
+        for t, r in lines:
+            out.append(f"| {esc(t)} | {esc(r['standard'])} | {esc(r[best])} |")
+        out.append("\n</details>")
     print("\n".join(out))
 
 

@@ -13,7 +13,7 @@ on:
     inputs:
       iterations:
         description: "Training iterations"
-        default: "3000"
+        default: "10000"
       data:
         description: "Encrypted training lines"
         default: "ocr/chat-lines-v1.zip.enc"
@@ -66,11 +66,13 @@ jobs:
             --continue_from data/mfm/checkpoints/mfm_checkpoint \
             --traineddata data/mfm/mfm.traineddata \
             --model_output /tmp/mfm.traineddata
-          ls -la /tmp/mfm.traineddata
+          cp data/mfm.traineddata /tmp/mfmbest.traineddata     # the float model, before conversion
+          ls -la /tmp/mfm.traineddata /tmp/mfmbest.traineddata
 
       - name: Test against the standard model
         run: |
-          mkdir -p /tmp/td && cp /tmp/mfm.traineddata /tmp/td/
+          mkdir -p /tmp/td && cp /tmp/mfm.traineddata /tmp/mfmbest.traineddata /tmp/td/
+          cp "$(dirname "$(find /usr/share -name eng.traineddata | head -1)")/eng.traineddata" /tmp/td/
           python3 .github/scripts/ocr_eval.py /tmp/lines/eval /tmp/td > /tmp/eval.md
           cat /tmp/eval.md >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/eval.md
@@ -80,18 +82,22 @@ jobs:
           name: ocr-model
           path: |
             /tmp/mfm.traineddata
+            /tmp/mfmbest.traineddata
             /tmp/eval.md
 
       - name: Keep the model if it's better
         run: |
-          if grep -q '^BETTER' /tmp/eval.md; then
-            cp /tmp/mfm.traineddata ocr/mfm.traineddata
-            grep -v '^BETTER' /tmp/eval.md > ocr/eval.md
+          best=$(sed -n 's/^BEST //p' /tmp/eval.md)
+          if [ -n "$best" ]; then
+            model=${best%%+*}
+            cp /tmp/$model.traineddata ocr/mfm.traineddata
+            echo "$best" | sed "s/^$model/mfm/" > ocr/lang.txt      # what the app passes to -l
+            grep -v '^BEST' /tmp/eval.md > ocr/eval.md
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add ocr/mfm.traineddata ocr/eval.md
-            git commit -m "OCR model trained on ${{ inputs.data }} (${{ inputs.iterations }} iterations)"
+            git add ocr/mfm.traineddata ocr/lang.txt ocr/eval.md
+            git commit -m "OCR model trained on ${{ inputs.data }} (${{ inputs.iterations }} iterations): $best"
             git push
           else
-            echo "The new model isn't better: not kept."
+            echo "No new model is clearly better: not kept."
           fi
