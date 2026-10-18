@@ -160,7 +160,7 @@ DEFAULT_CONFIG = {
     "channel_count": 20,       # channels shown in the channel picker (1-100)
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
-    "megaphone_hours": 24,     # megaphones are kept this long, then deleted
+    "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
@@ -183,6 +183,8 @@ def load_config() -> dict:
         saved = json.loads(CONFIG_PATH.read_text())
         if "confirm_frames" not in saved and saved.get("interval_seconds") == 3:
             saved.pop("interval_seconds")  # old default was too slow for scrolling
+        if saved.get("megaphone_hours") == 24:
+            saved.pop("megaphone_hours")   # the previous default: use the new one (72)
         if saved.get("channel_count") == 18:
             saved.pop("channel_count")     # the previous default: use the new one
         if saved.get("interval_seconds") in (0.75, 0.15):
@@ -5981,7 +5983,7 @@ class MegaphoneWatch:
                 got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=self.channel(),
                                       marks=marks)
                 n = save_megaphones(con, got) if got else 0
-                purge_megaphones(con, self.cfg.get("megaphone_hours", 24))
+                purge_megaphones(con, self.cfg.get("megaphone_hours", 72))
             finally:
                 con.close()
             self.on_event("chat_frame", {"image": img, "marks": marks, "count": len(got)})

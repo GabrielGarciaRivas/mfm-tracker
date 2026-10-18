@@ -403,7 +403,7 @@ class SharedSync:
         key = self.server.url + "#megaphones"
         row = con.execute("SELECT seq FROM shared_state WHERE server = ?", (key,)).fetchone()
         seq = row[0] if row else 0
-        hours = max(1, min(MEGA_SERVER_HOURS, float(self.cfg.get("megaphone_hours", 24) or 24)))
+        hours = max(1, min(MEGA_SERVER_HOURS, float(self.cfg.get("megaphone_hours", 72) or 72)))
         new = 0
         while True:
             res = self.server.megaphone_changes(seq, hours)

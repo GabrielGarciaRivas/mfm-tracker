@@ -1999,7 +1999,7 @@ class App:
         top = ttk.Frame(tab)
         top.pack(fill="x", pady=(0, 6))
         ttk.Label(top, text="Keep megaphones for").pack(side="left")
-        self.mega_hours = tk.IntVar(value=int(self.cfg.get("megaphone_hours", 24) or 24))
+        self.mega_hours = tk.IntVar(value=int(self.cfg.get("megaphone_hours", 72) or 72))
         sp = ttk.Spinbox(top, from_=1, to=720, width=5, textvariable=self.mega_hours,
                          command=self._mega_hours_changed)
         sp.pack(side="left", padx=4)
@@ -2076,7 +2076,7 @@ class App:
         except (tk.TclError, ValueError):
             return
         if hours != self.cfg.get("megaphone_hours"):
-            more = hours > int(self.cfg.get("megaphone_hours", 24) or 24)
+            more = hours > int(self.cfg.get("megaphone_hours", 72) or 72)
             self.cfg["megaphone_hours"] = hours
             mfm.save_config(self.cfg)
             if more and self.cfg.get("shared_server"):
@@ -2090,7 +2090,7 @@ class App:
     def refresh_megaphones(self):
         if not hasattr(self, "mega_trees"):
             return
-        hours = max(1, int(self.cfg.get("megaphone_hours", 24) or 24))
+        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
         mfm.purge_megaphones(self.con, hours)
         rows = self.con.execute(
             "SELECT id, ts, player, channel, message, kind, color FROM megaphones WHERE ts >= ? "

@@ -3,6 +3,7 @@
 ## 2610.17.001 — 2026-10-17
 
 ### Changed
+- Megaphones are kept for 72 hours by default (was 24).
 - **Scroll as fast as you like.** The screen is captured continuously, like a recording,
   and read at the OCR's own pace, so rows aren't missed when you scroll or hop shops
   quickly. A new **Frames waiting** stat and the status bar show when it's catching up.
