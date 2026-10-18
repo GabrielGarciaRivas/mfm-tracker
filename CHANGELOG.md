@@ -1,5 +1,22 @@
 # Changelog
 
+## 2610.17.001 — 2026-10-17
+
+### Changed
+- **Scroll as fast as you like.** The screen is captured continuously, like a recording,
+  and read at the OCR's own pace, so rows aren't missed when you scroll or hop shops
+  quickly. A new **Frames waiting** stat and the status bar show when it's catching up.
+  Pressing **Stop** still reads the frames captured just before; press Stop again to
+  discard them.
+
+### Fixed
+- The window no longer freezes while shops are being read or while you search in Items:
+  the Deals, Items and Review tables are worked out in the background. The Deals
+  checkboxes and the Items filter apply at once.
+- Item name matching (Review suggestions, the item search box) is about 4× faster.
+
+Thanks to @GabrielGarciaRivas for these.
+
 ## 2610.16.002 — 2026-10-17
 
 ### Changed

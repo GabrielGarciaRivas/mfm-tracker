@@ -522,11 +522,35 @@ class ItemSearch(ttk.Frame):
     def _update(self):
         self._after = None
         text = self.var.get().strip()
-        names = mfm.suggest_items(text, 12) if len(text) >= 2 else []
-        if not names or (len(names) == 1 and names[0] == text):
+        if len(text) < 2:
             self.hide()
             return
-        self._show(names)
+        # the fuzzy search runs on a worker thread (the first lookup loads the item
+        # dictionary, and odd text can mean comparing against every name); only the
+        # answer to what's typed now is shown
+        self._asked = getattr(self, "_asked", 0) + 1
+        seq = self._asked
+
+        def work():
+            try:
+                names = mfm.suggest_items(text, 12)
+            except Exception:
+                names = []
+            self.app.events.put(("call", lambda: self._suggested(seq, text, names)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _suggested(self, seq, text, names):
+        if seq != getattr(self, "_asked", 0):
+            return       # typed more since
+        try:
+            if not self.winfo_exists():
+                return
+            if not names or (len(names) == 1 and names[0] == text):
+                self.hide()
+                return
+            self._show(names)
+        except tk.TclError:
+            pass         # the window was closed meanwhile
 
     def _show(self, names):
         if self.popup is None:
@@ -618,6 +642,15 @@ class App:
         self._icon_queue: queue.Queue = queue.Queue()
         self._icon_asked: set[str] = set()
         self._icon_worker = None
+        self._no_icon: set[str] = set()      # items known to have no icon yet: not looked up again
+        # Deals / Items / Review are worked out by a background thread (see refresh_tables)
+        self._tables_lock = threading.Lock()
+        self._tables_want: dict | None = None   # the refresh asked for, until the thread takes it
+        self._tables_busy = False
+        self._tables_data: dict | None = None   # last result: re-filtered without recomputing
+        self._refill_job = None
+        self._stale: set[str] = set()           # tables whose rows are older than _tables_data
+        self._deals_job = None                  # the Deals table is filled in slices (see _fill_deals)
         self.watch = mfm.load_watchlist()
         self.watched_listings = mfm.load_watched_listings()
         self._error_times: dict = {}
@@ -625,6 +658,8 @@ class App:
         self.ignored = set(mfm.load_ignorelist())
         self.shops_today = 0
         self.logged_today = 0
+        self.backlog = 0        # captured frames waiting for OCR (0 = reading live)
+        self._behind = False    # "the OCR is behind" is showing in the status bar
         self.chan_watch = mfm.ChannelWatch()   # change-channel dialog: seen, then gone
         self.chan_popup = None
 
@@ -749,18 +784,20 @@ class App:
         ttk.Spinbox(top, from_=1, to=720, width=5, textvariable=self.hours_var,
                     command=self.refresh_tables).pack(side="left", padx=4)
         ttk.Label(top, text="hours, best deals first.").pack(side="left")
+        # "Include sold" and the hours change what's queried; the other three only
+        # filter the rows already computed, so they apply at once
         self.only_deals = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Deals only", variable=self.only_deals,
-                        command=self.refresh_tables).pack(side="right")
+                        command=self.refill_tables).pack(side="right")
         self.show_sold = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Include sold", variable=self.show_sold,
                         command=self.refresh_tables).pack(side="right", padx=10)
         self.show_ignored = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Show ignored", variable=self.show_ignored,
-                        command=self.refresh_tables).pack(side="right")
+                        command=self.refill_tables).pack(side="right")
         self.show_outliers = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Show outliers", variable=self.show_outliers,
-                        command=self.refresh_tables).pack(side="right", padx=10)
+                        command=self.refill_tables).pack(side="right", padx=10)
         self.deals = make_tree(deals, COLS + ("status", "notes", "shop", "player", "map", "channel", "time"))
         self.deals.frame.pack(fill="both", expand=True)
         self.deals.bind("<Double-1>", lambda e: self.open_history(self.deals))
@@ -795,8 +832,10 @@ class App:
             self._add_menu(tree)
 
         self._build_megaphones_tab()
-        self.live_tab = live
+        self.live_tab, self.deals_tab, self.items_tab = live, deals, items
         self.nb.select(live)
+        # a table is only filled while its tab is showing; the others catch up when opened
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self._fill_stale(), add="+")
         self._build_review_tab()
         self._build_watched_tab()
         self._build_ignore_tab()
@@ -822,6 +861,7 @@ class App:
                 "Screen Recording, then quit and reopen the app.")
             return
         self.stop_event = threading.Event()
+        self.backlog, self._behind = 0, False
         self.monitor = mfm.Monitor(self.cfg, lambda k, p: self.events.put((k, p)),
                                    self.channel())
         self.monitor.chan_watch = self.chan_watch
@@ -832,10 +872,18 @@ class App:
         self._mega_status_text(None)
 
     def stop(self):
+        aborting = False
         if self.stop_event:
+            if self.stop_event.is_set() and self.monitor:
+                self.monitor.abort = True   # pressed again while finishing: drop the queue
+                aborting = True
             self.stop_event.set()
         self.start_btn.config(text="▶  Start monitoring")
-        self._set_status("Stopped.")
+        if not aborting and self.worker and self.worker.is_alive() and self.backlog:
+            self._set_status(f"Stopped — still reading {self.backlog} captured frames "
+                             "(press Stop again to discard them).")
+        else:
+            self._set_status("Stopped.")
         self.root.after(300, lambda: self._mega_status_text(None))
 
     def channel(self) -> str | None:
@@ -1198,6 +1246,28 @@ class App:
         self.found_at = layout
         self._update_stats(None, None)
 
+    def on_backlog(self, p):
+        """How far the OCR is behind the captures. Scrolling faster than the OCR
+        queues frames instead of losing rows; they're read moments later."""
+        self.backlog = p["frames"]
+        if self.stop_event is not None and self.stop_event.is_set():
+            if self.backlog and not (self.monitor and self.monitor.abort):
+                self._set_status(f"Stopped — still reading {self.backlog} captured frames "
+                                 "(press Stop again to discard them).")
+        elif self.backlog >= 10:
+            self._behind = True
+            self._set_status(f"Monitoring — reading is {self.backlog} frames behind the "
+                             "screen; nothing is lost, results show in a moment.")
+        elif self._behind and not self.backlog:
+            self._behind = False
+            self._set_status("Monitoring — open shops and scroll through them normally.")
+
+    def on_stopped(self, _p=None):
+        """The monitor finished, including any frames still queued when Stop was pressed."""
+        self.backlog = 0
+        if self.stop_event is not None and self.stop_event.is_set():
+            self._set_status("Stopped.")
+
     def on_error(self, msg):
         self.report_error("Monitoring error", msg)
 
@@ -1289,6 +1359,7 @@ class App:
         self.stats.config(text=(
             f"Rows read this frame:  {on_screen}\n"
             f"OCR time:  {speed}\n"
+            f"Frames waiting:  {self.backlog}\n"
             f"Shops visited:  {self.shops_today}\n"
             f"Listings logged:  {self.logged_today}\n"
             f"Shop area:  {area(region, lay.store if lay else None)}\n"
@@ -1366,88 +1437,160 @@ class App:
         top = tree.yview()[0]
 
         def restore():
-            again = [k for k in tree.get_children("") if key(tree, k) in chosen]
-            if again:
-                tree.selection_set(again)
+            if chosen:   # (nothing was selected: don't read every row's columns for nothing)
+                again = [k for k in tree.get_children("") if key(tree, k) in chosen]
+                if again:
+                    tree.selection_set(again)
             tree.yview_moveto(top)
         return restore
 
     def refresh_tables(self):
-        cfg, con = self.cfg, self.con
-        if any(getattr(t, "dragging", False) for t in (self.deals, self.items)):
-            return   # mid-selection; the next refresh will catch up
+        """Bring every table up to date. Alerts, Ignored and My Inventory are
+        rebuilt right here (a few rows). Deals, Items and Review mean thousands
+        of queries and the fuzzy name search for every unmatched name, so they're
+        worked out by a background thread with its own database connection
+        (request_tables) and only filled in here once that's done (on_tables);
+        the window keeps responding meanwhile. Toggling a filter re-filters the
+        last result instead (refill_tables), without going back to the database."""
         self.refresh_alerts()
         self.refresh_ignored()
-        self.refresh_review()
         self.refresh_inventory()
-        row_key = lambda t, k: tuple(t.set(k, c) for c in ("item", "each", "status", "shop", "player", "map",
-                                                           "channel"))
-        restore_deals = self._keep_selection(self.deals, row_key)
-        restore_items = self._keep_selection(self.items, lambda t, k: t.set(k, "item"))
+        self.request_tables()
+
+    def request_tables(self):
+        """Ask the background thread for fresh Deals / Items / Review data. Asking
+        again while it's busy just replaces what it does next; the result arrives
+        as a "tables" event."""
         try:
             hours = max(1, int(self.hours_var.get()))
         except (tk.TclError, ValueError):
             hours = 24
-        since = mfm.utc_ago(hours=hours)
-        sold_filter = "" if self.show_sold.get() else "AND COALESCE(sold, 0) = 0"
-        rows = con.execute(
-            "SELECT item, price, qty, shop, seller, map, channel, COALESCE(sold, 0), "
-            "MAX(COALESCE(last_seen, ts)), MAX(COALESCE(notes, '')) FROM listings "
-            "WHERE COALESCE(last_seen, ts) >= ? "
-            f"{sold_filter} GROUP BY item, price, qty, shop, seller, map, sold",
-            (since,)).fetchall()
-        scored = []
-        bounds: dict[str, object] = {}
-        for item, price, qty, shop, seller, mp, channel, sold, ts, notes in rows:
-            each = price
-            mkt, _ = mfm.market_rate(con, item, cfg)
-            if item not in bounds:
-                bounds[item] = mfm.outlier_bounds(con, item, cfg)
-            v, pct = mfm.verdict(each, mkt, cfg["deal_threshold_pct"], bounds[item])
-            if v == "OUTLIER" and not self.show_outliers.get():
+        want = {"hours": hours, "show_sold": bool(self.show_sold.get()), "cfg": dict(self.cfg),
+                "show_kept": bool(hasattr(self, "review_show_kept") and self.review_show_kept.get())}
+        with self._tables_lock:
+            self._tables_want = want
+            if self._tables_busy:
+                return
+            self._tables_busy = True
+        threading.Thread(target=self._tables_work, daemon=True, name="mfm-tables").start()
+
+    def _tables_work(self):
+        con = None
+        while True:
+            with self._tables_lock:
+                want, self._tables_want = self._tables_want, None
+                if want is None:
+                    self._tables_busy = False
+                    return
+            try:
+                if con is None:
+                    con = mfm.db()
+                data = mfm.table_data(con, want["cfg"], hours=want["hours"],
+                                      show_sold=want["show_sold"], show_kept=want["show_kept"])
+            except Exception as e:
+                self.events.put(("tables_error", f"{type(e).__name__}: {e}"))
                 continue
-            if self.only_deals.get() and (v != "DEAL" or sold):
-                continue
-            if item in self.ignored and not self.show_ignored.get():
-                continue
-            scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
-                           (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller,
-                           notes))
-        scored.sort()
+            self.events.put(("tables", data))
+
+    def on_tables(self, data):
+        if data == self._tables_data:
+            return        # nothing changed since the last fill: leave the tables alone
+        self._tables_data = data
+        self.refill_tables()
+
+    def on_tables_error(self, msg):
+        self.report_error("Updating the tables failed", msg)
+
+    def refill_tables(self):
+        """Show the last computed data in the Deals, Items and Review tables, as the
+        current checkboxes and filter say. Only the table on screen is filled now
+        (thousands of rows take a moment even without the database); the others
+        are marked stale and filled when their tab is opened. Waits while you're
+        drag-selecting rows."""
+        data = self._tables_data
+        if data is None:
+            return
+        for job in ("_refill_job", "_deals_job"):
+            if getattr(self, job):
+                self.root.after_cancel(getattr(self, job))
+                setattr(self, job, None)
+        trees = [self.deals, self.items] + ([self.review] if hasattr(self, "review") else [])
+        if any(getattr(t, "dragging", False) for t in trees):
+            self._refill_job = self.root.after(400, self.refill_tables)
+            return
+        self._stale = {"deals", "items", "review"}
+        if hasattr(self, "review_tab"):
+            n = sum(1 for r in data["review"] if not r["kept"])
+            self.nb.tab(self.review_tab, text=f"  Review ({n})  " if n else "  Review  ")
+        self._fill_stale()
+
+    def _fill_stale(self):
+        data = self._tables_data
+        if data is None or not self._stale:
+            return
+        showing = self.nb.select()
+        tabs = (("deals", "deals_tab", self._fill_deals), ("items", "items_tab", self._fill_items),
+                ("review", "review_tab", self._fill_review))
+        for name, tab, fill in tabs:
+            if name in self._stale and hasattr(self, tab) and showing == str(getattr(self, tab)):
+                self._stale.discard(name)
+                fill(data[name])
+
+    def _fill_deals(self, scored):
+        """The Deals table can run to thousands of rows (every listing seen in the
+        window), so they go in 1,500 at a time, with the window free in between."""
+        if self._deals_job:
+            self.root.after_cancel(self._deals_job)
+            self._deals_job = None
+        row_key = lambda t, k: tuple(t.set(k, c) for c in ("item", "each", "status", "shop", "player", "map",
+                                                           "channel"))
+        restore = self._keep_selection(self.deals, row_key)
+        show_outliers, only_deals, show_ignored = (self.show_outliers.get(), self.only_deals.get(),
+                                                   self.show_ignored.get())
+        rows = [r for r in scored
+                if (show_outliers or r[6] != "OUTLIER")
+                and not (only_deals and (r[6] != "DEAL" or r[0]))
+                and (show_ignored or r[2] not in self.ignored)]
         self.deals.delete(*self.deals.get_children())
         self.scopes = {k: v for k, v in self.scopes.items() if k[0] != str(self.deals)}
-        for sold, pct, item, qty, each, mkt, v, where, ts, price, shop, seller, notes in scored:
-            found = not sold and (bool(mfm.watch_match(self.watch, item, each)) or bool(
-                mfm.watched_listing_match(self.watched_listings, item, shop or "", seller or "", price)))
-            tag = "sold" if sold else ("ignored" if item in self.ignored else tag_for(v))
-            iid = self.deals.insert("", "end", image=self.icon_for(item, found=found),
-                              tags=(tag,) + (("watch",) if found else ()), values=(
-                item, mfm.fmt(each), mfm.fmt(mkt),
-                diff_text(None if pct == 999 else pct),
-                v, "sold" if sold else "for sale", notes, *where, mfm.local_time(ts)))
-            self.scopes[(str(self.deals), iid)] = {"price": price, "qty": qty, "shop": shop, "seller": seller,
-                                                   "title": shop or "", "map": where[2],
-                                                   "channel": where[3]}
+        tree_id = str(self.deals)
 
-        best = mfm.cheapest(con, 24, cfg)
+        def put(start):
+            self._deals_job = None
+            end = min(start + 1500, len(rows))
+            for sold, pct, item, qty, each, mkt, v, where, ts, price, shop, seller, notes in rows[start:end]:
+                found = not sold and (bool(mfm.watch_match(self.watch, item, each)) or bool(
+                    mfm.watched_listing_match(self.watched_listings, item, shop or "", seller or "", price)))
+                tag = "sold" if sold else ("ignored" if item in self.ignored else tag_for(v))
+                iid = self.deals.insert("", "end", image=self.icon_for(item, found=found),
+                                        tags=(tag,) + (("watch",) if found else ()), values=(
+                    item, mfm.fmt(each), mfm.fmt(mkt),
+                    diff_text(None if pct == 999 else pct),
+                    v, "sold" if sold else "for sale", notes, *where, mfm.local_time(ts)))
+                self.scopes[(tree_id, iid)] = {"price": price, "qty": qty, "shop": shop, "seller": seller,
+                                               "title": shop or "", "map": where[2], "channel": where[3]}
+            if end < len(rows):
+                self._deals_job = self.root.after(1, lambda: put(end))
+            else:
+                restore()
+        put(0)
+
+    def _fill_items(self, rows):
+        restore = self._keep_selection(self.items, lambda t, k: t.set(k, "item"))
         self.items.delete(*self.items.get_children())
         filt = self.item_filter() if hasattr(self, "f_name") else {}
+        threshold = self.cfg["deal_threshold_pct"]
         shown = total = 0
-        for (item,) in con.execute(
-                "SELECT DISTINCT item FROM listings ORDER BY item COLLATE NOCASE"):
+        for item, mkt, src, st, b, npc_buy, npc_sell in rows:
             total += 1
             if filt and not mfm.item_matches(item, filt):
                 continue
             shown += 1
-            mkt, src = mfm.market_rate(con, item, cfg)
-            info = mfm.item_info(item)
-            st = mfm.price_stats(con, item, cfg, bounds.get(item, "auto"))
-            b = best.get(item)
             tag = ""
             if item in self.ignored:
                 tag = "ignored"
             elif b:
-                v, _ = mfm.verdict(b[0], mkt, cfg["deal_threshold_pct"])
+                v, _ = mfm.verdict(b[0], mkt, threshold)
                 tag = tag_for(v) if v == "DEAL" else ""
             found = bool(b) and bool(mfm.watch_match(self.watch, item, b[0]))
             self.items.insert("", "end", image=self.icon_for(item, found=found),
@@ -1456,13 +1599,11 @@ class App:
                 (b[3] or "") if b else "", (b[4] or "") if b else "",
                 mfm.fmt(st["listed_median"]), st["listed_n"],
                 mfm.fmt(st["sold_median"]), st["sold_n"], mfm.fmt(mkt),
-                mfm.fmt(info.get("npcBuy")) if info and info.get("npcBuy") else "-",
-                mfm.fmt(info.get("npcSell")) if info and info.get("npcSell") else "-", src))
+                mfm.fmt(npc_buy) if npc_buy else "-", mfm.fmt(npc_sell) if npc_sell else "-", src))
         if hasattr(self, "f_count"):
             self.f_count.config(text=f"{shown:,} of {total:,} items" if shown != total else
                                 f"{total:,} items")
-        restore_deals()
-        restore_items()
+        restore()
 
     # ------------------------------------------------------------------ items filter
     ANY = "Any"
@@ -1546,7 +1687,10 @@ class App:
                 "npc": self.f_npc.get()}
 
     def _update_filter_choices(self):
-        names = [r[0] for r in self.con.execute("SELECT DISTINCT item FROM listings")]
+        if self._tables_data is not None:
+            names = [r[0] for r in self._tables_data["items"]]
+        else:
+            names = [r[0] for r in self.con.execute("SELECT DISTINCT item FROM listings")]
         opts = mfm.item_filter_options(names)
         self.f_type_cb["values"] = [self.ANY] + opts["types"]
         t = self.f_type.get()
@@ -1560,7 +1704,11 @@ class App:
         f = self.item_filter()
         self.cfg["items_filter"] = f
         mfm.save_config(self.cfg)
-        self.refresh_tables()
+        if self._tables_data is not None:
+            self._stale.discard("items")
+            self._fill_items(self._tables_data["items"])   # the same data, filtered: instant
+        else:
+            self.request_tables()
 
     def clear_item_filter(self):
         for v in (self.f_name, self.f_lmin, self.f_lmax):
@@ -3114,13 +3262,15 @@ class App:
         self.refresh_review()
 
     def refresh_review(self):
+        """Recompute the Review tab (in the background; see refresh_tables)."""
+        if hasattr(self, "review"):
+            self.request_tables()
+
+    def _fill_review(self, rows):
         if not hasattr(self, "review"):
             return
         t = self.review
-        if getattr(t, "dragging", False):
-            return
         restore = self._keep_selection(t, lambda tr, k: tr.set(k, "item"))
-        rows = mfm.unmatched_items(self.con, include_kept=self.review_show_kept.get())
         t.delete(*t.get_children())
         self.review_rows = {}
         for r in rows:
@@ -3131,8 +3281,6 @@ class App:
                 mfm.local_time(r["last"]), r["raw"]))
             self.review_rows[iid] = r
         restore()
-        n = sum(1 for r in rows if not r["kept"])
-        self.nb.tab(self.review_tab, text=f"  Review ({n})  " if n else "  Review  ")
 
     def _review_selected(self):
         t = self.review
@@ -3783,6 +3931,7 @@ class App:
             # (keep the old images alive: open windows may still be showing them)
             self._retired_icons = getattr(self, "_retired_icons", []) + list(self.icons.values())
             self.icons.clear()
+            self._no_icon.clear()
         for item in items or ():
             self._forget_icon(item)
         self.icon_lists = [l for l in self.icon_lists if l.alive()]
@@ -3841,9 +3990,15 @@ class App:
         warn = mfm.needs_review(item)
         key = f"{item}@{size}{'!' if warn else ''}{'g' if found else ''}"
         if key not in self.icons:
+            if item in self._no_icon and not warn and not found:
+                return ""   # looked up before, nothing saved: skip the queries (two per row)
             img = mfm.load_icon(self.con, item)
-            if img is None and not warn and not found:
-                return ""
+            if img is None:
+                self._no_icon.add(item)
+                if not warn and not found:
+                    return ""
+            else:
+                self._no_icon.discard(item)
             canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
             if img is not None:
                 img = img.convert("RGBA")
@@ -3866,6 +4021,7 @@ class App:
         return self.icons[key]
 
     def _forget_icon(self, item):
+        self._no_icon.discard(item)
         for k in list(self.icons):
             if k.startswith(item + "@"):
                 self.icons.pop(k, None)
@@ -4078,7 +4234,9 @@ class App:
         tips = {
             "deal_threshold_pct": "How far below (DEAL) or above (HIGH) the market price a listing "
                                   "must be.",
-            "interval_seconds": "How often the screen is read. Higher uses less CPU.",
+            "interval_seconds": "How often the screen is captured. The OCR reads the captures "
+                                "at its own pace, so nothing is lost when you scroll fast. "
+                                "Higher uses less CPU.",
             "confirm_frames": "How many matching reads a listing needs before it's saved.",
             "unmatched_extra_frames": "Extra reads for names not in the item list, before they're "
                                       "saved.",

@@ -269,7 +269,7 @@ Rest the mouse on any setting for a short explanation.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Capture every (seconds) | 0.15 | how often the screen is read while monitoring |
+| Capture every (seconds) | 0.1 | how often the screen is captured while monitoring (the reading catches up at its own pace) |
 | Frames to confirm a row | 2 | identical reads needed before a listing is saved |
 | Extra reads for names not in database | 2 | extra reads before an unknown name is saved |
 | Empty frames = shop closed | 3 | reads without a shop before it counts as closed |

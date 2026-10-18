@@ -88,7 +88,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.16.002"
+VERSION = "2610.17.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -142,7 +142,7 @@ _migrate_layout()
 DEFAULT_CONFIG = {
     "region": None,            # store window [l, t, w, h]; None = find it automatically
     "map_region": None,        # minimap name area; None = estimate from the store position
-    "interval_seconds": 0.15, # how often monitor/watch grabs the screen
+    "interval_seconds": 0.1,   # how often the screen is captured (OCR runs at its own pace)
     "confirm_frames": 2,       # identical reads needed before a row is logged
     "unmatched_extra_frames": 2,  # extra reads for a name not in the meowdb list first
     "close_frames": 3,         # empty frames in a row = shop closed
@@ -173,6 +173,9 @@ DEFAULT_CONFIG = {
     "icon_rate": 10,             # icon downloads per second (slows down by itself if meowdb asks)
 }
 
+FRAME_QUEUE_MAX = 150   # captured frames waiting for OCR (~15-45 s of scrolling); above
+                        # this the oldest give way, so memory stays modest
+
 
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
@@ -182,8 +185,8 @@ def load_config() -> dict:
             saved.pop("interval_seconds")  # old default was too slow for scrolling
         if saved.get("channel_count") == 18:
             saved.pop("channel_count")     # the previous default: use the new one
-        if saved.get("interval_seconds") == 0.75:
-            saved.pop("interval_seconds")  # the previous default: use the new one
+        if saved.get("interval_seconds") in (0.75, 0.15):
+            saved.pop("interval_seconds")  # previous defaults: use the new one
         if "outlier_min_n" in saved:       # renamed: it now applies to DEAL / HIGH too
             saved.setdefault("min_sightings", saved["outlier_min_n"])
             saved.pop("outlier_min_n")
@@ -241,11 +244,27 @@ def local_time(ts: str | None) -> str:
 # --------------------------------------------------------------------------- db
 
 
+def _wal(con: sqlite3.Connection, *schemas: str) -> None:
+    """Write-ahead logging, so the window's reads never wait for the OCR thread's
+    writes (and the other way round). In the default rollback mode a commit from
+    one thread blocks every query from another, up to the busy timeout: with the
+    app recounting its tables while a shop is being logged, that showed as the
+    window freezing ("not responding"). The setting sticks to the file; it's
+    retried on the next open if another process holds the database right now."""
+    for s in schemas:
+        try:
+            con.execute(f"PRAGMA {s}.journal_mode=WAL")
+            con.execute(f"PRAGMA {s}.synchronous=NORMAL")   # safe with WAL, far fewer fsyncs
+        except sqlite3.OperationalError:
+            pass
+
+
 def db() -> sqlite3.Connection:
     """Prices database, with the icon cache attached: queries can use `icons` as
     if it were part of it, but it lives in cache/icons.db."""
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("ATTACH DATABASE ? AS cache", (str(ICONS_DB_PATH),))
+    _wal(con, "main", "cache")
     con.execute("""CREATE TABLE IF NOT EXISTS cache.icons (
             item TEXT PRIMARY KEY, png BLOB NOT NULL, faded INTEGER NOT NULL DEFAULT 0,
             updated TEXT, source TEXT)""")
@@ -1235,12 +1254,19 @@ def _scroll_family(name: str) -> tuple[list[str], str, bool]:
     if len(fh) < 8:
         return [], part, bool(m)
     scored = []
+    quick = difflib.SequenceMatcher(None, "", fh)   # quick_ratio never undershoots ratio
     for n in d.graded_scrolls:
         fb = d.scroll_base_fold[n]
         # whole "... Scroll" visible: compare with the whole base name; cut off
         # earlier ("Two-handed Blunt Wea…"): with the same-length start of it
         ref = fb if m else fb[:len(fh)]
-        r = 1.0 if ref == fh else difflib.SequenceMatcher(None, fh, ref).ratio()
+        if ref == fh:
+            scored.append((1.0, n))
+            continue
+        quick.set_seq1(ref)
+        if quick.quick_ratio() < 0.9:
+            continue   # can't reach 0.9 on the full comparison either
+        r = difflib.SequenceMatcher(None, fh, ref).ratio()
         if r >= 0.9:
             scored.append((r, n))
     if not scored:
@@ -2473,7 +2499,8 @@ INV_FIELDS = ("item", "qty", "notes", "list_price", "sold", "sold_at", "sold_ids
 def inventory_db():
     """The My Inventory database (created on first use)."""
     INVENTORY_DIR.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(INVENTORY_DB_PATH)
+    con = sqlite3.connect(INVENTORY_DB_PATH, timeout=10)
+    _wal(con, "main")
     con.execute("""CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY, item TEXT NOT NULL, qty INTEGER NOT NULL DEFAULT 1,
         notes TEXT, list_price INTEGER, sold INTEGER NOT NULL DEFAULT 0, sold_at TEXT,
@@ -2532,6 +2559,8 @@ def clear_inventory(con) -> Path | None:
     if INVENTORY_DB_PATH.exists():
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         backup = BACKUP_DIR / f"inventory-{_stamp()}.db"
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # everything into the main file first
         shutil.copy2(INVENTORY_DB_PATH, backup)
     con.execute("DELETE FROM items")
     con.commit()
@@ -4150,7 +4179,16 @@ class _Dictionary:
         for n in names:
             for wd in set(re.findall(r"[a-z']{4,}", n.lower())):
                 self.by_word.setdefault(wd, []).append(n)
+        # folded spellings, worked out once: the fuzzy scans below compare every
+        # name with what was read, and re-folding 5,000 names per lookup was most
+        # of their cost
+        self.norm_of = {n: _norm(n) for n in names}
+        self.fold_lower = [(n, fl, _counts(fl)) for n, fl in ((n, fold(n.lower())) for n in names)]
+        self.fold_norm = [(n, fn, len(self.norm_of[n].split()), _counts(fn))
+                          for n, fn in ((n, fold(self.norm_of[n])) for n in names)]
+        self.folded = {n: f for n, f, _, _ in self.fold_norm}   # name -> fold(_norm(name))
         self.memo: dict[str, str | None] = {}
+        self.suggest_memo: dict[tuple, list[str]] = {}
         best_match.memo = {}
         # graded scrolls, for deciding a cut-off scroll's grade by its icon colour
         self.graded_scrolls = [n for n in names if re.search(r"\bScroll: (Chaos|Greater|Intermediate|Lesser)$", n)]
@@ -4218,9 +4256,8 @@ class _Dictionary:
         pool = set(self._candidates(low))
         # names sharing no long word with the misread ("Rennae Hat"): shortlist by
         # same word count, similar length and overall look
-        pool.update(n for n in self.names
-                    if len(_norm(n).split()) == len(ta) and abs(len(n) - len(a)) <= 2
-                    and difflib.SequenceMatcher(None, fa, fold(_norm(n))).quick_ratio() >= 0.7)
+        pool.update(_quick_scan(fa, ((n, f, c) for n, f, nw, c in self.fold_norm
+                                     if nw == len(ta) and abs(len(n) - len(a)) <= 2), 0.7))
         scored = []
         for cand in pool:
             b = _norm(cand)
@@ -4299,9 +4336,47 @@ class _Dictionary:
             # only word isn't in the index: cheap length + quick_ratio filter, on the
             # folded spelling so commonly-confused letters (g/p, a/o) count as equal
             f = fold(low)
-            cands |= {n for n in self.names if abs(len(n) - len(low)) <= 3
-                      and difflib.SequenceMatcher(None, f, fold(n.lower())).quick_ratio() >= 0.85}
+            cands.update(_quick_scan(f, ((n, fl, c) for n, fl, c in self.fold_lower
+                                         if abs(len(n) - len(low)) <= 3), 0.85))
         return list(cands)
+
+
+def _counts(s: str) -> dict:
+    """Letter counts of a (folded) name, kept with it for _quick_scan."""
+    c: dict = {}
+    for ch in s:
+        c[ch] = c.get(ch, 0) + 1
+    return c
+
+
+def _quick_scan(query: str, triples, threshold: float) -> list[str]:
+    """Names whose folded spelling is at least `threshold` alike to the folded
+    `query` by difflib's quick_ratio, from (name, folded, letter counts) triples.
+
+    quick_ratio is 2 × (letters the two have in common, with repeats) / (both
+    lengths), so it's computed here straight from the letter counts worked out
+    once per name when the dictionary loads, instead of difflib indexing each
+    name again on every lookup; names too long or short to possibly reach the
+    threshold are skipped before even that. Same results as
+    SequenceMatcher(None, query, folded).quick_ratio() >= threshold."""
+    q = list(_counts(query).items())
+    lq = len(query)
+    out = []
+    for n, f, counts in triples:
+        lf = len(f)
+        if not lf and not lq:
+            out.append(n)     # difflib calls two empty strings identical
+            continue
+        if 2.0 * min(lf, lq) / (lf + lq) < threshold:   # even all letters in common wouldn't do
+            continue
+        m = 0
+        for ch, k in q:
+            c = counts.get(ch)
+            if c:
+                m += c if c < k else k
+        if 2.0 * m / (lf + lq) >= threshold:
+            out.append(n)
+    return out
 
 
 def normalize_name(name: str, known_items: list[str]) -> str:
@@ -4495,17 +4570,26 @@ def suggest_items(text: str, limit: int = 40) -> list[str]:
     d = _dict()
     if not d or not d.names:
         return []
+    key = (text, limit)
+    hit = d.suggest_memo.get(key)
+    if hit is not None:
+        return list(hit)
     low = _norm(text.rstrip("…"))
     words = [w for w in re.findall(r"[a-z0-9']+", low) if len(w) >= 2]
-    pool = [n for n in d.names if all(w in _norm(n) for w in words)] if words else []
+    norm_of = d.norm_of
+    pool = [n for n in d.names if all(w in norm_of[n] for w in words)] if words else []
     if len(pool) < limit:
         pool += [n for n in d._candidates(low) if n not in pool]
-    if len(pool) < 5:
-        f = fold(low)
-        pool += [n for n in d.names if n not in pool and
-                 difflib.SequenceMatcher(None, f, fold(_norm(n))).quick_ratio() >= 0.7]
     f = fold(low)
-    pool.sort(key=lambda n: -difflib.SequenceMatcher(None, f, fold(_norm(n))[:len(f) + 8]).ratio())
+    if len(pool) < 5:
+        have = set(pool)
+        pool += [n for n in _quick_scan(f, ((n, fn, c) for n, fn, _, c in d.fold_norm), 0.7)
+                 if n not in have]
+    folded = d.folded
+    pool.sort(key=lambda n: -difflib.SequenceMatcher(None, f, folded[n][:len(f) + 8]).ratio())
+    if len(d.suggest_memo) > 2000:
+        d.suggest_memo.clear()
+    d.suggest_memo[key] = pool[:limit]
     return pool[:limit]
 
 
@@ -4868,6 +4952,55 @@ def cheapest(con, hours: int = 24, cfg: dict | None = None) -> dict[str, tuple]:
                 continue          # absurdly high: skipped; very low ones are real deals
         best[item] = (each, shop, seller, mp, channel, ts)
     return best
+
+
+def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
+               show_kept: bool = False) -> dict:
+    """What the app's Deals, Items and Review tables show, as plain data.
+
+    The app works this out on a background thread (with its own connection) and
+    only puts the rows on screen from the window's thread: with a thousand items
+    it is thousands of queries plus the fuzzy name search for every unmatched
+    name, which used to freeze the window while it ran.
+
+    "deals": one tuple per listing seen in the last `hours` hours (sold ones only
+      with `show_sold`), sorted best deal first:
+      (sold, pct or 999, item, qty, each, market, verdict, (shop, seller, map,
+       channel), last_seen, price, shop, seller, notes). Outliers, ignored items
+      and non-deals are all still in: the app filters them as its checkboxes say.
+    "items": every item ever logged, A-Z: (item, market, source, price_stats,
+      cheapest-for-sale tuple or None, npc buy price, npc sell price).
+    "review": unmatched_items(con, show_kept)."""
+    since = utc_ago(hours=hours)
+    sold_filter = "" if show_sold else "AND COALESCE(sold, 0) = 0"
+    rows = con.execute(
+        "SELECT item, price, qty, shop, seller, map, channel, COALESCE(sold, 0), "
+        "MAX(COALESCE(last_seen, ts)), MAX(COALESCE(notes, '')) FROM listings "
+        "WHERE COALESCE(last_seen, ts) >= ? "
+        f"{sold_filter} GROUP BY item, price, qty, shop, seller, map, sold",
+        (since,)).fetchall()
+    scored = []
+    bounds: dict[str, object] = {}
+    rates: dict[str, tuple] = {}     # an item's market rate, once, not once per listing
+    for item, price, qty, shop, seller, mp, channel, sold, ts, notes in rows:
+        each = price
+        if item not in rates:
+            rates[item] = market_rate(con, item, cfg)
+            bounds[item] = outlier_bounds(con, item, cfg)
+        mkt = rates[item][0]
+        v, pct = verdict(each, mkt, cfg["deal_threshold_pct"], bounds[item])
+        scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
+                       (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller,
+                       notes))
+    scored.sort()
+    best = cheapest(con, 24, cfg)
+    items = []
+    for (item,) in con.execute("SELECT DISTINCT item FROM listings ORDER BY item COLLATE NOCASE"):
+        mkt, src = rates.get(item) or market_rate(con, item, cfg)
+        info = item_info(item) or {}
+        st = price_stats(con, item, cfg, bounds.get(item, "auto"))
+        items.append((item, mkt, src, st, best.get(item), info.get("npcBuy"), info.get("npcSell")))
+    return {"deals": scored, "items": items, "review": unmatched_items(con, include_kept=show_kept)}
 
 
 DUPLICATE_HOURS = 24   # the same listing seen again within this long isn't logged again
@@ -5865,10 +5998,15 @@ class Monitor:
     Continuously OCRs the store window and turns a stream of scrolled frames into
     one clean set of listings per shop visit.
 
+    Capture and OCR are decoupled (see `run`): the screen is captured at a steady
+    rate into a queue, like a recording, and OCR works through the queue at its
+    own pace. Scrolling faster than the OCR doesn't lose rows; they're read a
+    few seconds later.
+
     - A visit starts when listings appear and ends after `close_frames` frames
-      with no store window, or when the store header (title, avatar, seller)
-      changes, i.e. you opened a different shop. Scrolling never changes the
-      header, so it never splits a visit.
+      (spanning at least ~0.15 s each) with no store window, or when the store
+      header (title, avatar, seller) changes, i.e. you opened a different shop.
+      Scrolling never changes the header, so it never splits a visit.
     - Within a visit each (item, price, qty, sold) is logged once, however many
       frames it stays on screen; it must read identically in `confirm_frames`
       frames first, which filters one-off misreads mid-scroll.
@@ -5899,6 +6037,9 @@ class Monitor:
         self.pending_unmatched: dict[tuple, Listing] = {}   # unmatched names still being re-read
         self.last_hidden = 0
         self.empty_streak = 0
+        self.empty_first: float | None = None   # capture time of the first empty frame
+        self._now = 0.0                          # capture time of the frame in step()
+        self.abort = False   # set while stopping to throw away the queued frames
         self.last_hash = None
         self.last_keys: list[tuple] = []
         self.last_listings: list[Listing] = []
@@ -6068,9 +6209,11 @@ class Monitor:
         seller_ok = not seller or not self.seller or similar(seller, self.seller) >= 0.6
         return not (title_ok and seller_ok)
 
-    def step(self, img: Image.Image, map_img: Image.Image | None = None) -> None:
+    def step(self, img: Image.Image, map_img: Image.Image | None = None,
+             ts: float | None = None) -> None:
         if self.con is None:
             self.con = db()
+        self._now = time.monotonic() if ts is None else ts
         if map_img is not None:
             self.map_img = map_img
         if self._split:
@@ -6129,6 +6272,7 @@ class Monitor:
             return
 
         self.empty_streak = 0
+        self.empty_first = None
         if not self.session_id:
             self._start_session(img)
         elif self.header_reads < 8:
@@ -6149,7 +6293,12 @@ class Monitor:
 
     def _count_empty(self):
         self.empty_streak += 1
-        if self.session_id and self.empty_streak >= self.cfg["close_frames"]:
+        if self.empty_first is None:
+            self.empty_first = self._now
+        # frames can now be captured much faster than the old one-per-OCR pace, so
+        # closing also needs the empty frames to span the time close_frames used to
+        if self.session_id and self.empty_streak >= self.cfg["close_frames"] \
+                and self._now - self.empty_first >= 0.15 * self.cfg["close_frames"]:
             self.end_session()
 
     def regions_for(self, full: Image.Image) -> tuple[list | None, list | None]:
@@ -6186,35 +6335,95 @@ class Monitor:
         return shop_r, map_r
 
     def run(self, stop_event) -> None:
-        """Capture loop; call from a background thread. Stops when stop_event is set."""
+        """Capture loop; call from a background thread. Stops when stop_event is set.
+
+        Capture and OCR are decoupled, so scrolling faster than the OCR loses
+        nothing: a capture thread grabs the screen every `interval_seconds`
+        (cheap), crops the store window and queues it; this thread works through
+        the queue at the OCR's pace. A quick sweep through shops piles up in the
+        queue — like frames of a recording — and is read out while the screen is
+        calm again. Frames where nothing moved are queued as the same image, so
+        repeats cost no memory and skip the OCR.
+
+        On stop the queued frames are still read, so a sweep made just before
+        pressing Stop isn't lost; setting `abort` as well throws them away.
+        """
+        import queue as _queue
+        import threading
+
         try:
             self.con = db()
         except Exception as e:
             self.on_event("error", f"can't open the price database: {type(e).__name__}: {e}")
             return
         blank = Image.new("RGB", (8, 8), (0, 0, 0))
-        while not stop_event.is_set():
-            t0 = time.perf_counter()
-            try:
-                full = grab_full_screen()
-                if self.cfg.get("channel_prompt") and self.chan_watch.due():
-                    try:
-                        if self.chan_watch.feed(full):
-                            self.on_event("channel_change", None)
-                    except Exception as e:
-                        self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
-                if self.megaphones.due():
-                    self.megaphones.offer(full)
-                shop_r, map_r = self.regions_for(full)
-                if shop_r is None:
-                    self.step(blank, None)  # no store window anywhere: counts as closed
-                else:
-                    self.step(crop(full, shop_r), crop(full, map_r))
-            except Exception as e:  # keep monitoring through transient failures
-                self.on_event("error", f"{type(e).__name__}: {e}")
-            wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
-            stop_event.wait(max(wait, 0.05))
-        self.end_session()
+        frames: _queue.Queue = _queue.Queue(maxsize=FRAME_QUEUE_MAX)
+        dropped = [0]
+
+        def capture() -> None:
+            last_h, last_imgs = None, None
+            while not stop_event.is_set():
+                t0 = time.perf_counter()
+                try:
+                    full = grab_full_screen()
+                    if self.cfg.get("channel_prompt") and self.chan_watch.due():
+                        try:
+                            if self.chan_watch.feed(full):
+                                self.on_event("channel_change", None)
+                        except Exception as e:
+                            self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
+                    if self.megaphones.due():
+                        self.megaphones.offer(full)
+                    shop_r, map_r = self.regions_for(full)
+                    if shop_r is None:
+                        imgs = (blank, None)   # no store window anywhere: counts as closed
+                    else:
+                        imgs = (crop(full, shop_r), crop(full, map_r))
+                    h = frame_hash(imgs[0])
+                    if last_h is not None and bin(h ^ last_h).count("1") <= 8 and last_imgs:
+                        imgs = last_imgs   # nothing moved: requeue the same image object
+                    else:
+                        last_h, last_imgs = h, imgs
+                    item = (imgs[0], imgs[1], time.monotonic())
+                    while True:
+                        try:
+                            frames.put_nowait(item)
+                            break
+                        except _queue.Full:   # OCR far behind: the oldest frame gives way
+                            try:
+                                frames.get_nowait()
+                                dropped[0] += 1
+                            except _queue.Empty:
+                                pass
+                except Exception as e:
+                    self.on_event("error", f"{type(e).__name__}: {e}")
+                wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
+                stop_event.wait(max(wait, 0.02))
+
+        grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
+        grabber.start()
+        last_backlog = 0
+        try:
+            while True:
+                try:
+                    img, map_img, ts = frames.get(timeout=0.2)
+                except _queue.Empty:
+                    if stop_event.is_set():
+                        break    # every captured frame was read: done
+                    continue
+                if stop_event.is_set() and self.abort:
+                    break        # don't read what's left in the queue
+                try:
+                    self.step(img, map_img, ts)
+                except Exception as e:  # keep monitoring through transient failures
+                    self.on_event("error", f"{type(e).__name__}: {e}")
+                n = frames.qsize()
+                if (n == 0) != (last_backlog == 0) or abs(n - last_backlog) >= 5:
+                    last_backlog = n   # how far the OCR is behind the screen, for the GUI
+                    self.on_event("backlog", {"frames": n, "dropped": dropped[0]})
+        finally:
+            self.end_session()
+            self.on_event("stopped", {"dropped": dropped[0]})
 
 
 def watch(channel, cfg) -> None:
@@ -6233,7 +6442,8 @@ def watch(channel, cfg) -> None:
         elif kind == "error":
             print(f"[error] {p}")
 
-    print(f"Monitoring every {cfg['interval_seconds']}s. Open shops and scroll; Ctrl+C to stop.")
+    print(f"Capturing every {cfg['interval_seconds']}s; the OCR follows at its own pace.\n"
+          f"Open shops and scroll; Ctrl+C to stop.")
     stop = threading.Event()
     try:
         Monitor(cfg, on_event, channel).run(stop)
