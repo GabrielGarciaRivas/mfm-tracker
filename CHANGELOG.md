@@ -4,6 +4,9 @@
 
 ### Changed
 - **Shared Database:** the window also counts nicknames sent and received.
+- **Map:** the map you're on shows next to the channel ("Map: Hidden Street: Free Market
+  <6>"), read from the minimap every few seconds while monitoring, with or without a shop
+  open.
 
 ## 2610.18.004 — 2026-10-18
 

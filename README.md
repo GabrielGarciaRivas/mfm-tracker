@@ -79,7 +79,8 @@ The finished app is in the `dist` folder.
 2. Pick your **Channel**.
 3. Click **Start monitoring**, then play normally: open shops and scroll through them.
    Left of the button, a green arrow means it's monitoring and a red square means it's
-   stopped.
+   stopped. Next to the channel, **Map:** shows the map you're on, read from the
+   minimap every few seconds while monitoring.
 
 The shop window and the minimap are found automatically, on any monitor. Each listing is
 saved with its item, price, shop, player, map, channel and time. The panel on the right

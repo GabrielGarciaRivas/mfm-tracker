@@ -845,6 +845,7 @@ def is_junk(t: str) -> bool:
     return bool(JUNK_TOKEN_RE.match(t) or CRUMB_RE.match(t))
 
 
+MAP_EVERY = 3.0                 # seconds between looks at the minimap while monitoring
 MAX_PRICE = 10_000_000_000      # no price is this high (the game caps mesos far below it)
 
 
@@ -7259,6 +7260,41 @@ class Monitor:
         blank = Image.new("RGB", (8, 8), (0, 0, 0))
         frames: _queue.Queue = _queue.Queue(maxsize=FRAME_QUEUE_MAX)
         dropped = [0]
+        latest = {"full": None}     # the newest screenshot, for the map watcher
+
+        def map_watch() -> None:
+            """The map you're on, from the minimap, every few seconds (also with no
+            shop open): sends a "map" event when it changes."""
+            spot, last_sig, last_name = None, None, None
+            con = None
+            while not stop_event.wait(MAP_EVERY):
+                full = latest["full"]
+                if full is None:
+                    continue
+                try:
+                    area = self.cfg.get("map_region")
+                    if is_auto(area, full.size):
+                        # where the minimap is: looked for again when it can't be read there
+                        spot = spot or find_minimap(full, self.layout.store if self.layout else None)
+                        area = spot
+                    if not area:
+                        continue
+                    img = crop(full, area)
+                    sig = frame_hash(img)
+                    if last_sig is not None and bin(sig ^ last_sig).count("1") <= 4:
+                        continue                  # the same picture: the same map
+                    con = con or db()     # its own connection: this is its own thread
+                    name = read_map(img, self.cfg, known_maps(con))
+                    if not name:
+                        spot = None               # not a minimap (any more): find it again
+                        continue
+                    last_sig = sig
+                    if name != last_name:
+                        last_name = name
+                        self.on_event("map", name)
+                except Exception:
+                    spot = None
+        threading.Thread(target=map_watch, daemon=True, name="mfm-map").start()
 
         def capture() -> None:
             last_h, last_imgs = None, None
@@ -7266,6 +7302,7 @@ class Monitor:
                 t0 = time.perf_counter()
                 try:
                     full = grab_full_screen()
+                    latest["full"] = full
                     if self.cfg.get("channel_prompt") and self.chan_watch.due():
                         try:
                             if self.chan_watch.feed(full):

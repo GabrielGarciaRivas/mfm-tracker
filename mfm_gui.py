@@ -768,6 +768,10 @@ class App:
         self.channel_box.bind("<Button-1>", self._channel_box_click)
         for key in ("<Down>", "<Alt-Down>", "<F4>"):
             self.channel_box.bind(key, lambda e: (self.open_channel_picker(), "break")[1])
+        # the map you're on, read off the minimap while monitoring
+        self.map_label = ttk.Label(bar, text="Map: —")
+        self.map_label.pack(side="left", padx=(14, 0))
+        tip("The map you're on, read from the game's minimap while monitoring.", self.map_label)
         # rarely needed now that shop changes are detected on every frame
         self.root.bind_all("<Control-n>", lambda e: self.next_shop())
         if MAC:
@@ -1202,6 +1206,7 @@ class App:
         self.shop_title.config(text="  ·  ".join(x for x in (
             shop, p["map"], f"opened {p['started']:%H:%M:%S}") if x))
         self.last_map = p["map"] or self.last_map
+        self._show_map()
         self._update_stats(None, None)
         self.shops_today += 1
 
@@ -1300,6 +1305,14 @@ class App:
         n = len(p["listings"])
         self._update_stats(f"{n}  (+{p['hidden']} under cursor)" if p.get("hidden") else n,
                            p["ocr_ms"])
+
+    def on_map(self, name):
+        self.last_map = name or self.last_map
+        self._show_map()
+        self._update_stats(None, None)
+
+    def _show_map(self):
+        self.map_label.config(text=f"Map: {self.last_map or '—'}")
 
     def on_layout(self, layout):
         self.found_at = layout
