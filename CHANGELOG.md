@@ -1,6 +1,6 @@
 # Changelog
 
-## 2610.17.001 — 2026-10-17
+## 2610.18.001 — 2026-10-18
 
 ### New
 - **Megaphone items and prices:** each item a megaphone sells or buys gets its own line in
