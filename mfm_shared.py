@@ -156,6 +156,9 @@ class Server:
     def nickname_changes(self, since: int) -> dict:
         return self.call("GET", "/api/v1/nicknames", query={"since": since, "limit": 5000})
 
+    def purges(self, since: int) -> dict:
+        return self.call("GET", "/api/v1/purges", query={"since": since})
+
 
 # --------------------------------------------------------------------------- local side
 
@@ -252,6 +255,7 @@ class SharedSync:
                 if not self.info:
                     self.info = self.server.status()
                     self.caught_up = False
+                self._apply_purges(con)       # first, so nothing purged is sent back
                 if not self.caught_up:
                     # every time it (re)connects: send what was logged while offline and
                     # read everything on the server again, for sightings and megaphones
@@ -442,11 +446,11 @@ class SharedSync:
                         local = (same[0], same[4])
                         con.execute("UPDATE megaphones SET uid = ? WHERE id = ?", (m["uid"], same[0]))
                 if local:
-                    if conf >= float(local[1] or 0):   # the server's read is at least as sure: take it
-                        con.execute("UPDATE megaphones SET player=?, channel=COALESCE(?, channel), message=?, kind=?, "
-                                    "conf=?, shared_sig=? WHERE id=?",
-                                    (m["player"], m.get("channel"), m["message"], mfm.megaphone_kind(m["message"]),
-                                     conf, sig, local[0]))
+                    # the server's copy wins (it keeps the surest read of everyone's)
+                    con.execute("UPDATE megaphones SET player=?, channel=COALESCE(?, channel), message=?, kind=?, "
+                                "conf=?, shared_sig=? WHERE id=?",
+                                (m["player"], m.get("channel"), m["message"], mfm.megaphone_kind(m["message"]),
+                                 conf, sig, local[0]))
                     continue
                 con.execute("INSERT INTO megaphones (ts, seen, player, channel, message, kind, color, conf, uid, "
                             "shared_sig) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -463,6 +467,40 @@ class SharedSync:
         if mfm.update_offers(con) or new:
             self.on_megaphones(new)
 
+    # -- purges: what the server's admin deleted (mfm-server purge) is deleted here too
+    def _apply_purges(self, con) -> None:
+        if "purge_id" not in self.info:       # servers before 2.4.0
+            return
+        key = self.server.url + "#purges"
+        row = con.execute("SELECT seq FROM shared_state WHERE server = ?", (key,)).fetchone()
+        if row is None:
+            # first time with this server: only purges from now on apply
+            con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)",
+                        (key, int(self.info.get("purge_id") or 0)))
+            con.commit()
+            return
+        res = self.server.purges(row[0])
+        done = {"prices": 0, "megaphones": 0, "nicknames": 0}
+        last = row[0]
+        for p in res.get("purges", []):
+            try:
+                done[p["what"]] = done.get(p["what"], 0) + mfm.apply_purge(
+                    con, p["what"], p.get("field") or "first", p.get("start"), p["end"], p.get("ts"))
+            except (KeyError, TypeError):
+                pass
+            last = max(last, int(p.get("id") or 0))
+        if last != row[0]:
+            con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)", (key, last))
+            con.commit()
+            if done["prices"]:
+                self.on_new_rows(0)
+            if done["megaphones"] or done["nicknames"]:
+                mfm.update_offers(con)
+                self.on_megaphones(0)
+            if any(done.values()):
+                self._status(True, "The server's admin deleted data: removed here too ("
+                             + ", ".join(f"{n} {k}" for k, n in done.items() if n) + ")")
+
     # -- nicknames (what players call items in megaphones)
     def _has_nicknames(self) -> bool:
         return "nicknames" in self.info       # servers before 2.2.0 don't keep them
@@ -470,22 +508,19 @@ class SharedSync:
     def _send_nicknames(self, con) -> int:
         if not self._has_nicknames():
             return 0
+        if "purge_id" in self.info:
+            # server 2.3.0 didn't keep "Not an item": send those again once
+            key = self.server.url + "#nick-not-items"
+            if not con.execute("SELECT 1 FROM shared_state WHERE server = ?", (key,)).fetchone():
+                con.execute("UPDATE nicknames SET shared_sig = NULL WHERE COALESCE(item, '') = ''")
+                con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, 1)", (key,))
+                con.commit()
         rows = [r for r in con.execute("SELECT key, item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames")
                 if _nick_sig(r[1], r[2]) != r[4]][:500]
         if not rows:
             return 0
-        # only real nicknames are shared. A "Not an item" mark (item '') stays here; it's
-        # only sent, as a deletion, when it replaces a nickname that was shared before.
-        def shared_before(sig):
-            try:
-                item, deleted = json.loads(sig or "null") or ("", 1)
-            except ValueError:
-                return False
-            return bool(item) and not deleted
-        send = [{"key": k, "item": i or "", "deleted": bool(d) or not i, "updated": u}
-                for k, i, d, u, sig in rows if i or shared_before(sig)]
-        if send:
-            self.server.send_nicknames(send)
+        self.server.send_nicknames([{"key": k, "item": i or "", "deleted": bool(d), "updated": u}
+                                    for k, i, d, u, _ in rows])
         for k, i, d, _, _ in rows:
             con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (_nick_sig(i, d), k))
         con.commit()
@@ -508,13 +543,11 @@ class SharedSync:
                 local = con.execute("SELECT item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames "
                                     "WHERE key = ?", (k,)).fetchone()
                 if local:
-                    if _nick_sig(local[0], local[1]) == sig or (deleted and not local[0] and not local[1]):
-                        # (a shared nickname being deleted leaves a "Not an item" mark here as it is)
+                    # the server is the source of truth (what's changed here was sent first,
+                    # and the server kept the newest change)
+                    if _nick_sig(local[0], local[1]) == sig:
                         con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (sig, k))
                         continue
-                    unsent = _nick_sig(local[0], local[1]) != local[3]
-                    if unsent and (local[2] or "") > (n.get("updated") or ""):
-                        continue              # changed here more recently: ours gets sent
                     con.execute("UPDATE nicknames SET item = ?, deleted = ?, updated = ?, by = ?, shared_sig = ? "
                                 "WHERE key = ?", (item, deleted, n.get("updated") or mfm.utc_now(), n.get("by"),
                                                   sig, k))

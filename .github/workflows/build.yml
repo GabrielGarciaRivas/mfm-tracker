@@ -91,11 +91,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: out
-      - name: Package the Linux app (a tar.gz keeps it executable)
+      - name: Package the apps (the file names carry the version; the apps don't)
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
+          VER="${TAG#v}"
           cd out
+          mkdir -p pkg
+          (cd "Free Market Tracker (Windows)" && zip -q -9 "../pkg/Free-Market-Tracker-$VER-Windows.zip" "Free Market Tracker.exe")
+          cp "Free Market Tracker (macOS)/Free Market Tracker (macOS).zip" "pkg/Free-Market-Tracker-$VER-macOS.zip"
           chmod +x "Free Market Tracker (Linux)/Free Market Tracker"
-          tar -czf "Free Market Tracker (Linux).tar.gz" "Free Market Tracker (Linux)"
+          mv "Free Market Tracker (Linux)" "Free Market Tracker"     # a tar.gz keeps it executable
+          tar -czf "pkg/Free-Market-Tracker-$VER-Linux.tar.gz" "Free Market Tracker"
+          ls -la pkg
       - uses: actions/checkout@v4
         with:
           path: src
@@ -113,10 +121,11 @@ jobs:
               text = ""
           m = re.search(r"^## " + re.escape(tag) + r"\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
           notes = m.group(1).strip() if m else ""
-          downloads = """## Downloads
-          - **Windows:** `Free Market Tracker.exe`. Double-click it. If Windows says "Windows protected your PC", click **More info → Run anyway**.
-          - **macOS (Apple silicon):** `Free Market Tracker (macOS).zip`. Unzip and drag the app to Applications. If macOS won't open it, go to System Settings → Privacy & Security and click **Open Anyway**. Allow **Screen Recording** when asked, then quit and reopen the app.
-          - **Linux:** `Free Market Tracker (Linux).tar.gz`. Extract it and double-click `Free Market Tracker`.
+          v = tag
+          downloads = f"""## Downloads
+          - **Windows:** `Free-Market-Tracker-{v}-Windows.zip`. Unzip it and double-click `Free Market Tracker.exe`. If Windows says "Windows protected your PC", click **More info → Run anyway**.
+          - **macOS (Apple silicon):** `Free-Market-Tracker-{v}-macOS.zip`. Unzip and drag the app to Applications. If macOS won't open it, go to System Settings → Privacy & Security and click **Open Anyway**. Allow **Screen Recording** when asked, then quit and reopen the app.
+          - **Linux:** `Free-Market-Tracker-{v}-Linux.tar.gz`. Extract it and double-click `Free Market Tracker`.
 
           Nothing else needs to be installed. The README explains how to use it.
           """
@@ -132,7 +141,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Free Market Tracker ${{ inputs.release_tag || github.ref_name }}
           body_path: notes.md
-          files: |
-            out/**/Free Market Tracker.exe
-            out/**/Free Market Tracker (macOS).zip
-            out/Free Market Tracker (Linux).tar.gz
+          files: out/pkg/*

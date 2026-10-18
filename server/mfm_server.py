@@ -23,6 +23,7 @@ records which account sent it and from which IP address.
                                         --last 1h         data from the past hour
                                         --all             everything
                                       Times: 30m, 1h, 12h, 1d, 2w. --dry-run only counts.
+                                      Connected apps delete the same from their own data.
 
 Settings (environment variables):
   MFM_PORT        port to listen on (default 8765)
@@ -42,7 +43,7 @@ API (JSON over HTTP):
   POST /api/v1/logout                      ends this sign-in
   POST /api/v1/password  {"password", "new_password"}   change your password
   GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "nicknames", "seq",
-                                           "you", "keep_days", "megaphone_hours"}
+                                           "purge_id", "you", "keep_days", "megaphone_hours"}
   POST /api/v1/sightings                   {"sightings": [ {uid, ts, item, price, qty, shop,
                                            seller, map, channel, sold, sold_ts, last_seen,
                                            notes}, ... ]}  (at most 500 at a time)
@@ -53,10 +54,12 @@ API (JSON over HTTP):
                                            color, conf}, ... ]}  -> {"seq", "same": {...}}
   GET  /api/v1/megaphones?since=SEQ&hours=H -> {"megaphones": [...], "seq", "more"}
   POST /api/v1/nicknames                   {"nicknames": [ {key, item, deleted, updated}, ... ]}
-                                           (the newest change wins; item "" = "not an item",
-                                           which isn't stored: it only deletes that nickname)
+                                           (item "" = "not an item"; the newest change wins)
                                            -> {"seq", "same": {}}
   GET  /api/v1/nicknames?since=SEQ         -> {"nicknames": [...], "seq", "more"}
+  GET  /api/v1/purges?since=ID             -> {"purges": [{id, ts, what, field, start, end}], "last"}
+                                           what was purged on the server (mfm-server purge), as
+                                           time ranges: the apps delete the same from their data
 Every stored or changed sighting (or megaphone) gets the next "seq" number, so a
 client asks for everything after the last number it has seen.
 """
@@ -79,7 +82,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -175,6 +178,14 @@ def db() -> sqlite3.Connection:
             updated_by TEXT, updated_by_id TEXT, updated_ip TEXT, stored TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_nick_seq ON nicknames(seq);
+        CREATE TABLE IF NOT EXISTS purges (         -- `mfm-server purge` runs; the apps apply them too
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL,
+            what TEXT NOT NULL,                     -- prices, megaphones or nicknames
+            field TEXT NOT NULL,                    -- seen: last seen / changed; first: first stored
+            start TEXT,                             -- rows with field >= start (none: no lower bound)
+            "end" TEXT NOT NULL                     -- ... and field < end
+        );
     """)
     # who sent each row: the account's id and name, and the IP it came from
     for table, cols in (("sightings", ("added_by_id", "added_ip", "updated_by_id", "updated_ip")),
@@ -183,8 +194,6 @@ def db() -> sqlite3.Connection:
         for c in cols:
             if c not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
-    # only real nicknames are kept: "not an item" marks from the review stay in each app
-    con.execute("DELETE FROM nicknames WHERE item = ''")
     con.commit()
     return con
 
@@ -569,18 +578,7 @@ def store_nicknames(con, nicknames: list[dict], by: dict) -> tuple[int, dict]:
             if updated > now:                       # a clock ahead of ours can't win forever
                 updated = now
             row = con.execute("SELECT item, deleted, updated FROM nicknames WHERE key = ?", (key,)).fetchone()
-            if not item:
-                # "not an item" is a review mark, not a nickname: it isn't stored, it only
-                # removes a shared nickname of the same phrase (when it's the newer change)
-                if row is None or row[1] or updated < (row[2] or ""):
-                    continue
-                con.execute("UPDATE nicknames SET seq=?, deleted=1, updated=?, updated_by=?, updated_by_id=?, "
-                            "updated_ip=?, stored=? WHERE key=?",
-                            (next_seq(con), updated, by["name"], by["id"], by["ip"], now, key))
-                continue
             if row is None:
-                if deleted:
-                    continue                        # nothing here to delete
                 con.execute("INSERT INTO nicknames (key, seq, item, deleted, updated, added_by, added_by_id, "
                             "added_ip, added, updated_by, updated_by_id, updated_ip, stored) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -668,7 +666,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
                                     "sightings": n, "megaphones": m, "nicknames": k, "megaphone_hours": MEGA_HOURS,
                                     "keep_days": int(os.environ.get("MFM_KEEP_DAYS", "30")),
-                                    "seq": last_seq(self.con), "you": {"id": user["id"], "name": user["name"]}})
+                                    "seq": last_seq(self.con), "purge_id": last_purge(self.con),
+                                    "you": {"id": user["id"], "name": user["name"]}})
         if url.path == "/api/v1/sightings":
             q = parse_qs(url.query)
             try:
@@ -688,6 +687,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "since, hours and limit must be numbers"})
             rows, seq, more = megaphone_changes(self.con, since, hours, limit)
             return self._send(200, {"megaphones": rows, "seq": seq, "more": more})
+        if url.path == "/api/v1/purges":
+            q = parse_qs(url.query)
+            try:
+                since = int(q.get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            with _lock:
+                rows = self.con.execute('SELECT id, ts, what, field, start, "end" FROM purges WHERE id > ? '
+                                        "ORDER BY id LIMIT 1000", (since,)).fetchall()
+            cols = ("id", "ts", "what", "field", "start", "end")
+            return self._send(200, {"purges": [dict(zip(cols, r)) for r in rows], "last": last_purge(self.con)})
         if url.path == "/api/v1/nicknames":
             q = parse_qs(url.query)
             try:
@@ -802,6 +812,10 @@ _PURGE_COLS = {"prices": ("sightings", "COALESCE(last_seen, ts)", "ts"),
                "nicknames": ("nicknames", "COALESCE(updated, stored)", "COALESCE(added, stored)")}
 
 
+def last_purge(con) -> int:
+    return con.execute("SELECT COALESCE(MAX(id), 0) FROM purges").fetchone()[0]
+
+
 def parse_duration(text: str) -> timedelta:
     """'30m', '1h', '1.5h', '1d', '2w' (or '1 day', '2 hours')."""
     m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)\s*",
@@ -817,8 +831,17 @@ def purge(con, what: list[str], older_than: timedelta | None = None, last: timed
           dry_run: bool = False) -> dict:
     """Delete stored prices / megaphones / nicknames: older than `older_than`, from the
     `last` while, or (neither given) all of them. Nicknames aren't removed outright but
-    marked deleted, so the apps drop them too on their next sync. Returns counts."""
+    marked deleted. Each purge is recorded (table purges), and the apps delete the same
+    range from their own data on their next sync. Returns counts."""
     now = datetime.now(timezone.utc)
+    stamp = now.strftime(UTC_FMT)
+    # as a fixed time range, so each app deletes the same rows from its own data
+    if older_than is not None:
+        field, start, end = "seen", None, (now - older_than).strftime(UTC_FMT)
+    elif last is not None:
+        field, start, end = "first", (now - last).strftime(UTC_FMT), "9999"
+    else:
+        field, start, end = "first", None, "9999"
     out = {}
     with _lock:
         if not dry_run:
@@ -827,18 +850,19 @@ def purge(con, what: list[str], older_than: timedelta | None = None, last: timed
             con.execute("BEGIN IMMEDIATE")      # the server may be running: hold the write lock
         for w in what:
             table, seen_col, first_col = _PURGE_COLS[w]
-            if older_than is not None:
-                where, args = f"{seen_col} < ?", [(now - older_than).strftime(UTC_FMT)]
-            elif last is not None:
-                where, args = f"{first_col} >= ?", [(now - last).strftime(UTC_FMT)]
-            else:
-                where, args = "1", []
+            col = seen_col if field == "seen" else first_col
+            where, args = f"{col} < ?", [end]
+            if start:
+                where, args = where + f" AND {col} >= ?", args + [start]
+            if not dry_run:
+                # "everything" and "the past hour" end now: newer data an app has isn't touched
+                con.execute('INSERT INTO purges (ts, what, field, start, "end") VALUES (?,?,?,?,?)',
+                            (stamp, w, field, start, end if end != "9999" else stamp))
             if w == "nicknames":
                 where += " AND deleted = 0"
             n = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", args).fetchone()[0]
             if n and not dry_run:
                 if w == "nicknames":
-                    stamp = utc_now()
                     for (key,) in con.execute(f"SELECT key FROM nicknames WHERE {where}", args).fetchall():
                         con.execute("UPDATE nicknames SET seq=?, deleted=1, updated=?, updated_by=?, "
                                     "updated_by_id=NULL, updated_ip=NULL, stored=? WHERE key=?",
@@ -900,8 +924,9 @@ def _purge_cmd(con, args: list[str]) -> int:
     when = (f"older than {args_time(older)}" if older is not None else
             f"from the past {args_time(last)}" if last is not None else "all of it")
     counts = purge(con, kinds, older, last, dry_run=True)
-    print(f"To delete ({when}): " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in counts.items()))
-    if dry or not sum(counts.values()):
+    print(f"To delete ({when}): " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in counts.items())
+          + " on the server; the connected apps delete the same from their own data.")
+    if dry:
         return 0
     if not yes:
         if not sys.stdin.isatty():
@@ -912,7 +937,7 @@ def _purge_cmd(con, args: list[str]) -> int:
             return 1
     done = purge(con, kinds, older, last)
     print("Deleted: " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in done.items())
-          + (". The apps remove the nicknames on their next sync." if done.get("nicknames") else "."))
+          + ". The apps delete the same on their next sync.")
     event(con, None, None, "data purged", f"{when}: " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in done.items()))
     return 0
 

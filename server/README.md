@@ -128,8 +128,8 @@ server's VPN IP as the address. No port forwarding is needed then.
   over a VPN. Over the internet, use HTTPS (below).
 - Only price sightings, megaphones and nicknames are stored: item, price, shop, player
   name, map, channel, times, notes, megaphone messages and item nicknames, plus who sent
-  them and from where. What players review stays in their own app: a phrase marked "not
-  an item" isn't stored (it only deletes a shared nickname of that phrase).
+  them and from where. The apps' Review lists aren't stored; they're worked out in each
+  app.
 
 ## HTTPS (optional)
 
@@ -225,9 +225,11 @@ docker compose exec mfm-server mfm-server purge all --all
 - **Times:** `30m`, `1h`, `12h`, `1d`, `2w`.
 - **Check first:** `--dry-run` only counts what would be deleted.
 - **Confirming:** it asks before deleting. Add `--yes` to skip the question.
-- **Nicknames** are marked deleted rather than removed, so the apps drop them too on their
-  next sync.
-- **Prices and megaphones** that players already have stay in their apps.
+- **The apps too:** each connected app deletes the same data from its own copy on its
+  next sync, so wrong data is fixed everywhere. It also deletes data it logged itself
+  in that time range. An app that connects to the server for the first time after a
+  purge isn't affected by it.
+- **Nicknames** are marked deleted rather than removed, so the deletion syncs.
 - **The log:** each purge is written to the server's event log (`mfm-server log`).
 
 ## Backups
@@ -280,13 +282,14 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `POST /api/v1/login` with `{"username", "password"}` | `{"token", "user": {"id", "name"}, "expires"}` |
 | `POST /api/v1/logout` | ends this token |
 | `POST /api/v1/password` with `{"password", "new_password"}` | changes it; signs out your other devices |
-| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "nicknames", "seq", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
+| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "nicknames", "seq", "purge_id", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
-| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", which isn't stored (it only deletes that nickname); an item starting with `=` = words (e.g. `"=Intermediate"`) |
+| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
 | `GET /api/v1/nicknames?since=SEQ` | `{"nicknames": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
+| `GET /api/v1/purges?since=ID` | `{"purges": [{id, ts, what, field, start, end}], "last"}`: what `purge` deleted, as time ranges (`field` "seen" = last seen or changed, "first" = first stored; `start` ≤ time < `end`), for the apps to delete too |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,
 last_seen, notes}`, with times in UTC (`2026-10-17T20:00:00Z`). Every new or changed

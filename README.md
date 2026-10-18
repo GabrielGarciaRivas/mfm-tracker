@@ -12,11 +12,12 @@ What's new: [CHANGELOG.md](CHANGELOG.md).
 ## Install
 
 Download the app for your system from the
-[Releases page](https://github.com/jayee88/mfm-tracker/releases). Nothing else needs to be
-installed.
+[Releases page](https://github.com/jayee88/mfm-tracker/releases). Each download has the
+version in its name, like `Free-Market-Tracker-2610.18.003-Windows.zip`. Nothing else
+needs to be installed.
 
-- **Windows:** run `Free Market Tracker.exe`. If Windows shows "Windows protected your
-  PC", click **More info → Run anyway**.
+- **Windows:** unzip it and run `Free Market Tracker.exe`. If Windows shows "Windows
+  protected your PC", click **More info → Run anyway**.
 - **macOS** (Apple silicon; on an Intel Mac, build it yourself, below): unzip it and drag
   **Free Market Tracker** into Applications. If macOS won't open it, go to System
   Settings → Privacy & Security and click **Open Anyway**. When you first press **Start
@@ -300,9 +301,11 @@ seen-again updates go to it too, and everyone else's sightings are copied into y
 prices every few seconds. Only items from the item list are shared: a name in Review is
 shared once you match it to an item. Megaphones are shared too: when several players
 read the same one, the clearest read is kept. Nicknames are shared as well, so a new player
-starts with everything the group has taught. What you review stays in your app: phrases
-you mark "Not an item" aren't sent (marking a shared nickname's phrase "Not an item"
-deletes that nickname for everyone). The server keeps megaphones for 72 hours;
+starts with everything the group has taught, including phrases marked "Not an item". The
+Review list itself isn't shared: it's worked out in each app from its megaphones. If the
+server's admin deletes data on the server (`mfm-server purge`), your app deletes the same
+from its own data the next time it syncs. When your app and the server disagree, the
+server's copy wins. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
 prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;

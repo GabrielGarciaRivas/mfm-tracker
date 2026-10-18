@@ -6372,6 +6372,39 @@ def delete_megaphones(con, ids) -> int:
     return len(ids)
 
 
+def apply_purge(con, what: str, field: str, start: str | None, end: str, when: str | None = None) -> int:
+    """Delete what the Shared Database's server purged (mfm-server purge) from this
+    app's own data too: `what` (prices, megaphones or nicknames) whose time `field`
+    (seen: last seen / changed, first: first stored) is >= start (if given) and < end.
+    Nicknames are marked deleted, like on the server. Returns how many."""
+    if what == "prices":
+        col = "COALESCE(last_seen, ts)" if field == "seen" else "ts"
+        table = "listings"
+    elif what == "megaphones":
+        col, table = "ts", "megaphones"
+    elif what == "nicknames":
+        col = "COALESCE(updated, added)" if field == "seen" else "COALESCE(added, updated)"
+        table = "nicknames"
+    else:
+        return 0
+    where, args = f"{col} < ?", [end]
+    if start:
+        where, args = where + f" AND {col} >= ?", args + [start]
+    if what == "nicknames":
+        rows = con.execute(f"SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 AND {where}",
+                           args).fetchall()
+        for key, item in rows:
+            con.execute("UPDATE nicknames SET deleted = 1, updated = ?, by = 'server admin', shared_sig = ? "
+                        "WHERE key = ?", (when or utc_now(), json.dumps([item or "", 1]), key))
+        n = len(rows)
+    else:
+        n = con.execute(f"DELETE FROM {table} WHERE {where}", args).rowcount
+        if what == "megaphones":
+            con.execute("DELETE FROM megaphone_offers WHERE megaphone_id NOT IN (SELECT id FROM megaphones)")
+    con.commit()
+    return n
+
+
 def purge_megaphones(con, hours: float) -> int:
     """Delete megaphones older than `hours`."""
     n = con.execute("DELETE FROM megaphones WHERE ts < ?", (utc_ago(hours=hours),)).rowcount

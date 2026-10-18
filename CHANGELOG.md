@@ -3,15 +3,18 @@
 ## 2610.18.003 — 2026-10-18
 
 ### Changed
-- **Shared Database:** phrases you mark "Not an item" are no longer sent to the server;
-  only real nicknames are shared. Marking a shared nickname's phrase "Not an item" deletes
-  that nickname for everyone.
+- **Shared Database:** when the server's admin deletes data (`mfm-server purge`), the app
+  deletes the same prices, megaphones and nicknames from its own data on its next sync.
+  When the app and the server disagree, the server's copy wins.
+- **Downloads** are now a zip (Windows, macOS) or tar.gz (Linux) with the version in the
+  file name. The app itself keeps its plain name.
 
-### Server 2.3.0
-- "Not an item" marks aren't stored, and ones stored before are removed when the server
-  starts.
+### Server 2.4.0
 - New command `mfm-server purge` deletes prices, megaphones or nicknames: older than a time
-  (`--older-than 1d`), from the past while (`--last 1h`), or all (`--all`).
+  (`--older-than 1d`), from the past while (`--last 1h`), or all (`--all`). Connected apps
+  delete the same from their own data.
+- "Not an item" marks are stored with the nicknames again (2.3.0 left them out). Apps
+  send theirs again once.
 
 ## 2610.18.002 — 2026-10-18
 
