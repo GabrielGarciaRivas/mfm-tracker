@@ -96,8 +96,9 @@ The app also asks for your channel when it starts. When you change channel in th
 it reads the channel highlighted in the game's Change Channel window (the blue button,
 like CH.19) and sets it when the window closes; it only asks if it can't read it. It
 looks for the window as often as **Capture every (seconds)** in Settings (0.1 by default).
-If you close the window with **Esc**, the channel stays as it was (Esc can't be seen
-on Wayland). For 15 seconds after you pick
+If you close the window with **Esc** or **CANCEL**, the channel stays as it was. (CANCEL
+is told by the mouse pointer being over it when the window closes. On Wayland, Esc is
+only seen when the game runs through XWayland, which is the default for Wine and Lutris.) For 15 seconds after you pick
 your channel at start, channel changes aren't detected, in case you had the Change Channel
 window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.

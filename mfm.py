@@ -1981,6 +1981,44 @@ def _blue_button_mask(img: Image.Image) -> Image.Image:
                ImageChops.subtract(b, r).point(lambda v: 255 if v >= 110 else 0))
 
 
+def _join_row_blobs(boxes: list) -> list:
+    """Join boxes that sit side by side on the same row with a small gap (one button
+    cut in two by something drawn over it)."""
+    boxes = sorted(boxes)
+    out: list = []
+    for b in boxes:
+        for i, a in enumerate(out):
+            h = max(a[3] - a[1], b[3] - b[1])
+            if (abs(a[1] - b[1]) <= 0.2 * h and abs(a[3] - b[3]) <= 0.2 * h
+                    and -2 <= b[0] - a[2] <= 0.9 * h):
+                out[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                break
+        else:
+            out.append(tuple(b))
+    return out
+
+
+def cursor_on_cancel(full: Image.Image, pair: list) -> bool:
+    """Is the game's mouse pointer (the white glove) over the CANCEL button of the
+    change-channel dialog? The glove is pale blue-white; nothing inside the orange
+    button is (its lettering is pure white)."""
+    x0, y0, w, h = pair
+    img = full.convert("RGB")
+    cl = int(x0 + w * 0.64)                       # CANCEL's left edge
+    box = (cl + 2, y0 + 2, x0 + w - 2, y0 + h - 2)
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return False
+    n = sum(1 for r, g, b in img.crop(box).getdata()
+            if min(r, g, b) >= 165 and b - r >= 10 and g - r >= 4)
+    if n < max(4, round(6 * (h / 27) ** 2)):
+        return False
+    # the glove's fingertip is its top left: if the glove also covers the right end of
+    # CHANGE CHANNEL (plain blue there, no lettering), the pointer is on that button
+    strip = (cl - int(0.8 * h), y0 + 3, cl - int(0.37 * h), y0 + h - 3)
+    pale = sum(1 for r, g, b in img.crop(strip).getdata() if min(r, g, b) >= 165)
+    return pale < 3
+
+
 def find_channel_dialog(full: Image.Image) -> list | None:
     """The game's change-channel dialog, found by its two buttons side by side:
     a blue CHANGE CHANNEL with an orange CANCEL just to its right, the same
@@ -1992,6 +2030,7 @@ def find_channel_dialog(full: Image.Image) -> list | None:
     small = img.resize((W // sc, H // sc), Image.NEAREST)
     orange, _ = _color_masks(small)
     oranges = [tuple(v * sc for v in b) for b in _blobs(orange, min_w=max(4, 20 // sc), min_h=max(3, 8 // sc))]
+    oranges = _join_row_blobs(oranges)       # the mouse pointer over CANCEL can split it in two
     oranges = [b for b in oranges if 12 <= b[3] - b[1] <= 80 and 2.2 <= (b[2] - b[0]) / (b[3] - b[1]) <= 6.5]
     if not oranges:
         return None
@@ -2113,7 +2152,9 @@ def esc_key_down() -> bool | None:
                 gaks = ctypes.windll.user32.GetAsyncKeyState
                 gaks.restype = ctypes.c_short
                 _ESC_PROBE = lambda: bool(gaks(0x1B) & 0x8001)
-            elif kind == "x11":
+            elif kind == "x11" or (kind == "wayland" and os.environ.get("DISPLAY")):
+                # on Wayland this goes through XWayland: it sees keys while an X11
+                # window (like the game under Wine) has focus
                 x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
                 x.XOpenDisplay.restype = ctypes.c_void_p
                 x.XOpenDisplay.argtypes = [ctypes.c_char_p]
@@ -2180,7 +2221,8 @@ class ChannelWatch:
     was on screen and has gone away, i.e. you changed channel (or cancelled).
     It only counts as gone after `misses` checks in a row without it, so a
     mouse over a button or one bad frame doesn't end it early. Pressing Esc while
-    the dialog is open cancels it: no change until the dialog shows up again."""
+    the dialog is open, or closing it with the mouse over CANCEL, cancels it: no
+    change until the dialog shows up again."""
 
     def __init__(self, misses: int = 2, every: float | None = None, cfg: dict | None = None):
         # how often to look: `every` seconds, or the Capture every (seconds) setting
@@ -2200,8 +2242,10 @@ class ChannelWatch:
         c, self.cancelled = self.cancelled, False
         return c
 
+    on_cancel = False                       # the mouse was over CANCEL when last seen
+
     def _reset(self) -> None:
-        self.seen, self.gone, self.escaped = False, 0, False
+        self.seen, self.gone, self.escaped, self.on_cancel = False, 0, False, False
         self.esc.stop()
 
     paused = False
@@ -2250,6 +2294,10 @@ class ChannelWatch:
                 self.picked, self.escaped = None, False
                 self.esc.start()
             self.seen, self.gone = True, 0
+            try:
+                self.on_cancel = cursor_on_cancel(full, pair)
+            except Exception:
+                self.on_cancel = False
             if self.escaped or self.esc.pressed:
                 self.escaped = True           # cancelled: stop reading until it closes
                 self.esc.stop()
@@ -2272,7 +2320,7 @@ class ChannelWatch:
         if self.seen:
             self.gone += 1
             if self.gone >= max(self.misses, round(0.5 / self.every)):
-                escaped = self.escaped or self.esc.pressed
+                escaped = self.escaped or self.esc.pressed or self.on_cancel
                 self._reset()
                 picked, self.picked = self.picked, None
                 if escaped:

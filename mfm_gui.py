@@ -932,8 +932,8 @@ class App:
                 time.sleep(5)
 
     def on_channel_cancel(self, _=None):
-        """The game's Change Channel window was closed with Esc: the channel stays."""
-        self._set_status(f"Change Channel window closed with Esc: still channel {self.channel() or '(not set)'}.")
+        """The game's Change Channel window was cancelled (Esc, or CANCEL): the channel stays."""
+        self._set_status(f"Change Channel window cancelled: still channel {self.channel() or '(not set)'}.")
 
     def on_channel_change(self, channel=None):
         """The game's Change Channel window was closed. The channel highlighted in it
