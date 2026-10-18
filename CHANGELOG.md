@@ -36,6 +36,8 @@
   discard them.
 
 ### Fixed
+- "Monitoring error: TypeError: startswith…" when opening a shop whose quantity
+  ("12 for") wasn't read on a price line.
 - "Database is locked" errors while reviewing or scrolling megaphones: working out the
   items in megaphones no longer keeps the database busy while it searches the item list.
 - The window no longer freezes while shops are being read or while you search in Items:

@@ -809,8 +809,11 @@ def learn_geometry(lines: list[list[Word]], img_w: int, img_h: int,
         m = _price_match(ws)
         if not m:
             continue
-        q = next((w for w in ws if w.text.startswith(m.group(1))
-                  or re.match(r"\d*[il|]?f[o0ce]r", w.text, re.I)), None)
+        # the quantity word ("12" or "12for"); the quantity is optional in the pattern,
+        # so a line where it wasn't read only counts if a word starts with digits + "for"
+        qty = m.group(1)
+        q = next((w for w in ws if (qty and w.text.startswith(qty))
+                  or re.match(r"\d*[il|]?f[o0ce]r" if qty else r"\d+[il|]?f[o0ce]r", w.text, re.I)), None)
         if q:
             xs.append(q.left)
         if i > 0:
