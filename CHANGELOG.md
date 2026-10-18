@@ -16,6 +16,10 @@
   "pants", "helm" and more). With your grade nicknames, "60% glove att" matches Gloves
   Attack Scroll: Intermediate.
 
+- Shop names are read more accurately: Tesseract is given every word of the item names, so
+  when a letter is unclear it leans towards the real item word (in a test with blurrier
+  text, 27 of 34 names were read exactly instead of 22).
+
 ### Changed
 - **Shared Database:** the window shows "Connected to (server name) (version) as (you)",
   and how many megaphones were sent and received as well as prices.

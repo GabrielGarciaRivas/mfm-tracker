@@ -647,13 +647,60 @@ class Word:
     conf: float
 
 
+OCR_WORDS_PATH = CACHE_DIR / "ocr_words.txt"
+_EXTRA_OCR_WORDS = ("for", "mesos", "Scroll", "Greater", "Intermediate", "Lesser", "Chaos")
+
+
+def _short_path(p: Path) -> str | None:
+    """The path as Tesseract's command line can take it (no spaces): on Windows the
+    8.3 short name if needed; None if there's no such form."""
+    s = str(p)
+    if " " not in s:
+        return s
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(1024)
+            if ctypes.windll.kernel32.GetShortPathNameW(s, buf, 1024) and " " not in buf.value:
+                return buf.value
+        except Exception:
+            pass
+    return None
+
+
+def ocr_words_arg() -> str:
+    """" --user-words FILE": every word of every item name, so Tesseract leans towards
+    real item words ("Cutlus", "Sylvia") when a letter is unclear. Made from the item
+    list (again whenever it changes); "" when there's no item list."""
+    st = ocr_words_arg.state
+    try:
+        src = ITEMS_PATH.stat().st_mtime
+    except OSError:
+        return ""
+    if st.get("src") != src:
+        st["src"], st["arg"] = src, ""
+        try:
+            names = ITEMS_PATH.read_text(encoding="utf-8").splitlines()
+            words = sorted({w for n in names for w in re.findall(r"[A-Za-z][A-Za-z'\-]*[A-Za-z]|[A-Za-z]", n)}
+                           | set(_EXTRA_OCR_WORDS))
+            OCR_WORDS_PATH.write_text("\n".join(words) + "\n", encoding="utf-8")
+            short = _short_path(OCR_WORDS_PATH)
+            st["arg"] = f" --user-words {short}" if short else ""
+        except OSError:
+            pass
+    return st["arg"]
+
+
+ocr_words_arg.state = {}
+
+
 def ocr_words(img: Image.Image, cfg: dict, mode: str = "gray") -> list[list[Word]]:
     """OCR into lines of positioned words (coordinates in the original image)."""
     import pytesseract
 
     setup_tesseract(cfg)
     up = cfg.get("upscale", 3)
-    d = pytesseract.image_to_data(preprocess(img, up, mode), config="--psm 6",
+    d = pytesseract.image_to_data(preprocess(img, up, mode), config="--psm 6" + ocr_words_arg(),
                                   output_type=pytesseract.Output.DICT)
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
@@ -945,7 +992,7 @@ def _ocr_box(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
         cut = 120 if mode == "graybin120" else 150
         g = ImageOps.autocontrast(g, cutoff=1).point(lambda p, c=cut: 0 if p < c else 255)
     setup_tesseract(cfg)
-    d = pytesseract.image_to_data(g, config="--psm 6", output_type=pytesseract.Output.DICT)
+    d = pytesseract.image_to_data(g, config="--psm 6" + ocr_words_arg(), output_type=pytesseract.Output.DICT)
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
         if text.strip():
@@ -5665,7 +5712,7 @@ def _ocr_words(img: Image.Image) -> list[tuple[str, int, float]]:
     import pytesseract
 
     border = 12
-    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255), config="--psm 7",
+    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255), config="--psm 7" + ocr_words_arg(),
                                   output_type=pytesseract.Output.DICT)
     return [(t.strip(), d["left"][i] - border, float(d["conf"][i])) for i, t in enumerate(d["text"])
             if t.strip()]
