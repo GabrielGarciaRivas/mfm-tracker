@@ -16,7 +16,7 @@ on:
         default: "10000"
       data:
         description: "Encrypted training lines"
-        default: "ocr/chat-lines-v1.zip.enc"
+        default: "ocr/lines-v2.zip.enc"
 
 permissions:
   contents: write
