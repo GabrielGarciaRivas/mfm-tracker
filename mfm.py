@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.003"
+VERSION = "2610.18.004"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -845,16 +845,20 @@ def is_junk(t: str) -> bool:
     return bool(JUNK_TOKEN_RE.match(t) or CRUMB_RE.match(t))
 
 
+MAX_PRICE = 10_000_000_000      # no price is this high (the game caps mesos far below it)
+
+
 def parse_price(s: str) -> int | None:
     s = s.strip().lower().replace(" ", "")
     if s and s[-1] in "kmb":
         mult = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}[s[-1]]
         try:
-            return int(float(s[:-1]) * mult)
-        except ValueError:
+            n = int(float(s[:-1]) * mult)
+        except (ValueError, OverflowError):
             return None
+        return n if n <= MAX_PRICE else None
     digits = re.sub(r"[^\d]", "", s)
-    return int(digits) if digits else None
+    return int(digits) if digits and int(digits) <= MAX_PRICE else None
 
 
 def plausible_price(s: str) -> bool:
@@ -6505,6 +6509,8 @@ def _price_of(text: str) -> tuple[int | None, str]:
             price = int(round(n * mult))
         else:
             price = int(m.group(3).replace(",", ""))
+        if price > MAX_PRICE:
+            price = None              # a misread run of digits, not a price (and too big to store)
     if price is None and _NO_PRICE_RE.search(text):
         note.append("offer")
     return price, ", ".join(note)

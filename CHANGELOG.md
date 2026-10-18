@@ -1,5 +1,12 @@
 # Changelog
 
+## 2610.18.004 — 2026-10-18
+
+### Fixed
+- "megaphone read failed: OverflowError: Python int too large to convert to SQLite
+  INTEGER": a megaphone with a very long run of digits (a misread line) was taken as a
+  price too big to save. Numbers above 10 billion aren't taken as prices any more.
+
 ## 2610.18.003 — 2026-10-18
 
 ### Changed
