@@ -1,5 +1,18 @@
 # Changelog
 
+## 2610.18.003 — 2026-10-18
+
+### Changed
+- **Shared Database:** phrases you mark "Not an item" are no longer sent to the server;
+  only real nicknames are shared. Marking a shared nickname's phrase "Not an item" deletes
+  that nickname for everyone.
+
+### Server 2.3.0
+- "Not an item" marks aren't stored, and ones stored before are removed when the server
+  starts.
+- New command `mfm-server purge` deletes prices, megaphones or nicknames: older than a time
+  (`--older-than 1d`), from the past while (`--last 1h`), or all (`--all`).
+
 ## 2610.18.002 — 2026-10-18
 
 ### New

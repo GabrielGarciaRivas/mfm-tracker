@@ -16,6 +16,13 @@ records which account sent it and from which IP address.
   mfm-server user-info NAME           an account's IP addresses, sessions and recent events
   mfm-server log [N]                  the last N sign-ins, failed sign-ins and account changes
   mfm-server stats                    how much is stored, and from whom
+  mfm-server purge WHAT WHEN [--dry-run] [--yes]
+                                      delete stored data. WHAT: prices, megaphones, nicknames
+                                      or all (or several: prices,megaphones). WHEN:
+                                        --older-than 1d   data older than that (not seen since)
+                                        --last 1h         data from the past hour
+                                        --all             everything
+                                      Times: 30m, 1h, 12h, 1d, 2w. --dry-run only counts.
 
 Settings (environment variables):
   MFM_PORT        port to listen on (default 8765)
@@ -46,7 +53,8 @@ API (JSON over HTTP):
                                            color, conf}, ... ]}  -> {"seq", "same": {...}}
   GET  /api/v1/megaphones?since=SEQ&hours=H -> {"megaphones": [...], "seq", "more"}
   POST /api/v1/nicknames                   {"nicknames": [ {key, item, deleted, updated}, ... ]}
-                                           (item "" = "not an item"; the newest change wins)
+                                           (the newest change wins; item "" = "not an item",
+                                           which isn't stored: it only deletes that nickname)
                                            -> {"seq", "same": {}}
   GET  /api/v1/nicknames?since=SEQ         -> {"nicknames": [...], "seq", "more"}
 Every stored or changed sighting (or megaphone) gets the next "seq" number, so a
@@ -71,7 +79,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -175,6 +183,8 @@ def db() -> sqlite3.Connection:
         for c in cols:
             if c not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
+    # only real nicknames are kept: "not an item" marks from the review stay in each app
+    con.execute("DELETE FROM nicknames WHERE item = ''")
     con.commit()
     return con
 
@@ -559,7 +569,18 @@ def store_nicknames(con, nicknames: list[dict], by: dict) -> tuple[int, dict]:
             if updated > now:                       # a clock ahead of ours can't win forever
                 updated = now
             row = con.execute("SELECT item, deleted, updated FROM nicknames WHERE key = ?", (key,)).fetchone()
+            if not item:
+                # "not an item" is a review mark, not a nickname: it isn't stored, it only
+                # removes a shared nickname of the same phrase (when it's the newer change)
+                if row is None or row[1] or updated < (row[2] or ""):
+                    continue
+                con.execute("UPDATE nicknames SET seq=?, deleted=1, updated=?, updated_by=?, updated_by_id=?, "
+                            "updated_ip=?, stored=? WHERE key=?",
+                            (next_seq(con), updated, by["name"], by["id"], by["ip"], now, key))
+                continue
             if row is None:
+                if deleted:
+                    continue                        # nothing here to delete
                 con.execute("INSERT INTO nicknames (key, seq, item, deleted, updated, added_by, added_by_id, "
                             "added_ip, added, updated_by, updated_by_id, updated_ip, stored) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -773,6 +794,139 @@ def serve() -> None:
     httpd.serve_forever()
 
 
+_PURGE_WHAT = ("prices", "megaphones", "nicknames")
+# per kind: the table, when a row was last seen/changed (for --older-than), when it was
+# first stored (for --last)
+_PURGE_COLS = {"prices": ("sightings", "COALESCE(last_seen, ts)", "ts"),
+               "megaphones": ("megaphones", "ts", "ts"),
+               "nicknames": ("nicknames", "COALESCE(updated, stored)", "COALESCE(added, stored)")}
+
+
+def parse_duration(text: str) -> timedelta:
+    """'30m', '1h', '1.5h', '1d', '2w' (or '1 day', '2 hours')."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)\s*",
+                     str(text).lower())
+    if not m:
+        raise ValueError(f"Can't read the time {text!r}: use e.g. 30m, 1h, 1d or 2w.")
+    n, unit = float(m.group(1)), m.group(2)[0]
+    return timedelta(minutes=n) if unit == "m" else timedelta(hours=n) if unit == "h" \
+        else timedelta(days=n) if unit == "d" else timedelta(weeks=n)
+
+
+def purge(con, what: list[str], older_than: timedelta | None = None, last: timedelta | None = None,
+          dry_run: bool = False) -> dict:
+    """Delete stored prices / megaphones / nicknames: older than `older_than`, from the
+    `last` while, or (neither given) all of them. Nicknames aren't removed outright but
+    marked deleted, so the apps drop them too on their next sync. Returns counts."""
+    now = datetime.now(timezone.utc)
+    out = {}
+    with _lock:
+        if not dry_run:
+            if con.in_transaction:
+                con.commit()
+            con.execute("BEGIN IMMEDIATE")      # the server may be running: hold the write lock
+        for w in what:
+            table, seen_col, first_col = _PURGE_COLS[w]
+            if older_than is not None:
+                where, args = f"{seen_col} < ?", [(now - older_than).strftime(UTC_FMT)]
+            elif last is not None:
+                where, args = f"{first_col} >= ?", [(now - last).strftime(UTC_FMT)]
+            else:
+                where, args = "1", []
+            if w == "nicknames":
+                where += " AND deleted = 0"
+            n = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", args).fetchone()[0]
+            if n and not dry_run:
+                if w == "nicknames":
+                    stamp = utc_now()
+                    for (key,) in con.execute(f"SELECT key FROM nicknames WHERE {where}", args).fetchall():
+                        con.execute("UPDATE nicknames SET seq=?, deleted=1, updated=?, updated_by=?, "
+                                    "updated_by_id=NULL, updated_ip=NULL, stored=? WHERE key=?",
+                                    (next_seq(con), stamp, "server admin", stamp, key))
+                else:
+                    con.execute(f"DELETE FROM {table} WHERE {where}", args)
+            out[w] = n
+        if not dry_run:
+            con.commit()
+    return out
+
+
+def _purge_cmd(con, args: list[str]) -> int:
+    usage = ("Usage: mfm-server purge prices|megaphones|nicknames|all  --older-than 1d | --last 1h | --all"
+             "  [--dry-run] [--yes]")
+    what, older, last, everything, dry, yes = None, None, None, False, False, False
+    i = 0
+    try:
+        while i < len(args):
+            a = args[i]
+            if a in ("--older-than", "--last") or a.startswith(("--older-than=", "--last=")):
+                if "=" in a:
+                    a, val = a.split("=", 1)
+                else:
+                    i += 1
+                    if i >= len(args):
+                        raise ValueError(f"{a} needs a time, e.g. 1h or 1d.")
+                    val = args[i]
+                if a == "--older-than":
+                    older = parse_duration(val)
+                else:
+                    last = parse_duration(val)
+            elif a == "--all":
+                everything = True
+            elif a in ("--dry-run", "-n"):
+                dry = True
+            elif a in ("--yes", "-y"):
+                yes = True
+            elif what is None and not a.startswith("-"):
+                what = a.lower()
+            else:
+                raise ValueError(f"Unknown option {a}.")
+            i += 1
+    except ValueError as e:
+        print(e)
+        print(usage)
+        return 2
+    kinds = list(_PURGE_WHAT) if what == "all" else \
+        [{"price": "prices", "sightings": "prices", "nickname": "nicknames", "megaphone": "megaphones"}.get(w, w)
+         for w in (what or "").split(",") if w]
+    if not kinds or any(k not in _PURGE_WHAT for k in kinds):
+        print("Say what to delete: prices, megaphones, nicknames or all.")
+        print(usage)
+        return 2
+    if sum(x is not None and x is not False for x in (older, last, everything or None)) != 1:
+        print("Say which data: --older-than TIME, --last TIME or --all (one of them).")
+        print(usage)
+        return 2
+    when = (f"older than {args_time(older)}" if older is not None else
+            f"from the past {args_time(last)}" if last is not None else "all of it")
+    counts = purge(con, kinds, older, last, dry_run=True)
+    print(f"To delete ({when}): " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in counts.items()))
+    if dry or not sum(counts.values()):
+        return 0
+    if not yes:
+        if not sys.stdin.isatty():
+            print("Add --yes to delete them.")
+            return 1
+        if input("Delete them? Type yes: ").strip().lower() not in ("yes", "y"):
+            print("Nothing deleted.")
+            return 1
+    done = purge(con, kinds, older, last)
+    print("Deleted: " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in done.items())
+          + (". The apps remove the nicknames on their next sync." if done.get("nicknames") else "."))
+    event(con, None, None, "data purged", f"{when}: " + ", ".join(f"{n} {k if n != 1 else k[:-1]}" for k, n in done.items()))
+    return 0
+
+
+def args_time(d: timedelta) -> str:
+    m = d.total_seconds() / 60
+    for size, name in ((10080, "week"), (1440, "day"), (60, "hour"), (1, "minute")):
+        if m >= size:
+            n = m / size
+            n = int(n) if n == int(n) else round(n, 1)
+            return f"{n} {name}{'' if n == 1 else 's'}"
+    return f"{d.total_seconds():g} seconds"
+
+
 def _table(rows: list[tuple], head: tuple) -> None:
     rows = [tuple("" if v is None else str(v) for v in r) for r in rows]
     w = [max(len(str(h)), *(len(r[i]) for r in rows)) if rows else len(str(h)) for i, h in enumerate(head)]
@@ -868,6 +1022,8 @@ def main(argv: list[str]) -> int:
         rows = con.execute("SELECT ts, username, ip, event, detail FROM events ORDER BY id DESC LIMIT ?", (n,)).fetchall()
         _table(rows[::-1], ("time (UTC)", "user", "IP", "event", "detail"))
         return 0
+    if cmd == "purge":
+        return _purge_cmd(con, argv[2:])
     if cmd == "stats":
         n = con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         items = con.execute("SELECT COUNT(DISTINCT item) FROM sightings").fetchone()[0]

@@ -300,7 +300,9 @@ seen-again updates go to it too, and everyone else's sightings are copied into y
 prices every few seconds. Only items from the item list are shared: a name in Review is
 shared once you match it to an item. Megaphones are shared too: when several players
 read the same one, the clearest read is kept. Nicknames are shared as well, so a new player
-starts with everything the group has taught. The server keeps megaphones for 72 hours;
+starts with everything the group has taught. What you review stays in your app: phrases
+you mark "Not an item" aren't sent (marking a shared nickname's phrase "Not an item"
+deletes that nickname for everyone). The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
 prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;

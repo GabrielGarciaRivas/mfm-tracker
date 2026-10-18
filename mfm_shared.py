@@ -474,8 +474,18 @@ class SharedSync:
                 if _nick_sig(r[1], r[2]) != r[4]][:500]
         if not rows:
             return 0
-        self.server.send_nicknames([{"key": k, "item": i or "", "deleted": bool(d), "updated": u}
-                                    for k, i, d, u, _ in rows])
+        # only real nicknames are shared. A "Not an item" mark (item '') stays here; it's
+        # only sent, as a deletion, when it replaces a nickname that was shared before.
+        def shared_before(sig):
+            try:
+                item, deleted = json.loads(sig or "null") or ("", 1)
+            except ValueError:
+                return False
+            return bool(item) and not deleted
+        send = [{"key": k, "item": i or "", "deleted": bool(d) or not i, "updated": u}
+                for k, i, d, u, sig in rows if i or shared_before(sig)]
+        if send:
+            self.server.send_nicknames(send)
         for k, i, d, _, _ in rows:
             con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (_nick_sig(i, d), k))
         con.commit()
@@ -498,7 +508,8 @@ class SharedSync:
                 local = con.execute("SELECT item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames "
                                     "WHERE key = ?", (k,)).fetchone()
                 if local:
-                    if _nick_sig(local[0], local[1]) == sig:
+                    if _nick_sig(local[0], local[1]) == sig or (deleted and not local[0] and not local[1]):
+                        # (a shared nickname being deleted leaves a "Not an item" mark here as it is)
                         con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (sig, k))
                         continue
                     unsent = _nick_sig(local[0], local[1]) != local[3]

@@ -128,7 +128,8 @@ server's VPN IP as the address. No port forwarding is needed then.
   over a VPN. Over the internet, use HTTPS (below).
 - Only price sightings, megaphones and nicknames are stored: item, price, shop, player
   name, map, channel, times, notes, megaphone messages and item nicknames, plus who sent
-  them and from where.
+  them and from where. What players review stays in their own app: a phrase marked "not
+  an item" isn't stored (it only deletes a shared nickname of that phrase).
 
 ## HTTPS (optional)
 
@@ -199,9 +200,35 @@ Run these on the server computer, in the folder with `docker-compose.yml`:
 | `docker compose exec mfm-server mfm-server logout-user NAME` | sign an account out everywhere |
 | `docker compose exec mfm-server mfm-server remove-user NAME` | delete an account (what it sent stays, with its name and id) |
 | `docker compose exec mfm-server mfm-server stats` | how much is stored, and from whom |
+| `docker compose exec mfm-server mfm-server purge WHAT WHEN` | delete stored data (see below) |
 | `docker compose logs -f mfm-server` | the server's log |
 | `docker compose pull && docker compose up -d` | update to the latest version |
 | `docker compose down` | stop it (the data stays) |
+
+## Deleting stored data
+
+`purge` deletes prices, megaphones or nicknames from the server:
+
+```
+docker compose exec mfm-server mfm-server purge prices --older-than 1d
+docker compose exec mfm-server mfm-server purge megaphones --last 1h
+docker compose exec mfm-server mfm-server purge prices,megaphones --last 2h
+docker compose exec mfm-server mfm-server purge all --all
+```
+
+- **What:** `prices`, `megaphones`, `nicknames`, several joined with commas, or `all`.
+- **Which:**
+  - `--older-than TIME` deletes data older than that. Prices count from when the listing
+    was last seen.
+  - `--last TIME` deletes data from the past while, such as bad data sent in the past hour.
+  - `--all` deletes everything.
+- **Times:** `30m`, `1h`, `12h`, `1d`, `2w`.
+- **Check first:** `--dry-run` only counts what would be deleted.
+- **Confirming:** it asks before deleting. Add `--yes` to skip the question.
+- **Nicknames** are marked deleted rather than removed, so the apps drop them too on their
+  next sync.
+- **Prices and megaphones** that players already have stay in their apps.
+- **The log:** each purge is written to the server's event log (`mfm-server log`).
 
 ## Backups
 
@@ -258,7 +285,7 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
-| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
+| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", which isn't stored (it only deletes that nickname); an item starting with `=` = words (e.g. `"=Intermediate"`) |
 | `GET /api/v1/nicknames?since=SEQ` | `{"nicknames": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,
