@@ -176,6 +176,25 @@ def num(s: str) -> float:
         return float("-inf")
 
 
+
+# the capture areas you can draw (Settings → Window detection): config key, name, what
+# it's for
+AREAS = [("region", "Shop", "the store window"),
+         ("map_region", "Map name", "the minimap's street and map name"),
+         ("chat_region", "Chat", "the chat messages, for megaphones"),
+         ("inventory_region", "Item inventory", "your ITEM INVENTORY window, for My Inventory"),
+         ("channel_region", "Change Channel window", "where the game's Change Channel window opens")]
+AREA_NAMES = {k: n + " area" for k, n, _ in AREAS}
+
+
+def area_text(region) -> str:
+    """[left, top, width, height] as 'x 812, y 340, 520 × 410'."""
+    try:
+        l, t, w, h = (int(v) for v in region)
+    except (TypeError, ValueError):
+        return "automatic"
+    return f"x {l}, y {t}, {w} × {h}"
+
 class Tooltip:
     """Small help text that appears when the mouse rests on a widget for a moment.
     Only one is ever shown at a time."""
@@ -726,22 +745,15 @@ class App:
         self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground="#c62828")
         self.shared_dot.pack(side="right", padx=(0, 2))
         tip("Green: connected to the Shared Database and syncing. Red: not connected.", self.shared_dot)
-        self.start_btn = ttk.Button(bar, text="Start monitoring", command=self.toggle, width=16)
-        self.start_btn.pack(side="left")
-        # next to it: a green arrow while monitoring, a red square when stopped
+        # left of the button: a green arrow while monitoring, a red square when stopped
         # (drawn, not a text symbol, so it shows whatever fonts there are)
         self.run_mark = tk.Canvas(bar, width=18, height=18, highlightthickness=0, bd=0,
                                   background=ttk.Style().lookup("TFrame", "background") or None)
-        self.run_mark.pack(side="left", padx=(5, 0))
+        self.run_mark.pack(side="left", padx=(0, 5))
         self._run_mark(False)
         tip("Green arrow: monitoring. Red square: stopped.", self.run_mark)
-        ttk.Button(bar, text="Shop area", command=self.calibrate).pack(side="left", padx=(8, 0))
-        ttk.Button(bar, text="Map area",
-                   command=lambda: self.calibrate(key="map_region")).pack(side="left", padx=(6, 0))
-        b = ttk.Button(bar, text="Chat area", command=lambda: self.calibrate(key="chat_region"))
-        b.pack(side="left", padx=(6, 0))
-        tip("Draw a box around the chat messages, if the chat window isn't found by itself. "
-            "Settings → Auto Detection goes back to finding it.", b)
+        self.start_btn = ttk.Button(bar, text="Start monitoring", command=self.toggle, width=16)
+        self.start_btn.pack(side="left")
         ttk.Label(bar, text="Channel:").pack(side="left", padx=(14, 4))
         # stays filled in for every shop until you change it (saved with each listing)
         self.channel_var = tk.StringVar()
@@ -2118,7 +2130,7 @@ class App:
             "Start monitoring to read megaphones." if not running else
             "Reading the chat area you drew." if manual and found else
             "Reading the chat window." if found else
-            "Chat window not found: open it in the game (or set the Chat area)." if found is False else
+            "Chat window not found: open it in the game (or draw it in Settings → Window detection)." if found is False else
             "Looking for the chat window…"))
 
     def on_chat(self, p):
@@ -2938,10 +2950,7 @@ class App:
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
                   "ones you want and click Add.",
                   wraplength=560, justify="left").pack(side="left")
-        b = ttk.Button(top, text="Inventory area", command=lambda: self.calibrate(key="inventory_region"))
-        b.pack(side="right")
-        tip("Draw a box around your Item Inventory window, if it isn't found by itself. "
-            "Settings → Auto Detection goes back to finding it.", b)
+        ttk.Label(top, text="Not found? Settings → Window detection.", foreground="#666").pack(side="right")
         body = ttk.Frame(win, padding=(12, 4, 12, 4))
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
@@ -3141,7 +3150,7 @@ class App:
                     how = f"auto, found at {region[0]},{region[1]}" if region else ""
                 if not region:
                     self.events.put(("inv_scan", {"status": "Item Inventory not found. Open it in the game "
-                                                            "(or set the Inventory area)."}))
+                                                            "(or draw it in Settings → Window detection)."}))
                 else:
                     win = mfm.crop(full, region)
                     tab = mfm.inventory_tab(win)
@@ -4717,27 +4726,40 @@ class App:
             self._set_status(f"Deleted {n} listings of {len(items)} item{'s' if len(items) != 1 else ''}.")
 
     # ------------------------------------------------------------------ dialogs
-    def calibrate(self, then_start=False, key="region"):
+    def calibrate(self, then_start=False, key="region", hide=(), on_set=None):
+        """Draw a capture area on a screenshot. `hide`: other windows to hide meanwhile
+        (e.g. Settings); `on_set()` runs once the area is saved."""
         was_running = bool(self.worker and self.worker.is_alive())
+        hide = [w for w in hide if w is not None and w.winfo_exists()]
+        for w in hide:
+            w.withdraw()
         self.root.withdraw()
         self.root.update()
+
+        def show():
+            self.root.deiconify()
+            for w in hide:
+                if w.winfo_exists():
+                    w.deiconify()
+                    w.lift()
 
         def grab():
             try:
                 shot = mfm.grab_full_screen()
             except SystemExit as e:  # missing Wayland screenshot tool
-                self.root.deiconify()
+                show()
                 messagebox.showerror("Can't capture screen", str(e))
                 return
 
             def done(region):
-                self.root.deiconify()
+                show()
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
+                    mfm.save_config(self.cfg)
                     self._update_stats(None, None)
-                    label = {"map_region": "Map area", "inventory_region": "Inventory area",
-                             "chat_region": "Chat area"}.get(key, "Shop area")
-                    self._set_status(f"{label} set to {region}.")
+                    self._set_status(f"{AREA_NAMES.get(key, key)} set to {area_text(region)}.")
+                    if on_set:
+                        on_set()
                     if then_start and not was_running:
                         self.start()
 
@@ -4871,6 +4893,55 @@ class App:
         btns.pack(fill="x")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
         ttk.Button(btns, text="Reset", command=go).pack(side="right", padx=6)
+
+    def _window_detection_frame(self, win):
+        """Settings → Window detection: each capture area, found automatically or drawn
+        by hand (with its coordinates), a button to draw it and one to go back to automatic."""
+        box = ttk.LabelFrame(win, text=" Window detection ", padding=(10, 4, 10, 6))
+        ttk.Label(box, foreground="#666", wraplength=700, justify="left", text=(
+            "Each area is found on the screen by itself. If one isn't found, draw it: the app then "
+            "reads only that part of the screen (coordinates in screen pixels).")).grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        labels = {}
+
+        def refresh():
+            for key, lab in labels.items():
+                r = self.cfg.get(key)
+                lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
+                           foreground="#1565c0" if r else "#555")
+
+        def auto(key=None):
+            for k, _, _ in AREAS:
+                if key in (None, k):
+                    self.cfg[k] = None
+            mfm.save_config(self.cfg)
+            self.found_at = None
+            self._update_stats(None, None)
+            refresh()
+            self._set_status("Every area will be found automatically." if key is None
+                             else f"{AREA_NAMES[key]} will be found automatically.")
+
+        for i, (key, name, what) in enumerate(AREAS, start=1):
+            n = ttk.Label(box, text=name)
+            n.grid(row=i, column=0, sticky="w", pady=2)
+            lab = ttk.Label(box, width=34)
+            lab.grid(row=i, column=1, sticky="w", padx=(10, 6))
+            labels[key] = lab
+            d = ttk.Button(box, text="Draw area",
+                           command=lambda k=key: self.calibrate(key=k, hide=(win,), on_set=refresh))
+            d.grid(row=i, column=2, padx=(0, 6), pady=2)
+            a = ttk.Button(box, text="Automatic", command=lambda k=key: auto(k))
+            a.grid(row=i, column=3, pady=2)
+            tip(f"{name}: {what}.", n, lab)
+            tip(f"Draw a box around {what} on a screenshot.", d)
+            tip("Forget the drawn area and find it by itself again.", a)
+        b = ttk.Button(box, text="Auto Detection", command=auto)
+        b.grid(row=len(AREAS) + 1, column=0, sticky="w", pady=(6, 0))
+        tip("Forget every area you drew and find them all automatically.", b)
+        ttk.Label(box, foreground="#666", text="Forgets every drawn area.").grid(
+            row=len(AREAS) + 1, column=1, columnspan=3, sticky="w", padx=(10, 0), pady=(6, 0))
+        refresh()
+        return box
 
     def settings(self):
         win = tk.Toplevel(self.root)
@@ -5053,19 +5124,8 @@ class App:
             self.refresh_tables()
             win.destroy()
 
-        def reset_auto():
-            self.cfg["region"] = self.cfg["map_region"] = self.cfg["inventory_region"] = None
-            self.cfg["chat_region"] = None
-            mfm.save_config(self.cfg)
-            self.found_at = None
-            self._update_stats(None, None)
-            self._set_status("The shop, map, inventory and chat will be found automatically.")
-        b = ttk.Button(win, text="Auto Detection", command=reset_auto)
-        b.grid(row=len(fields) + 1, column=0, sticky="w", padx=12, pady=(8, 0))
-        tip("Find the shop, minimap, inventory and chat automatically again.", b)
-        ttk.Label(win, foreground="#666", wraplength=620, justify="left", text=(
-            "Forgets the shop, map, inventory and chat areas you drew and finds them automatically."
-            )).grid(row=len(fields) + 1, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=(8, 0))
+        self._window_detection_frame(win).grid(row=len(fields) + 1, column=0, columnspan=3, sticky="we",
+                                               padx=12, pady=(10, 0))
         self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
                                         padx=12, pady=(12, 0))
         bottom = ttk.Frame(win)

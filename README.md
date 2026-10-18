@@ -78,16 +78,17 @@ The finished app is in the `dist` folder.
    item and map lists. Say yes; they correct misread item and map names.
 2. Pick your **Channel**.
 3. Click **Start monitoring**, then play normally: open shops and scroll through them.
-   Next to the button, a green arrow means it's monitoring and a red square means it's
+   Left of the button, a green arrow means it's monitoring and a red square means it's
    stopped.
 
 The shop window and the minimap are found automatically, on any monitor. Each listing is
 saved with its item, price, shop, player, map, channel and time. The panel on the right
 shows what's being read.
 
-If the shop, map or chat is ever not found, use **Shop area** / **Map area** / **Chat
-area** to draw a box around it. **Settings → Auto Detection** goes back to finding them
-automatically.
+If the shop, map, chat, inventory or Change Channel window is ever not found, draw a box
+around it in **Settings → Window detection** (**Draw area**). That section lists each area
+as **Automatic** or **Manual**, with the coordinates of a drawn one. **Automatic** next to
+an area, or **Auto Detection** for all of them, goes back to finding them by themselves.
 
 ## Channel
 
@@ -167,7 +168,7 @@ megaphone's message as it was read (with no price), and the phrase goes to
 Megaphones are kept for 72 hours and then deleted; change this with the box at the top of
 the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
 item's history, copy its message or player name, or delete it. If the chat window isn't
-found, click **Chat area** and draw a box around the chat messages.
+found, draw it in **Settings → Window detection** (Chat).
 
 ### Nicknames
 
@@ -244,8 +245,8 @@ the tab row.
   key). Your items show up as you switch between its tabs. Icons that couldn't be matched
   are highlighted: press **Enter** to accept the suggested item, **M** to pick one yourself,
   or **Delete** to remove the row; your choice is remembered next time. Select the items
-  you want and click **Add**. If your inventory isn't found, click **Inventory area** and
-  draw a box around it (**Settings → Auto Detection** goes back to finding it). Matching
+  you want and click **Add**. If your inventory isn't found, draw it in **Settings → Window
+  detection** (Item inventory). Matching
   works best with all item icons downloaded (Settings → Game data → Update).
 
 **Editing:** click a highlighted row's **Qty**, **List price** or **Notes** to type in it,

@@ -7,8 +7,12 @@
   deletes the same prices, megaphones and nicknames from its own data on its next sync.
   When the app and the server disagree, the server's copy wins. The Shared Database
   window shows how many prices, megaphones and nicknames were purged this way.
-- **Monitoring:** a green arrow next to the button while monitoring, a red square when
+- **Monitoring:** a green arrow left of the button while monitoring, a red square when
   stopped.
+- **Settings → Window detection:** the Shop, Map, Chat and Inventory area buttons moved
+  here, with a new one for the Change Channel window. Each area shows whether it's found
+  automatically or drawn by hand, with the drawn area's coordinates, and can go back to
+  automatic on its own.
 - **Window:** opens wider (up to 1880 pixels, to fit your screen), so the Megaphones tab's
   Message column isn't cut off.
 - **Downloads** are now a zip (Windows, macOS) or tar.gz (Linux) with the version in the

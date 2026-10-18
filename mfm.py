@@ -161,6 +161,7 @@ DEFAULT_CONFIG = {
     "channel_count": 20,       # channels shown in the channel picker (1-100)
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
+    "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
@@ -483,6 +484,8 @@ CALIBRATE_HINTS = {
     "inventory_region": "Drag a box around your whole ITEM INVENTORY window. Esc cancels.",
     "chat_region": "Drag a box around the chat messages: not the scroll bar or the white chat "
                    "bar below them. Esc cancels.",
+    "channel_region": "Open the game's Change Channel window, then drag a box around all of it: "
+                      "the channel buttons and CHANGE CHANNEL / CANCEL. Esc cancels.",
 }
 
 
@@ -2288,6 +2291,12 @@ class ChannelWatch:
         if self._off():
             self._reset()
             return False
+        area = (self.cfg or {}).get("channel_region")
+        if area:
+            try:
+                full = crop(full, area)        # only where you said the window shows
+            except Exception:
+                pass
         pair = find_channel_dialog(full)
         if pair:
             if not self.seen:
@@ -7774,6 +7783,7 @@ def main() -> None:
 
     if a.cmd == "calibrate" and a.auto:
         cfg["region"] = cfg["map_region"] = cfg["inventory_region"] = cfg["chat_region"] = None
+        cfg["channel_region"] = None
         save_config(cfg)
         print("Shop and map areas will be found automatically.")
     elif a.cmd == "calibrate":
