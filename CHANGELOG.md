@@ -4,6 +4,9 @@
 
 ### Changed
 - **Shared Database:** the window also counts nicknames sent and received.
+- **Watched items:** a listing with a watched item is highlighted in bright green (the
+  whole row) instead of an outline around its icon. Megaphones with a watched item are
+  highlighted too.
 - **Map:** the map you're on shows next to the channel ("Map: Hidden Street: Free Market
   <6>"), read from the minimap every few seconds while monitoring, with or without a shop
   open.

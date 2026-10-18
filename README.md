@@ -213,8 +213,10 @@ price, it gets the note too.
 
 ## Watched
 
-Watched items and listings get an **alert**: a sound, a green outline, and the app comes to
-the front. The **Watched** tab has two lists.
+Watched items and listings get an **alert**: a sound, and the app comes to the front. Their
+listings are highlighted in bright green in the shop tables. Megaphones with a watched item
+are highlighted the same way (all their lines): selling at or under your max price (or with
+no price given), or buying at any price. The **Watched** tab has two lists.
 
 **Watched items** (top): any listing of an item.
 1. Type the item, optionally a **max price**, and click **Watch**. Or right-click any item →

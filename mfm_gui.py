@@ -177,6 +177,10 @@ def num(s: str) -> float:
 
 
 
+
+WATCH_BG = "#9cff57"       # rows with a watched item for sale (shops and megaphones): a
+                           # bright green no megaphone colour or DEAL row uses
+
 # the capture areas you can draw (Settings → Window detection): config key, name, what
 # it's for
 AREAS = [("region", "Shop", "the store window"),
@@ -370,11 +374,13 @@ def make_tree(parent, cols) -> ttk.Treeview:
     tree.configure(xscrollcommand=xset)
     sb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
+    # a watched item for sale: the whole row highlighted. Configured first, so it wins
+    # over every other row colour (deal, high, a megaphone's own colour)
+    tree.tag_configure("watch", background=WATCH_BG, foreground="#000000", font="MfmBold")
     tree.tag_configure("deal", background="#d5f2dc", foreground="#145c2c")
     tree.tag_configure("high", background="#fadad7", foreground="#8c1d16")
     tree.tag_configure("unknown", foreground="#8a8a8a")
     tree.tag_configure("sold", foreground="#9a9a9a", background="#f0f0f0")
-    tree.tag_configure("watch", font="MfmBold")
     tree.tag_configure("ignored", foreground="#a0a0a0")
     tree.tag_configure("outlier", foreground="#a0661a", background="#fbf3e4")
     tree.frame = frame
@@ -2314,9 +2320,12 @@ class App:
             seen_mega = set()
             last_mid = None
             lines = {}                            # how many lines each megaphone has here
+            watched = set()                       # megaphones with a watched item: highlighted
             for r in rows:
                 if r[7] is not None and r[8] == kind:
                     lines[r[0]] = lines.get(r[0], 0) + 1
+                    if r[9] and self._mega_watched(r[9], r[11], r[8]):
+                        watched.add(r[0])
             for mid, ts, player, ch, msg, k, color, idx, side, item, phrase, price, note in rows:
                 if idx is None:                       # no offers read from it: show it by its kind
                     if k not in (kind, "both"):
@@ -2338,6 +2347,8 @@ class App:
                         t.tag_configure(tag, background=color, foreground="white" if dark else "black")
                         t.color_tags = getattr(t, "color_tags", set()) | {tag}
                     tags = (tag,)
+                if mid in watched:
+                    tags = ("watch",) + tags
                 mkt = None
                 if item:
                     mkt = markets.get(item)
@@ -2363,6 +2374,15 @@ class App:
                 t.offer_of[iid] = (mid, idx, phrase)
                 t.info[iid] = (msg, player)
             restore()
+
+    def _mega_watched(self, item, price, side) -> bool:
+        """Is this megaphone offer for a watched item? Selling at or under your price
+        cap (or with no price given); buying, at any price."""
+        for w in self.watch:
+            if w.get("item") == item:
+                cap = w.get("max_each")
+                return side == "buy" or not price or cap in (None, "") or price <= float(cap)
+        return False
 
     def _offer_phrases(self, tree) -> list[str]:
         return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
@@ -3388,6 +3408,7 @@ class App:
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         self.refresh_tables()
+        self.refresh_megaphones()             # watched items are highlighted there too
         self._set_status(f"Watching {item}" + (f" at {mfm.fmt(max_each)} or less" if max_each else "") + ".")
 
     def add_alert_from_form(self):
@@ -3456,6 +3477,7 @@ class App:
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         self.refresh_tables()
+        self.refresh_megaphones()             # watched items are highlighted there too
         self._set_status(f"Max price {'set to ' + mfm.fmt(cap) if cap else 'removed (any price)'} for "
                          + (f"'{items[0]}'." if len(items) == 1 else f"{len(items)} items."))
 
@@ -3468,6 +3490,7 @@ class App:
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         self.refresh_tables()
+        self.refresh_megaphones()             # watched items are highlighted there too
 
     def alert_from_table(self, tree):
         items = self._selected_items(tree)
@@ -4666,8 +4689,10 @@ class App:
 
     def icon_for(self, item: str, size: int = 30, found: bool = False):
         """Thumbnail for a table row (cached). Items that don't match anything in the
-        meowdb list get a small red "!" badge; watched items found for sale get a
-        green outline; '' when there's nothing to show."""
+        meowdb list get a small red "!" badge; '' when there's nothing to show.
+        (Watched items found for sale are shown by highlighting the whole row: the
+        "watch" tag; `found` is no longer drawn on the icon.)"""
+        found = False
         warn = mfm.needs_review(item)
         key = f"{item}@{size}{'!' if warn else ''}{'g' if found else ''}"
         if key not in self.icons:
