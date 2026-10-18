@@ -926,8 +926,14 @@ class App:
                     continue
                 if self.chan_watch.feed(mfm.grab_full_screen()):
                     self.events.put(("channel_change", self.chan_watch.channel))
+                elif self.chan_watch.take_cancelled():
+                    self.events.put(("channel_cancel", None))
             except Exception:
                 time.sleep(5)
+
+    def on_channel_cancel(self, _=None):
+        """The game's Change Channel window was closed with Esc: the channel stays."""
+        self._set_status(f"Change Channel window closed with Esc: still channel {self.channel() or '(not set)'}.")
 
     def on_channel_change(self, channel=None):
         """The game's Change Channel window was closed. The channel highlighted in it

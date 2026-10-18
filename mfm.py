@@ -2095,11 +2095,92 @@ def read_dialog_channel(full: Image.Image, pair: list | None = None) -> str | No
     return str(round((cy - y0_) / sy) * 8 + round((cx - x0_) / sx) + 1)
 
 
+_ESC_PROBE = None
+
+
+def esc_key_down() -> bool | None:
+    """Is Esc held down (or, on Windows, pressed since the last look)? Read straight
+    from the system, whatever window has focus. None where that can't be read
+    (e.g. Wayland)."""
+    global _ESC_PROBE
+    if _ESC_PROBE is None:
+        _ESC_PROBE = False
+        try:
+            import ctypes
+            import ctypes.util
+            kind = session_type()
+            if kind == "windows":
+                gaks = ctypes.windll.user32.GetAsyncKeyState
+                gaks.restype = ctypes.c_short
+                _ESC_PROBE = lambda: bool(gaks(0x1B) & 0x8001)
+            elif kind == "x11":
+                x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
+                x.XOpenDisplay.restype = ctypes.c_void_p
+                x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+                x.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+                x.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                dpy = x.XOpenDisplay(None)
+                if dpy:
+                    code = x.XKeysymToKeycode(dpy, 0xFF1B)       # XK_Escape
+                    buf = ctypes.create_string_buffer(32)
+                    lock = threading.Lock()
+
+                    def probe():
+                        with lock:
+                            x.XQueryKeymap(dpy, buf)
+                            return bool(buf.raw[code // 8] & (1 << (code % 8)))
+                    _ESC_PROBE = probe
+            elif kind == "macos":
+                q = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+                q.CGEventSourceKeyState.restype = ctypes.c_bool
+                q.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
+                _ESC_PROBE = lambda: bool(q.CGEventSourceKeyState(0, 53))   # combined state, kVK_Escape
+        except Exception:
+            _ESC_PROBE = False
+    if not _ESC_PROBE:
+        return None
+    try:
+        return _ESC_PROBE()
+    except Exception:
+        return None
+
+
+class _EscWatch:
+    """Looks at the Esc key every 15 ms on a small thread, from start() until
+    stop(), so a quick tap between screenshots isn't missed."""
+
+    def __init__(self):
+        self.pressed = False
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self) -> None:
+        self.stop()
+        self.pressed = False
+        if esc_key_down() is None:
+            return
+        self._stop = threading.Event()
+        stop = self._stop
+
+        def run():
+            while not stop.is_set():
+                if esc_key_down():
+                    self.pressed = True
+                    return
+                stop.wait(0.015)
+        self._thread = threading.Thread(target=run, daemon=True, name="esc-watch")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 class ChannelWatch:
     """Notices a channel change: the change-channel dialog (find_channel_dialog)
     was on screen and has gone away, i.e. you changed channel (or cancelled).
     It only counts as gone after `misses` checks in a row without it, so a
-    mouse over a button or one bad frame doesn't end it early."""
+    mouse over a button or one bad frame doesn't end it early. Pressing Esc while
+    the dialog is open cancels it: no change until the dialog shows up again."""
 
     def __init__(self, misses: int = 2, every: float | None = None, cfg: dict | None = None):
         # how often to look: `every` seconds, or the Capture every (seconds) setting
@@ -2110,17 +2191,29 @@ class ChannelWatch:
         self.last = 0.0
         self.picked: str | None = None      # the channel highlighted while the dialog was open
         self.channel: str | None = None     # ... when it closed: the channel you changed to
+        self.esc = _EscWatch()
+        self.escaped = False                # Esc was pressed while the dialog was open
+        self.cancelled = False              # set when a dialog closed after Esc; see take_cancelled()
+
+    def take_cancelled(self) -> bool:
+        """True once after a Change Channel window was closed with Esc."""
+        c, self.cancelled = self.cancelled, False
+        return c
+
+    def _reset(self) -> None:
+        self.seen, self.gone, self.escaped = False, 0, False
+        self.esc.stop()
 
     paused = False
 
     def pause(self) -> None:
         """Stop noticing channel changes (e.g. while the app's channel picker is open)."""
         self.paused = True
-        self.seen, self.gone = False, 0
+        self._reset()
 
     def resume(self) -> None:
         self.paused = False
-        self.seen, self.gone = False, 0
+        self._reset()
 
     quiet_until = 0.0
 
@@ -2128,7 +2221,7 @@ class ChannelWatch:
         """Ignore channel changes for a while (e.g. right after you picked your
         channel at launch, while the game's Change Channel window may still be open)."""
         self.quiet_until = time.monotonic() + seconds
-        self.seen, self.gone = False, 0
+        self._reset()
 
     def _off(self) -> bool:
         return self.paused or time.monotonic() < self.quiet_until
@@ -2149,13 +2242,18 @@ class ChannelWatch:
         """Check one screenshot; True once the dialog has come and gone."""
         self.last = time.monotonic()
         if self._off():
-            self.seen, self.gone = False, 0
+            self._reset()
             return False
         pair = find_channel_dialog(full)
         if pair:
             if not self.seen:
-                self.picked = None
+                self.picked, self.escaped = None, False
+                self.esc.start()
             self.seen, self.gone = True, 0
+            if self.escaped or self.esc.pressed:
+                self.escaped = True           # cancelled: stop reading until it closes
+                self.esc.stop()
+                return False
             key = (tuple(pair), hashlib_md5(full.crop((max(0, pair[0] - 3 * pair[2]), max(0, pair[1] - pair[2]),
                                                        pair[0] + pair[2], pair[1])).resize((96, 32)).tobytes()))
             if key in self._read_memo:
@@ -2174,8 +2272,13 @@ class ChannelWatch:
         if self.seen:
             self.gone += 1
             if self.gone >= max(self.misses, round(0.5 / self.every)):
-                self.seen, self.gone = False, 0
-                self.channel, self.picked = self.picked, None
+                escaped = self.escaped or self.esc.pressed
+                self._reset()
+                picked, self.picked = self.picked, None
+                if escaped:
+                    self.cancelled = True     # closed with Esc: keep the channel you had
+                    return False
+                self.channel = picked
                 return True
         return False
 
@@ -7071,6 +7174,8 @@ class Monitor:
                         try:
                             if self.chan_watch.feed(full):
                                 self.on_event("channel_change", self.chan_watch.channel)
+                            elif self.chan_watch.take_cancelled():
+                                self.on_event("channel_cancel", None)
                         except Exception as e:
                             self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
                     if self.megaphones.due():
