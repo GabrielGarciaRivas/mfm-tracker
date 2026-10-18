@@ -2040,13 +2040,13 @@ class App:
             ttk.Label(f, text=title, style="Bold.TLabel").pack(anchor="w", pady=(4, 2))
             t = make_tree(f, ("item", "mprice", "market", "time", "player", "channel", "message"))
             t.column("message", stretch=True)
-            t.column("item", width=210, stretch=False)
+            t.column("item", width=300, stretch=False)
             t.column("player", width=120)
             t.column("time", width=140)
             t.frame.pack(fill="both", expand=True)
             self._list_menu(t, [("Match to an item", lambda tr: self.match_megaphone_item(tr), True),
                                 ("Not an item", lambda tr: self.megaphone_not_item(tr), False),
-                                ("Show item history", lambda tr: self.open_history(tr), True),
+                                ("Show item history", lambda tr: self._megaphone_history_of(tr), True),
                                 None,
                                 ("Copy message", lambda tr: self._copy_megaphone(tr, "message"), False),
                                 ("Copy player name", lambda tr: self._copy_megaphone(tr, "player"), False),
@@ -2137,6 +2137,8 @@ class App:
                     continue
                 seen_mega.add(iid)
                 tags = ()
+                if color in mfm.MEGAPHONE_COLORS:     # a colour name instead of #rrggbb
+                    color = "#%02x%02x%02x" % mfm.MEGAPHONE_COLORS[color]
                 if color and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
                     tag = "mc" + color[1:].lower()
                     if tag not in getattr(t, "color_tags", set()):
@@ -2151,12 +2153,16 @@ class App:
                         markets[item] = mfm.market_rate(self.con, item, self.cfg)[0]
                     mkt = markets[item]
                     t.matched.add(iid)
-                price_txt = mfm.fmt(price) if price else ("offer" if note and "offer" in note else "")
-                if price and note and "c/o" in note:
-                    price_txt = "c/o " + price_txt
+                if item:
+                    price_txt = mfm.fmt(price) if price else ("offer" if note and "offer" in note else "")
+                    if price and note and "c/o" in note:
+                        price_txt = "c/o " + price_txt
+                    shown = item
+                else:                                 # not matched yet: the message as it was read
+                    price_txt, shown = "", msg
                 t.insert("", "end", iid=iid, tags=tags, image=self.icon_for(item) if item else "",
-                         values=(item or "", price_txt, mfm.fmt(mkt) if mkt else "", mfm.local_time(ts),
-                                 player, ch or "", msg))
+                         values=(shown, price_txt, mfm.fmt(mkt) if mkt else "", mfm.local_time(ts),
+                                 player, ch or "", msg if item else ""))
                 t.offer_of[iid] = (mid, idx, phrase)
             restore()
 
@@ -2197,8 +2203,15 @@ class App:
         if phrases:
             self._nicknames_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
 
+    def _megaphone_history_of(self, tree):
+        if any(k in getattr(tree, "matched", set()) for k in tree.selection()):
+            self.open_history(tree)
+        else:
+            self._set_status("This megaphone isn't matched to an item yet: match it first.")
+
     def _copy_megaphone(self, tree, col):
-        vals = [tree.set(k, col) for k in tree.selection()]
+        # (a megaphone not matched to an item shows its message in the Item column)
+        vals = [tree.set(k, col) or (tree.set(k, "item") if col == "message" else "") for k in tree.selection()]
         if vals:
             self.root.clipboard_clear()
             self.root.clipboard_append("\n".join(vals))
@@ -3440,7 +3453,10 @@ class App:
         ttk.Label(tab, wraplength=1040, justify="left", text=(
             "Names not in the item list, with the closest item. Enter = accept · M = pick an "
             "item · K = keep the name · Delete = delete its listings.")).pack(anchor="w", pady=(0, 6))
-        self.review = make_tree(tab, ("item", "suggest", "score", "count", "time", "raw"))
+        self.review = make_tree(tab, ("item", "suggest", "score", "each", "shop", "player", "channel",
+                                      "count", "time", "raw"))
+        self.review.column("time", width=140)
+        self.review.column("shop", width=160)
         self.review.frame.pack(fill="both", expand=True)
         self.review.tag_configure("good", foreground="#145c2c")
         self.review.tag_configure("weak", foreground="#8a6d1a")
@@ -3513,8 +3529,10 @@ class App:
             tag = "kept" if r["kept"] else "good" if r["score"] >= 0.9 else "weak" if r["suggest"] else ""
             iid = t.insert("", "end", image=self.icon_for(r["item"]), tags=(tag,), values=(
                 r["item"], (r["suggest"] or "— no close match —") + ("   (kept as is)" if r["kept"] else ""),
-                f"{r['score']:.0%}" if r["suggest"] else "", r["count"],
-                mfm.local_time(r["last"]), r["raw"]))
+                f"{r['score']:.0%}" if r["suggest"] else "",
+                mfm.fmt(r["price"]) if r.get("price") else "", r.get("shop", ""), r.get("seller", ""),
+                mfm.channel_label(r["channel"]) if r.get("channel") else "",
+                r["count"], mfm.local_time(r["last"]), r["raw"]))
             self.review_rows[iid] = r
         restore()
 

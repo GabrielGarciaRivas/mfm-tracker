@@ -10,7 +10,10 @@
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
 - **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
-  a Buying / Selling column.
+  a Buying / Selling column. Shop listings shows the price, shop, player and channel in
+  their own columns.
+- A megaphone that isn't matched to an item yet shows its message as it was read until
+  you match it in Review.
 - The Items tab shows the median megaphone selling and buying prices, and the price
   history window has a Megaphones tab.
 - **Shared Database:** nicknames are shared too, so new players don't have to teach them

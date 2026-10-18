@@ -4668,16 +4668,20 @@ def unmatched_items(con, include_kept: bool = False) -> list[dict]:
         return []
     kept = load_kept()
     out = []
-    for item, n, sold, last, raw in con.execute(
+    for item, n, sold, last, lid in con.execute(
             "SELECT item, COUNT(*), SUM(COALESCE(sold, 0)), MAX(COALESCE(last_seen, ts)), "
-            "(SELECT raw FROM listings l2 WHERE l2.item = l1.item ORDER BY ts DESC LIMIT 1) "
+            "(SELECT id FROM listings l2 WHERE l2.item = l1.item ORDER BY ts DESC LIMIT 1) "
             "FROM listings l1 GROUP BY item"):
         if is_known_item(item) or (item in kept and not include_kept):
             continue
+        # the newest listing with this name: where it was and for how much
+        raw, price, qty, shop, seller, channel = con.execute(
+            "SELECT raw, price, qty, shop, seller, channel FROM listings WHERE id = ?", (lid,)).fetchone()
         pick, score = best_match(con, item)
         out.append({"item": item, "count": n, "sold": sold or 0, "last": last or "",
                     "raw": (raw or "").replace(" (slot re-read)", ""), "suggest": pick,
-                    "score": score, "kept": item in kept})
+                    "score": score, "kept": item in kept, "price": price, "qty": qty or 1,
+                    "shop": shop or "", "seller": seller or "", "channel": channel or ""})
     out.sort(key=lambda r: (r["kept"], -r["count"], r["item"].lower()))
     return out
 

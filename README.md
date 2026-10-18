@@ -110,8 +110,9 @@ channels the picker shows, in **Settings**.
   megaphones, and the NPC buy / sell prices. Filter by name,
   category, class, level or "Sold by NPCs" with the bar above it.
 - **Review:** things that didn't match an item in the database, in two tabs:
-  - **Shop listings:** names read from shops. Press **Enter** to accept the suggested
-    item, **M** to pick one yourself, **K** to keep the name, **Delete** to remove it.
+  - **Shop listings:** names read from shops, with the price, shop, player and channel of
+    the newest listing. Press **Enter** to accept the suggested item, **M** to pick one
+    yourself, **K** to keep the name, **Delete** to remove it.
   - **Megaphones:** what megaphones sell or buy that isn't matched to an item yet, with a
     **Buying / Selling** column. **Enter** accepts the suggested item, **M** picks one,
     **Delete** marks it as "not an item". See [Nicknames](#nicknames).
@@ -140,7 +141,8 @@ shows what's being read.
   (like @@@@@@) are left out.
 
 Each item in a megaphone gets its own row, with the item's icon, name, price and market
-price. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the beanie at
+price, plus the date and time, player, channel and message, in the megaphone's in-game
+colour. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the beanie at
 520,000 under Selling and the scepter under Buying. The app finds the item from:
 
 - an item link in brackets, like `[Korean Fan]`;
@@ -149,7 +151,8 @@ price. For example, "S> Black cat beanie 520k, B> Fondue Scepter" shows the bean
 
 Prices like 90k, 1.5m, 3,2 mil and 250,000 are read. "c/o" (current offer), "each" and
 "PM offer" are shown next to the price. If the item isn't found, the row shows the
-message with no item, and the phrase goes to **Review → Megaphones**.
+megaphone's message as it was read (with no price), and the phrase goes to
+**Review → Megaphones** until you match it.
 
 Megaphones are kept for 72 hours and then deleted; change this with the box at the top of
 the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
