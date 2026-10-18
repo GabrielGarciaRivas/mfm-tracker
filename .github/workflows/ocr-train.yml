@@ -40,8 +40,12 @@ jobs:
           KEY: ${{ secrets.OCR_DATA_KEY }}
         run: |
           [ -n "$KEY" ] || { echo "::error::Add the repository secret OCR_DATA_KEY first."; exit 1; }
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:KEY -in "${{ inputs.data }}" -out /tmp/lines.zip
-          mkdir -p /tmp/lines && unzip -q /tmp/lines.zip -d /tmp/lines
+          export KEY="$(printf %s "$KEY" | tr -d '[:space:]')"     # a pasted key may carry a space or newline
+          echo "key: ${#KEY} characters"
+          if ! err=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:KEY -in "${{ inputs.data }}" -out /tmp/lines.zip 2>&1); then
+            echo "::error::Couldn't decrypt the training lines (is OCR_DATA_KEY the right key?): $err"; exit 1
+          fi
+          mkdir -p /tmp/lines && unzip -q /tmp/lines.zip -d /tmp/lines || { echo "::error::The training lines didn't unzip."; exit 1; }
           echo "train: $(ls /tmp/lines/train/*.png | wc -l) lines, eval: $(ls /tmp/lines/eval/*.png | wc -l) lines"
 
       - name: Start model and tesstrain
