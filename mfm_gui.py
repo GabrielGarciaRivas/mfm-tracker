@@ -136,7 +136,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
         "side": "Buying / Selling", "phrase": "Item", "mprice": "Price", "msell": "Megaphones: selling",
-        "mbuy": "Megaphones: buying", "nick": "Megaphone item", "nitem": "Matched item name", "ntype": "Type",
+        "mbuy": "Megaphones: buying", "nick": "Megaphone term", "nitem": "Nickname", "ntype": "Type",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -3466,8 +3466,8 @@ class App:
     NOT_ITEM_WORDS = ("", "-", "(not an item)", "not an item")
 
     def nicknames_window(self):
-        """An editable sheet of nicknames: "Megaphone item" (what players write),
-        "Matched item name", and "Type": Item (the phrase is that item) or Words (the
+        """An editable sheet of nicknames: "Megaphone term" (what players write),
+        "Nickname" (what it means), and "Type": Item (the phrase is that item) or Words (the
         phrase stands for other words, used to read any item's name: "60%" =
         "Intermediate", "att" = "Attack"). Click a cell to type in it."""
         if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():

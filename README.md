@@ -169,8 +169,8 @@ every word of the item's name, in any order ("gloves attack scroll intermediate"
 
 Two buttons at the top of the Megaphones tab and of Review → Megaphones:
 
-- **Add manual nicknames** opens a sheet of every nickname: **Megaphone item** (what
-  players write), **Matched item name** and **Type**. Click a cell to type in it; the last
+- **Add manual nicknames** opens a sheet of every nickname: **Megaphone term** (what
+  players write), **Nickname** (what it means) and **Type**. Click a cell to type in it; the last
   row adds a new one, and **Delete** removes the selected ones. Click the Type cell to
   switch between:
   - **Item:** the phrase is that item ("kumbis" = Kumbi Throwing-Stars). If the name you

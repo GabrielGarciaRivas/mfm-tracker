@@ -9,7 +9,7 @@
 - **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
-- **Add manual nicknames:** a sheet of nicknames (Megaphone item, Matched item name) to
+- **Add manual nicknames:** a sheet of nicknames (Megaphone term, Nickname) to
   type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
   matches every megaphone again with the current nicknames.
 - **Word nicknames:** a nickname can stand for words instead of an item ("60%" =
