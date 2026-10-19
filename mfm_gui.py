@@ -1150,6 +1150,8 @@ class App:
         root.after(1500, self.check_db_size)
         root.after(2000, lambda: self.run_retention(quiet=True))   # every launch
         root.after(6 * 3600 * 1000, self.retention_tick)           # and every 6 hours
+        threading.Thread(target=mfm.cleanup_old_update, daemon=True).start()   # after an update
+        root.after(6000, self.auto_update_check)                   # a new version?
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.shared = None
         self.shared_state = {"ok": False, "text": "Not connected"}
@@ -6121,11 +6123,26 @@ class App:
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
         cb = ttk.Checkbutton(gen, text="Ignore outliers in market rates",
                              variable=outliers_on)
-        cb.grid(row=7, column=2, sticky="w", padx=(0, 12), pady=4)
+        cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
         tip("Leaves troll prices and misreads out of the market price. "
             "200% ceiling = more than 3x the usual price; 75% floor = less than 1/4 of it.", cb)
+        # ---- hotkeys (under the numbers)
         hot_box, hotkeys = self._hotkeys_frame(gen)
-        hot_box.grid(row=8, column=2, rowspan=3, sticky="nwe", padx=(0, 12), pady=(4, 0))
+        hot_box.grid(row=len(fields), column=0, columnspan=2, sticky="nwe", padx=12, pady=(8, 0))
+
+        # ---- updates (under the channel picker)
+        upd = ttk.LabelFrame(gen, text=" Updates ", padding=(10, 2, 10, 6))
+        upd.grid(row=len(fields) - 2, column=2, rowspan=2, sticky="nwe", padx=(0, 12), pady=(6, 0))
+        update_check = tk.BooleanVar(value=self.cfg.get("update_check", True))
+        cb = ttk.Checkbutton(upd, text="Check for updates when the app opens", variable=update_check)
+        cb.pack(anchor="w")
+        tip("Looks for a new version at launch (and once a day) and asks before installing it.", cb)
+        ru = ttk.Frame(upd)
+        ru.pack(anchor="w", pady=(4, 0))
+        bu = ttk.Button(ru, text="Check for updates", command=lambda: self.check_for_updates(True, win))
+        bu.pack(side="left")
+        tip("Looks for a new version now.", bu)
+        ttk.Label(ru, text=f"You have version {mfm.VERSION}", foreground="#666").pack(side="left", padx=(8, 0))
 
         def save():
             try:
@@ -6158,6 +6175,7 @@ class App:
                 messagebox.showerror("Hotkeys", "Two actions have the same key.", parent=win)
                 return
             self.cfg["hotkeys_on"], self.cfg["hotkeys"] = hot_on, hot
+            self.cfg["update_check"] = update_check.get()
             mfm.save_config(self.cfg)
             self._start_hotkeys()
             self.refresh_tables()
@@ -6184,6 +6202,172 @@ class App:
         b5.pack(side="right", anchor="s", padx=6)
         b6.pack(side="right", anchor="s", padx=(0, 12))
         tip("Saves your settings.", b5)
+
+    # ------------------------------------------------------------------ updates
+    def auto_update_check(self):
+        """At launch and once a day: a newer version gets a prompt (unless skipped)."""
+        self.root.after(int(mfm.UPDATE_CHECK_EVERY.total_seconds() * 1000), self.auto_update_check)
+        if self.cfg.get("update_check", True) and mfm.FROZEN:
+            self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual=True, parent=None):
+        """Ask GitHub for the newest release in the background; manual=True also says
+        when you're up to date, or when the check failed."""
+        if getattr(self, "_update_busy", False):
+            return
+        self._update_busy = True
+        box: dict = {}
+
+        def work():
+            try:
+                box["info"] = mfm.latest_release()
+            except Exception as e:
+                box["error"] = f"{type(e).__name__}: {e}"
+
+        def wait():
+            if t.is_alive():
+                self.root.after(200, wait)
+                return
+            self._update_busy = False
+            info = box.get("info")
+            parent_ = parent if parent is not None and parent.winfo_exists() else self.root
+            if "error" in box:
+                if manual:
+                    why = ("GitHub is limiting checks from your connection right now. Try again "
+                           "in an hour." if "rate limit" in box["error"].lower() or "403" in box["error"]
+                           else box["error"])
+                    messagebox.showerror("Check for updates", "Couldn't check for updates:\n\n"
+                                         + why, parent=parent_)
+                return
+            if not mfm.update_newer(info):
+                if manual:
+                    messagebox.showinfo("Check for updates", f"You have the latest version "
+                                        f"({mfm.VERSION}).", parent=parent_)
+                return
+            if not manual and info["version"] == self.cfg.get("update_skip"):
+                return
+            self.update_prompt(info, parent_)
+
+        t = threading.Thread(target=work, daemon=True, name="mfm-update-check")
+        t.start()
+        self.root.after(200, wait)
+
+    def update_prompt(self, info, parent=None):
+        import webbrowser
+
+        win = self.window(parent)
+        win.title("Update available")
+        win.transient(parent or self.root)
+        f = ttk.Frame(win, padding=(16, 14, 16, 12))
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=f"Version {info['version']} is available", style="Big.TLabel").pack(anchor="w")
+        ttk.Label(f, text=f"You have version {mfm.VERSION}.", foreground="#555").pack(anchor="w", pady=(2, 8))
+        if info.get("notes"):
+            ttk.Label(f, text="What's new:").pack(anchor="w")
+            tf = ttk.Frame(f)
+            tf.pack(fill="both", expand=True, pady=(2, 8))
+            txt = tk.Text(tf, wrap="word", width=78, height=14, font="TkDefaultFont",
+                          padx=6, pady=4, relief="solid", borderwidth=1)
+            sb = ttk.Scrollbar(tf, orient="vertical", command=txt.yview)
+            txt.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            txt.pack(side="left", fill="both", expand=True)
+            txt.insert("1.0", info["notes"])
+            txt.configure(state="disabled")
+        blocker = mfm.update_blocker() if info.get("asset_url") else \
+            f"This release has no download for {mfm.update_platform()}."
+        if blocker:
+            ttk.Label(f, text=blocker, wraplength=560, foreground="#c62828").pack(anchor="w", pady=(0, 8))
+        btns = ttk.Frame(f)
+        btns.pack(fill="x")
+
+        def update_now():
+            win.destroy()
+            self.run_update(info)
+
+        def skip():
+            self.cfg["update_skip"] = info["version"]
+            mfm.save_config(self.cfg)
+            win.destroy()
+
+        if blocker:
+            b = ttk.Button(btns, text="Open download page",
+                           command=lambda: (webbrowser.open(info["page"]), win.destroy()))
+        else:
+            b = ttk.Button(btns, text="Update now", command=update_now)
+            tip("Downloads the new version, puts it in place of this one and restarts the app. "
+                "Your prices and settings are kept.", b)
+        b.pack(side="left")
+        bl = ttk.Button(btns, text="Later", command=win.destroy)
+        bl.pack(side="left", padx=6)
+        tip("Asks again next time the app opens.", bl)
+        bs = ttk.Button(btns, text="Skip this version", command=skip)
+        bs.pack(side="left")
+        tip("Doesn't ask about this version again. Settings → Check for updates still finds it.", bs)
+        b.focus_set()
+
+    def run_update(self, info):
+        """Download and install, with a progress window; then restart into the new app."""
+        win = self.window()
+        win.title("Updating")
+        win.transient(self.root)
+        win.resizable(False, False)
+        f = ttk.Frame(win, padding=(16, 14, 16, 12))
+        f.pack(fill="both", expand=True)
+        msg = ttk.Label(f, text=f"Downloading version {info['version']}…", width=52)
+        msg.pack(anchor="w")
+        bar = ttk.Progressbar(f, length=380, mode="determinate", maximum=100)
+        bar.pack(fill="x", pady=8)
+        cancelled = threading.Event()
+        bc = ttk.Button(f, text="Cancel", command=cancelled.set)
+        bc.pack(anchor="e")
+        win.protocol("WM_DELETE_WINDOW", cancelled.set)
+        state: dict = {"done": 0, "total": info.get("size") or 0, "stage": "download"}
+
+        def work():
+            try:
+                path = mfm.download_update(info, progress=lambda d, t: state.update(done=d, total=t),
+                                           cancel=cancelled.is_set)
+                state["stage"] = "install"
+                state["cmd"] = mfm.install_update(path)
+            except InterruptedError:
+                state["error"] = None
+            except Exception as e:
+                state["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                state["finished"] = True
+
+        def tick():
+            if not win.winfo_exists():
+                return
+            if state["total"]:
+                bar["value"] = 100 * state["done"] / state["total"]
+                msg.config(text=f"Downloading version {info['version']}…  "
+                                f"{state['done'] / 1048576:,.0f} of {state['total'] / 1048576:,.0f} MB")
+            if state["stage"] == "install":
+                msg.config(text="Installing…")
+                bc.state(["disabled"])
+            if not state.get("finished"):
+                self.root.after(150, tick)
+                return
+            if "cmd" in state:
+                msg.config(text="Done. Restarting…")
+                try:
+                    mfm.start_new_app(state["cmd"])
+                except Exception as e:
+                    win.destroy()
+                    messagebox.showinfo("Update installed", f"Version {info['version']} is installed. "
+                                        f"Close and reopen the app to use it.\n\n({e})", parent=self.root)
+                    return
+                self.root.after(300, self.on_close)
+                return
+            win.destroy()
+            if state.get("error"):
+                messagebox.showerror("Update failed", "The update couldn't be installed; this version "
+                                     "keeps running.\n\n" + state["error"], parent=self.root)
+
+        threading.Thread(target=work, daemon=True, name="mfm-update").start()
+        tick()
 
     def about(self, parent=None):
         import webbrowser

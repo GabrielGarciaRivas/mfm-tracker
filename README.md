@@ -37,7 +37,7 @@ Play the game **windowed or borderless**, not exclusive fullscreen. Two game set
 matter, and the app says so in a red bar at the bottom of its window if one is off:
 
 - **Chat timestamps** on (in the game's settings), so each chat line starts with its time,
-  like `[13:45]`. Megaphones can't be read without it.
+  like `[13:45]`. Without it, megaphones get the time they were read instead of the time they were sent.
 - **The minimap showing the map name** (the street and map name above the map). The app
   reads the map you're on from there.
 
@@ -46,6 +46,15 @@ the game (not while it's minimized), on Windows, macOS and Linux. The window is 
 "MapleStory" in its title; change that, or turn this off to read the whole screen
 instead, in **Settings → Reading → Window detection**. If the game window can't be read on its
 own, the whole screen is read, and then the game has to be visible.
+
+### Updates
+
+When a new version comes out, the app asks if you want it when it opens. Click **Update
+now** and it downloads the new version, puts it in place of the old one and restarts.
+Your prices and settings are kept. **Later** asks again next time; **Skip this version**
+doesn't ask about that version again. **Settings → General → Check for updates** looks
+right away, and the checkbox there turns the question at launch off. On macOS, keep the app
+in your Applications folder so it can update itself.
 
 ### Run from source (optional)
 
@@ -370,8 +379,8 @@ Exported files get the date and time in their name, e.g.
 
 ## Settings
 
-Settings has three tabs: **General** (capturing, market prices, data retention and the
-channel), **Reading** (Window detection and OCR training) and **Game data** (the item and
+Settings has three tabs: **General** (capturing, market prices, data retention, the
+channel and updates), **Reading** (Window detection and OCR training) and **Game data** (the item and
 map lists). Rest the mouse on any setting for a short explanation.
 
 | Setting | Default | What it does |

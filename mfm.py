@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.004"
+VERSION = "2610.19.005"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -158,6 +158,8 @@ DEFAULT_CONFIG = {
     "outlier_floor_pct": 75,     # more than this % BELOW the median is an outlier (75 = 1/4)
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
+    "update_check": True,      # look for a new version at launch (and daily)
+    "update_skip": "",         # a version you chose to skip
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
     "channel_count": 20,       # channels shown in the channel picker (1-100)
     "hotkeys_on": True,        # the keys below work while the game has focus (the app)
@@ -4162,6 +4164,203 @@ def _get(url: str, timeout: int = 30) -> bytes:
                 continue
             raise
     raise RuntimeError(f"giving up on {url}")
+
+
+# --------------------------------------------------------------------------- updates
+# The packaged app looks for a newer release on GitHub, and can install it: the new
+# app is downloaded next to this one, checked against GitHub's SHA-256, and swapped in
+# (the running app is renamed to "... .old", which every system allows, and deleted
+# by the new one when it starts). Then the new app is started and this one closes.
+
+UPDATE_REPO = "jayee88/mfm-tracker"
+UPDATE_CHECK_EVERY = timedelta(hours=24)
+
+
+def version_tuple(v: str) -> tuple:
+    """'v2610.19.004' -> (2610, 19, 4); anything unreadable -> ()."""
+    try:
+        return tuple(int(p) for p in str(v).strip().lstrip("vV").split("."))
+    except ValueError:
+        return ()
+
+
+def update_platform() -> str:
+    return "Windows" if sys.platform == "win32" else "macOS" if sys.platform == "darwin" else "Linux"
+
+
+def latest_release(timeout: int = 15) -> dict | None:
+    """The newest published release: {"version", "notes", "page", "asset"...}, or
+    None when there is none. Raises on network errors."""
+    raw = _get(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest", timeout=timeout)
+    rel = json.loads(raw)
+    ver = str(rel.get("tag_name", "")).lstrip("vV")
+    if not version_tuple(ver):
+        return None
+    body = rel.get("body") or ""
+    m = re.search(r"## What's new\s*(.*?)(?=^## |\Z)", body, re.S | re.M)
+    notes = (m.group(1) if m else "").strip()
+    notes = re.sub(r"\*\*(.+?)\*\*", r"\1", notes)
+    notes = re.sub(r"^###\s*", "", notes, flags=re.M)
+    ending = "-Linux.tar.gz" if update_platform() == "Linux" else f"-{update_platform()}.zip"
+    asset = next((a for a in rel.get("assets", []) if a.get("name", "").endswith(ending)), None)
+    return {"version": ver, "notes": notes, "page": rel.get("html_url") or
+            f"https://github.com/{UPDATE_REPO}/releases/latest",
+            "asset_url": asset and asset.get("browser_download_url"),
+            "asset_name": asset and asset.get("name"), "size": (asset or {}).get("size") or 0,
+            "digest": (asset or {}).get("digest") or ""}
+
+
+def update_newer(info: dict | None) -> bool:
+    return bool(info) and version_tuple(info["version"]) > version_tuple(VERSION)
+
+
+def update_target() -> Path | None:
+    """What an update replaces: the .exe (Windows), the program (Linux) or the .app
+    (macOS). None when running from the Python source."""
+    if not FROZEN:
+        return None
+    exe = Path(sys.executable).resolve()
+    if sys.platform == "darwin":
+        for p in exe.parents:
+            if p.suffix == ".app":
+                return p
+        return None
+    return exe
+
+
+def update_blocker() -> str | None:
+    """Why this copy of the app can't update itself (None: it can)."""
+    target = update_target()
+    if target is None:
+        return ("You're running the app from its Python source. Update it with git pull, "
+                "or download the app from the release page.")
+    if "AppTranslocation" in str(target):
+        return ("macOS is running the app from a temporary read-only copy. Move "
+                "Free Market Tracker to your Applications folder, open it from there, "
+                "then update.")
+    if not os.access(target.parent, os.W_OK):
+        return (f"The app can't write to its folder ({target.parent}). Download the new "
+                "version from the release page instead.")
+    return None
+
+
+def _old_path(target: Path) -> Path:
+    return target.with_name(target.name + ".old")
+
+
+def cleanup_old_update() -> None:
+    """Delete the app an update replaced (left as "... .old")."""
+    target = update_target()
+    if target is None:
+        return
+    old = _old_path(target)
+    try:
+        if old.is_dir():
+            shutil.rmtree(old)
+        elif old.exists():
+            old.unlink()
+    except OSError:
+        pass             # still in use (it's closing): next time
+
+
+def download_update(info: dict, progress=None, cancel=None) -> Path:
+    """Download the release file next to the app (so the swap is a rename on the
+    same disk). progress(done, total) is called as it goes; cancel() -> True stops."""
+    import hashlib
+    import urllib.request
+
+    target = update_target()
+    work = target.parent / ".mfm-update"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir()
+    dest = work / info["asset_name"]
+    req = urllib.request.Request(info["asset_url"], headers={"User-Agent": USER_AGENT})
+    h = hashlib.sha256()
+    done = 0
+    with urllib.request.urlopen(req, timeout=60, context=ssl_context()) as r, open(dest, "wb") as f:
+        total = int(r.headers.get("Content-Length") or info.get("size") or 0)
+        while True:
+            if cancel and cancel():
+                raise InterruptedError("cancelled")
+            chunk = r.read(1 << 16)
+            if not chunk:
+                break
+            f.write(chunk)
+            h.update(chunk)
+            done += len(chunk)
+            if progress:
+                progress(done, total)
+    want = info.get("digest", "")
+    if want.startswith("sha256:") and h.hexdigest() != want.split(":", 1)[1].lower():
+        raise ValueError("the download doesn't match the release (SHA-256 differs); try again")
+    if total and done != total:
+        raise ValueError(f"the download was cut short ({done:,} of {total:,} bytes); try again")
+    return dest
+
+
+def install_update(archive: Path) -> list:
+    """Unpack the downloaded release and swap it in for this app. Returns the command
+    that starts the new app."""
+    target = update_target()
+    work = archive.parent
+    new = work / "new"
+    shutil.rmtree(new, ignore_errors=True)
+    new.mkdir()
+    if sys.platform == "darwin":
+        # ditto keeps the app bundle's links, permissions and signature
+        subprocess.run(["ditto", "-x", "-k", str(archive), str(new)], check=True,
+                       capture_output=True, timeout=300)
+        apps = [p for p in new.iterdir() if p.suffix == ".app"]
+        if not apps:
+            raise ValueError("no app in the download")
+        fresh = apps[0]
+    elif sys.platform == "win32":
+        import zipfile
+        with zipfile.ZipFile(archive) as z:
+            names = [n for n in z.namelist() if n.lower().endswith(".exe")]
+            if not names:
+                raise ValueError("no .exe in the download")
+            fresh = new / target.name
+            with z.open(names[0]) as src, open(fresh, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+    else:
+        import tarfile
+        with tarfile.open(archive) as t:
+            m = next((m for m in t.getmembers() if m.isfile() and
+                      Path(m.name).name == "Free Market Tracker"), None)
+            if m is None:
+                raise ValueError("no app in the download")
+            fresh = new / target.name
+            with t.extractfile(m) as src, open(fresh, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        fresh.chmod(0o755)
+    old = _old_path(target)
+    cleanup_old_update()
+    if old.exists():
+        raise OSError(f"{old} is in the way; delete it and try again")
+    target.rename(old)                  # allowed while it runs
+    try:
+        fresh.rename(target)
+    except OSError:
+        old.rename(target)              # put this app back
+        raise
+    shutil.rmtree(work, ignore_errors=True)
+    return ["open", "-n", str(target)] if sys.platform == "darwin" else [str(target)]
+
+
+def start_new_app(cmd: list) -> None:
+    """Start the updated app, on its own (this one is about to close)."""
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"    # a fresh app, not a child of this one
+    for k in [k for k in env if k.startswith("_PYI_") or k == "_MEIPASS2"]:
+        env.pop(k)
+    kw: dict = {"env": env, "close_fds": True}
+    if sys.platform == "win32":
+        kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, **kw)
 
 
 MEOWDB_ITEMS_PATH = CACHE_DIR / "meowdb_items.json"   # master copy: {id: {name, displayName, iconKey, subtype}}

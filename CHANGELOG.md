@@ -1,8 +1,15 @@
 # Changelog
 
-## 2610.19.004 — 2026-10-19
+## 2610.19.005 — 2026-10-19
 
 ### New
+- **The app updates itself.** When a new version is out, it asks when it opens (and once a
+  day while it's open), with what's new. **Update now** downloads it, checks it matches
+  the release on GitHub, puts it in place of this version and restarts. Your prices and
+  settings are kept. **Later** asks next time; **Skip this version** stops asking about
+  that version.
+- **Settings → General → Updates:** a **Check for updates** button, and a checkbox to turn
+  the question at launch off.
 - **Hotkeys** that work while the game has focus: **F5** starts / stops monitoring,
   **F4** and **F3** set the app's channel to the next / previous one (what the chevrons
   beside the Channel box do), so its channel keeps up with the game without leaving it.
@@ -16,6 +23,8 @@
   anywhere but its buttons; it opens where you left it, and on Windows clicking it never
   takes the focus from the game. The **Widget** box in the toolbar, or its ✕, hides and
   shows it.
+
+## 2610.19.004 — 2026-10-19
 
 ### Fixed
 - **"Frames waiting" climbed into the tens of thousands with a shop left open.** The
