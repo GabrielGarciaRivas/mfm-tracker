@@ -5655,8 +5655,11 @@ class App:
             parent_ = parent if parent is not None and parent.winfo_exists() else self.root
             if "error" in box:
                 if manual:
+                    why = ("GitHub is limiting checks from your connection right now. Try again "
+                           "in an hour." if "rate limit" in box["error"].lower() or "403" in box["error"]
+                           else box["error"])
                     messagebox.showerror("Check for updates", "Couldn't check for updates:\n\n"
-                                         + box["error"], parent=parent_)
+                                         + why, parent=parent_)
                 return
             if not mfm.update_newer(info):
                 if manual:

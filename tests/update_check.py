@@ -18,6 +18,17 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("XDG_DATA_HOME", tempfile.mkdtemp())
 import mfm  # noqa: E402
 
+if os.environ.get("GITHUB_TOKEN"):
+    # shared CI machines run into GitHub's limit for anonymous API calls
+    import urllib.request
+
+    def _get(url, timeout=30):
+        req = urllib.request.Request(url, headers={"User-Agent": mfm.USER_AGENT,
+                                                   "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"]})
+        with urllib.request.urlopen(req, timeout=timeout, context=mfm.ssl_context()) as r:
+            return r.read()
+    mfm._get = _get
+
 
 def running(name_part: str, but: int) -> bool:
     """Is a process with name_part in its command line running, other than pid `but`?"""

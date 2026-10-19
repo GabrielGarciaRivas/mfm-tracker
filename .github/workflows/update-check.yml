@@ -26,6 +26,8 @@ jobs:
           pip install -q pillow mss pytesseract certifi
       - name: Check
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
           if [ "$RUNNER_OS" = Linux ]; then
