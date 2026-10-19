@@ -1,5 +1,11 @@
 # Changelog
 
+## 2610.19.002 — 2026-10-19
+
+### Fixed
+- "shop photo not saved: KeyError: 'WEBP'" when monitoring with the Linux app: its image
+  library can't write WebP. Shop photos are saved as JPEG there instead.
+
 ## 2610.19.001 — 2026-10-19
 
 ### Changed

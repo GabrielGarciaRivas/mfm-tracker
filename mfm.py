@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.001"
+VERSION = "2610.19.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -6379,6 +6379,16 @@ def shots_db():
     return con
 
 
+def _webp_ok() -> bool:
+    if not hasattr(_webp_ok, "ok"):
+        try:
+            from PIL import features
+            _webp_ok.ok = bool(features.check("webp"))
+        except Exception:
+            _webp_ok.ok = False
+    return _webp_ok.ok
+
+
 def save_shot(con, session: str, ts: str, img: Image.Image) -> bool:
     """Keep the frame `img` of visit `session`, captured at `ts` (a listing's ts)."""
     import io
@@ -6387,7 +6397,10 @@ def save_shot(con, session: str, ts: str, img: Image.Image) -> bool:
     if n >= SHOTS_PER_VISIT:
         return False
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, "WEBP", quality=SHOT_QUALITY, method=4)
+    if _webp_ok():
+        img.convert("RGB").save(buf, "WEBP", quality=SHOT_QUALITY, method=4)
+    else:   # a Pillow built without WebP (the Linux app's): JPEG, a little bigger
+        img.convert("RGB").save(buf, "JPEG", quality=75, optimize=True)
     con.execute("INSERT OR IGNORE INTO shots (session, ts, webp) VALUES (?,?,?)", (session, ts, buf.getvalue()))
     con.commit()
     return True
