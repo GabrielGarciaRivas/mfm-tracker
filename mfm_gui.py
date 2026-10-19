@@ -720,6 +720,7 @@ class App:
         self.backlog = 0        # captured frames waiting for OCR (0 = reading live)
         self._behind = False    # "the OCR is behind" is showing in the status bar
         self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
+        self._own_rects: list = []   # where the app's windows are on screen, for the monitor (see own_windows)
         self.chan_popup = None
 
         root.title("Free Market Tracker")
@@ -961,6 +962,7 @@ class App:
         self.monitor = mfm.Monitor(self.cfg, lambda k, p: self.events.put((k, p)),
                                    self.channel())
         self.monitor.chan_watch = self.chan_watch
+        self.monitor.own_windows = lambda: self._own_rects
         self.worker = threading.Thread(target=self.monitor.run, args=(self.stop_event,), daemon=True)
         self.worker.start()
         self.start_btn.config(text="Stop monitoring")
@@ -1270,7 +1272,26 @@ class App:
                 getattr(self, f"on_{kind.lstrip('_')}")(p)
         except queue.Empty:
             pass
+        self._own_rects = self.own_windows()
         self.root.after(100, self.drain_events)
+
+    def own_windows(self) -> list:
+        """Where this app's windows are on screen, (left, top, width, height) each:
+        the monitor paints them over before looking for a store, or a shop photo
+        open here (a store window at its real size) is read as a shop in the game."""
+        rects = []
+
+        def walk(w):
+            try:
+                if w.winfo_viewable():
+                    rects.append((w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height()))
+                for c in w.winfo_children():
+                    if isinstance(c, tk.Toplevel):
+                        walk(c)
+            except tk.TclError:
+                pass
+        walk(self.root)
+        return rects
 
     def on_session(self, p):
         self.live.delete(*self.live.get_children())

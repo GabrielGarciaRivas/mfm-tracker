@@ -40,6 +40,11 @@
   channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
 
 ### Fixed
+- **A shop photo open in the app was read as a shop open in the game.** The photo is
+  the store window at its real size, and the monitor looks for a store anywhere on the
+  screen, so opening one (right-click a listing → Show shop photo) started a visit and
+  logged its rows again. The app's own windows are now painted over in every screenshot
+  before it's looked at.
 - **Free Market room read as "Free Market Entrance":** the room number on the minimap
   was sometimes read as a look-alike ("<7>" as "</>"), and a name without a number was
   then matched to the Entrance, so a whole visit to room 7 was logged there. Look-alikes

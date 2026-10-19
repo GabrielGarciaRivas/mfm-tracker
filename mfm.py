@@ -426,6 +426,7 @@ def session_type() -> str:
 
 
 LAST_SCREEN_SIZE: list[int] = []   # pixels of the latest screenshot (a Retina Mac has 2 per point)
+LAST_SCREEN_ORIGIN: list[int] = [0, 0]   # where its pixel (0, 0) is on screen (a monitor left of the main one is at x < 0)
 
 
 def grab_full_screen() -> Image.Image:
@@ -439,6 +440,7 @@ def grab_full_screen() -> Image.Image:
             shot = sct.grab(mon)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             LAST_SCREEN_SIZE[:] = img.size
+            LAST_SCREEN_ORIGIN[:] = [mon["left"], mon["top"]]
             return img
 
     # Wayland: X11 grabbers only see black, so shell out to a native tool.
@@ -455,6 +457,7 @@ def grab_full_screen() -> Image.Image:
             img = Image.open(tmp).convert("RGB")
             img.load()
             LAST_SCREEN_SIZE[:] = img.size
+            LAST_SCREEN_ORIGIN[:] = [0, 0]
             return img
     sys.exit(
         "No screenshot tool found. Install the one for your desktop:\n"
@@ -7336,6 +7339,10 @@ class Monitor:
         self.on_event = on_event or (lambda kind, payload: None)
         self.channel = channel          # the channel now (the GUI's Channel box)
         self.frame_channel = channel    # the channel the frame being read was captured on
+        # the app's own windows, (left, top, width, height) on screen: painted over
+        # before a frame is looked at, or a shop photo open in the app (a store
+        # window at its real size) is found and read as a shop open in the game
+        self.own_windows = lambda: ()
         self._frame = None              # the frame being read, for the shop photo
         self._prefetched: dict = {}     # id(frame) -> (frame, future or None, hash, geom used)
         self._pf = None                 # the entry for the frame in step()
@@ -7687,6 +7694,15 @@ class Monitor:
                 and self._now - self.empty_first >= 0.15 * self.cfg["close_frames"]:
             self.end_session()
 
+    def _hide_own_windows(self, full: Image.Image) -> None:
+        """Black out the app's own windows (own_windows) in a screenshot."""
+        ox, oy = LAST_SCREEN_ORIGIN
+        for l, t, w, h in self.own_windows():
+            x0, y0 = max(0, l - ox), max(0, t - oy)
+            x1, y1 = min(full.width, l - ox + w), min(full.height, t - oy + h)
+            if x1 > x0 and y1 > y0:
+                full.paste((0, 0, 0), (x0, y0, x1, y1))
+
     def regions_for(self, full: Image.Image) -> tuple[list | None, list | None]:
         """Shop and map areas for this frame: the calibrated ones, or found
         automatically (re-located only when the cached spot stops looking like
@@ -7788,6 +7804,7 @@ class Monitor:
                 t0 = time.perf_counter()
                 try:
                     full = grab_full_screen()
+                    self._hide_own_windows(full)
                     latest["full"] = full
                     if self.cfg.get("channel_prompt") and self.chan_watch.due():
                         try:
