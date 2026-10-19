@@ -252,8 +252,7 @@ class Tooltip:
         if Tooltip.active is not None and Tooltip.active is not self:
             Tooltip.active._hide()
         Tooltip.active = self
-        x = self.widget.winfo_rootx() + 12
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        x, y = self._pos()
         self.tip = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
@@ -265,6 +264,10 @@ class Tooltip:
                  foreground="#222", relief="solid", borderwidth=1, padx=8, pady=5,
                  font="TkTooltipFont").pack()
 
+    def _pos(self) -> tuple[int, int]:
+        return (self.widget.winfo_rootx() + 12,
+                self.widget.winfo_rooty() + self.widget.winfo_height() + 4)
+
     def _hide(self, _=None):
         self._cancel()
         if self.tip:
@@ -272,6 +275,20 @@ class Tooltip:
             self.tip = None
         if Tooltip.active is self:
             Tooltip.active = None
+
+
+class CanvasTip(Tooltip):
+    """A Tooltip for the canvas items with this tag; shown by the mouse."""
+
+    def __init__(self, canvas, tag: str, text: str):
+        self.widget, self.text, self.wrap = canvas, text, 340
+        self.tip = self.job = None
+        canvas.tag_bind(tag, "<Enter>", self._schedule, add="+")
+        canvas.tag_bind(tag, "<Leave>", self._hide, add="+")
+        canvas.tag_bind(tag, "<ButtonPress>", self._hide, add="+")
+
+    def _pos(self) -> tuple[int, int]:
+        return self.widget.winfo_pointerx() + 12, self.widget.winfo_pointery() + 18
 
 
 # Shown in Settings → About. (name, what it is / how it's used, link)
@@ -317,7 +334,7 @@ CREDITS = [
         ("PyInstaller 6.22 (with pyinstaller-hooks-contrib, altgraph)",
          "packs everything into one app · GPL-2.0 with bootloader exception, Apache-2.0, MIT",
          "https://github.com/pyinstaller/pyinstaller"),
-        ("pynput", "global hotkey for the command-line `hotkey` mode (not in the packaged app) · LGPL-3.0",
+        ("pynput", "the hotkeys (keys that work while the game has focus) and the command-line `hotkey` mode · LGPL-3.0",
          "https://github.com/moses-palmer/pynput"),
     ]),
 ]
@@ -326,6 +343,73 @@ CREDITS = [
 def tip(text: str, *widgets) -> None:
     for w in widgets:
         Tooltip(w, text)
+
+
+# ------------------------------------------------------------------ hotkeys
+# Keys that do their action in whichever window has focus, the game's included
+# (Settings → General → Hotkeys), through pynput. Each is kept as shown there
+# ("F5", "Ctrl+Shift+M") and turned into pynput's form ("<ctrl>+<shift>+m") to listen.
+HOTKEY_ACTIONS = (("monitor", "Start / stop monitoring"),
+                  ("channel_up", "Channel up"),
+                  ("channel_down", "Channel down"))
+_MODIFIER_KEYSYMS = {"Control_L", "Control_R", "Shift_L", "Shift_R", "Alt_L", "Alt_R", "Meta_L", "Meta_R",
+                     "Super_L", "Super_R", "Win_L", "Win_R", "Caps_Lock", "Num_Lock", "ISO_Level3_Shift"}
+_KEY_NAMES = {"space": "Space", "Escape": "Esc", "Return": "Enter", "KP_Enter": "Enter", "Tab": "Tab",
+              "BackSpace": "Backspace", "Delete": "Delete", "Insert": "Insert", "Home": "Home", "End": "End",
+              "Prior": "Page Up", "Next": "Page Down", "Up": "Up", "Down": "Down", "Left": "Left",
+              "Right": "Right", "Pause": "Pause", "Scroll_Lock": "Scroll Lock", "Print": "Print Screen"}
+_PYNPUT_NAMES = {"space": "space", "esc": "esc", "enter": "enter", "tab": "tab", "backspace": "backspace",
+                 "delete": "delete", "insert": "insert", "home": "home", "end": "end", "page up": "page_up",
+                 "page down": "page_down", "up": "up", "down": "down", "left": "left", "right": "right",
+                 "pause": "pause", "scroll lock": "scroll_lock", "print screen": "print_screen",
+                 "ctrl": "ctrl", "alt": "alt", "shift": "shift", "cmd": "cmd"}
+
+
+def hotkey_cfg(cfg: dict) -> dict:
+    """Each action's key as set ("F5"; "" = no key), the default for any not saved."""
+    return {**mfm.DEFAULT_CONFIG["hotkeys"], **(cfg.get("hotkeys") or {})}
+
+
+def hotkey_from_event(e) -> str | None:
+    """The key of a Tk key press as a hotkey ("F5", "Ctrl+Shift+M"); None for one that
+    can't be used (a modifier on its own, the numeric keypad, a shifted symbol)."""
+    ks = e.keysym
+    if ks in _MODIFIER_KEYSYMS or (ks.startswith("KP_") and ks != "KP_Enter"):
+        return None
+    if re.fullmatch(r"F([1-9]|1\d|20)", ks):
+        key = ks
+    elif ks in _KEY_NAMES:
+        key = _KEY_NAMES[ks]
+    elif len(ks) == 1 and ks.isalnum():
+        key = ks.upper()
+    elif len(e.char) == 1 and e.char.isprintable() and not e.char.isspace() and e.char != "+" \
+            and not e.state & 0x1:
+        key = e.char                  # a symbol key, as it reads without Shift
+    else:
+        return None
+    alt = 0x20000 if sys.platform == "win32" else 0x10 if sys.platform == "darwin" else 0x8
+    mods = [name for bit, name in ((0x4, "Ctrl"), (alt, "Alt"), (0x1, "Shift")) if e.state & bit]
+    if sys.platform == "darwin" and e.state & 0x8:
+        mods.append("Cmd")
+    return "+".join(mods + [key])
+
+
+def hotkey_spec(text: str) -> str | None:
+    """A hotkey as shown ("Ctrl+F5") in pynput's form ("<ctrl>+<f5>"); None when empty
+    or not a key."""
+    parts = [p.strip() for p in (text or "").split("+") if p.strip()]
+    if not parts:
+        return None
+    out = []
+    for p in parts:
+        low = p.lower()
+        if re.fullmatch(r"f([1-9]|1\d|20)", low) or low in _PYNPUT_NAMES:
+            out.append(f"<{_PYNPUT_NAMES.get(low, low)}>")
+        elif len(p) == 1:
+            out.append(low)
+        else:
+            return None
+    return "+".join(out)
 
 
 def ask_value(parent, title, prompt, initial="", choices=None, check=None, secret=False) -> str | None:
@@ -679,6 +763,322 @@ class ItemSearch(ttk.Frame):
         return "break"
 
 
+# ------------------------------------------------------------------ overlay widget
+# Drawn on one canvas (rounded panel and chips, icons from lines and polygons), in the
+# look of the EXP tracker widget: neutral-900 panel, tinted chips, flat icon buttons.
+OV_W = 268
+OV_KEY = "#010203"                   # painted see-through (the panel's rounded corners)
+OV_BG, OV_BORDER = "#171717", "#262626"
+OV_TEXT, OV_DIM, OV_FAINT = "#ffffff", "#a3a3a3", "#737373"
+OV_OK, OV_WARN, OV_ERR = "#4ade80", "#fbbf24", "#f87171"
+OV_HOVER_BG, OV_CLOSE, OV_CLOSE_BG = "#2e2e2e", "#f43f5e", "#32161e"
+# key: (title, label colour, chip fill, chip border)   — blue, fuchsia and green tints
+OV_CHIPS = {"state": ("Monitoring", "#93c5fd", "#1b2230", "#243044"),
+            "frames": ("Frames waiting", "#f0abfc", "#2a1c2d", "#3a2640"),
+            "channel": ("Channel", "#86efac", "#18281e", "#22382a")}
+
+
+class Overlay(tk.Toplevel):
+    """A small card always on top of the game (the Widget box in the toolbar): the
+    monitoring clock, Start / Stop, Next shop and Settings on its bar, a message line
+    (what to do next, or a warning), and chips for Monitoring, Frames waiting and
+    Channel (with chevrons to change it). Dragged from anywhere but the buttons; where
+    it was left is kept in the settings. Updated twice a second. On Windows it never
+    takes the focus from the game when clicked."""
+    BAR, CHIP, GAP, PAD, ICON, BTN = 26, 36, 4, 5, 18, 26
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        self.overrideredirect(True)          # no title bar
+        self.attributes("-topmost", True)
+        self.configure(background=OV_KEY)
+        try:
+            self.attributes("-transparentcolor", OV_KEY)
+        except tk.TclError:                  # not Windows: square corners
+            self.configure(background=OV_BG)
+        fam = getattr(app, "ui_font", None) or "TkDefaultFont"
+        self.f_title = (fam, 11, "bold")
+        self.f_text, self.f_small = (fam, 9), (fam, 8)
+        self.c = tk.Canvas(self, width=OV_W, height=100, background=self.cget("background"),
+                           highlightthickness=0, bd=0)
+        self.c.pack()
+        self._items: dict = {}
+        self._shown: dict = {}
+        self._status_h = 0
+        self._drag = None
+        self._hwnd = None
+        self._bind_buttons()
+        self._draw()
+        pos = app.cfg.get("overlay_pos")
+        x, y = (int(pos[0]), int(pos[1])) if pos else (40, 40)
+        self.geometry(f"+{x}+{y}")
+        self.update_idletasks()
+        self._no_activate()
+        self.tick()
+
+    # -- buttons: tag → (command, hint); bound once, the items are redrawn freely
+    BUTTONS = {
+        "play": (lambda o: o.app.toggle(), "Start / stop monitoring."),
+        "reset": (lambda o: o.app.next_shop(),
+                  "Next shop: end the current visit (for when you hop shops without the window closing)."),
+        "gear": (lambda o: o.app.settings(), "Settings."),
+        "close": (lambda o: o.app.show_overlay(False),
+                  "Hide the widget (the Widget box in the app's toolbar brings it back)."),
+        "prev": (lambda o: o.app.step_channel(-1), "Previous channel."),
+        "next": (lambda o: o.app.step_channel(+1), "Next channel."),
+    }
+
+    def _bind_buttons(self):
+        c = self.c
+        for name, (cmd, hint) in self.BUTTONS.items():
+            tag = f"btn_{name}"
+            c.tag_bind(tag, "<Button-1>", lambda e, f=cmd: f(self))
+            c.tag_bind(tag, "<Enter>", lambda e, n=name: self._hover(n, True))
+            c.tag_bind(tag, "<Leave>", lambda e, n=name: self._hover(n, False))
+            CanvasTip(c, tag, hint)
+        CanvasTip(c, "timer", "How long this monitoring run has been going.")
+        c.bind("<ButtonPress-1>", self._drag_start)
+        c.bind("<B1-Motion>", self._drag_move)
+        c.bind("<ButtonRelease-1>", self._drag_end)
+
+    def _hover(self, name, on):
+        c = self.c
+        close = name == "close"
+        c.itemconfig(f"hb_{name}", state="normal" if on else "hidden",
+                     fill=OV_CLOSE_BG if close else OV_HOVER_BG)
+        self._recolor(f"ic_{name}", (OV_CLOSE if close else OV_TEXT) if on else OV_DIM)
+
+    def _recolor(self, tag, color):
+        c = self.c
+        for item in c.find_withtag(tag):
+            kind = c.type(item)
+            if kind in ("oval", "arc") or (kind == "polygon" and not c.itemcget(item, "fill")):
+                c.itemconfig(item, outline=color)
+            else:
+                c.itemconfig(item, fill=color)
+
+    # -- drawing
+    def _rrect(self, x0, y0, x1, y1, r, **kw):
+        pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1,
+               x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+        return self.c.create_polygon(pts, smooth=True, splinesteps=10, **kw)
+
+    def _icon(self, kind, x, y, color, tags, size=ICON):
+        """One of the widget's icons with its top left corner at (x, y), drawn on a 24-grid."""
+        c, k = self.c, size / 24
+        P = lambda *pts: [x + v * k if i % 2 == 0 else y + v * k for i, v in enumerate(pts)]
+        w = max(1.5, 2 * k)
+        line = dict(fill=color, width=w, capstyle="round", joinstyle="round", tags=tags)
+        if kind == "play":
+            c.create_polygon(P(7, 4, 20, 12, 7, 20), fill=color, outline="", tags=tags)
+        elif kind == "pause":
+            for a, b in ((5, 10), (14, 19)):
+                c.create_rectangle(P(a, 4, b, 20), fill=color, outline="", tags=tags)
+        elif kind == "reset":
+            c.create_arc(P(4, 4, 20, 20), start=300, extent=-300, style="arc", outline=color, width=w, tags=tags)
+            c.create_line(P(20, 3, 20, 9, 14, 9), **line)
+        elif kind == "gear":                 # three sliders
+            for yy, cx in ((6, 15), (12, 8), (18, 16)):
+                c.create_line(P(4, yy, 20, yy), **line)
+                c.create_oval(P(cx - 2.2, yy - 2.2, cx + 2.2, yy + 2.2), fill=OV_BG, outline=color, width=w, tags=tags)
+        elif kind == "close":
+            c.create_line(P(6, 6, 18, 18), **line)
+            c.create_line(P(18, 6, 6, 18), **line)
+        elif kind == "prev":
+            c.create_line(P(15, 6, 9, 12, 15, 18), **line)
+        elif kind == "next":
+            c.create_line(P(9, 6, 15, 12, 9, 18), **line)
+        elif kind == "warn":
+            c.create_polygon(P(12, 3, 21.5, 19.5, 2.5, 19.5), fill="", outline=color, width=w,
+                             joinstyle="round", tags=tags)
+            c.create_line(P(12, 9, 12, 13.5), **line)
+            c.create_line(P(12, 16.5, 12, 16.6), **line)
+        elif kind == "trend":                # Monitoring
+            c.create_line(P(3, 17, 9, 11, 13, 15, 21, 7), **line)
+            c.create_line(P(14, 7, 21, 7, 21, 14), **line)
+        elif kind == "hourglass":            # Frames waiting
+            c.create_polygon(P(6, 4, 18, 4, 12, 11.5), fill="", outline=color, width=w, joinstyle="round", tags=tags)
+            c.create_polygon(P(6, 20, 18, 20, 12, 12.5), fill="", outline=color, width=w, joinstyle="round", tags=tags)
+        elif kind == "hash":                 # Channel
+            c.create_text(x + size / 2, y + size / 2, text="#", fill=color, font=(self.f_title[0], 12, "bold"), tags=tags)
+
+    def _button(self, name, kind, x, y):
+        """A flat 26x26 icon button: its hover background (hidden) and icon."""
+        tags = ("btn", f"btn_{name}")
+        self._rrect(x, y, x + self.BTN, y + self.BTN, 6, fill=OV_HOVER_BG, outline="",
+                    tags=tags + (f"hb_{name}",), state="hidden")
+        self._icon(kind, x + 4, y + 4, OV_DIM, tags + (f"ic_{name}",))
+
+    def _status_height(self, text, with_icon):
+        if not text:
+            return 0
+        x = self.PAD + 8 + (self.ICON - 4 + 5 if with_icon else 0)
+        t = self.c.create_text(0, 0, text=text, anchor="nw", width=OV_W - x - self.PAD - 8, font=self.f_text)
+        h = self.c.bbox(t)[3] - self.c.bbox(t)[1]
+        self.c.delete(t)
+        return max(16, h) + 2 * 2 + 4
+
+    def _draw(self):
+        """Everything, from scratch (when the message line's height changes); tick()
+        updates the texts and colours in place the rest of the time."""
+        c, it = self.c, self._items
+        c.delete("all")
+        it.clear()
+        for k in ("timer", "state", "frames", "channel", "alive"):
+            self._shown.pop(k, None)         # new items: tick() fills them in again
+        text, warn = self._shown.get("status", ("", False))
+        self._status_h = sh = self._status_height(text, warn)
+        H = self.PAD + self.BAR + self.GAP + sh + 3 * self.CHIP + 2 * self.GAP + self.PAD
+        c.config(height=H)
+        self._rrect(0.5, 0.5, OV_W - 0.5, H - 0.5, 8, fill=OV_BG, outline=OV_BORDER)
+        # -- the bar: clock, play / pause, next shop ... settings, close
+        x, y = self.PAD + 8, self.PAD
+        it["timer"] = c.create_text(x, y + self.BAR / 2, text="00:00:00", anchor="w", fill=OV_TEXT,
+                                    font=self.f_title, tags=("timer",))
+        from tkinter import font as tkfont
+        x += tkfont.Font(font=self.f_title).measure("00:00:00") + 8
+        self._button("play", "play", x, y)
+        self._icon("pause", x + 4, y + 4, OV_DIM, ("btn", "btn_play", "ic_play", "ic_pause"))
+        c.itemconfig("ic_pause", state="hidden")
+        self._button("reset", "reset", x + self.BTN, y)
+        self._button("close", "close", OV_W - self.PAD - self.BTN, y)
+        self._button("gear", "gear", OV_W - self.PAD - 2 * self.BTN, y)
+        # -- the message line
+        y += self.BAR + self.GAP
+        if text:
+            x = self.PAD + 8
+            if warn:
+                self._icon("warn", x, y + 2, OV_WARN, ("status_icon",), size=self.ICON - 4)
+                x += self.ICON - 4 + 5
+            it["status"] = c.create_text(x, y + 2, text=text, anchor="nw", width=OV_W - x - self.PAD - 8,
+                                         fill=OV_WARN if warn else OV_DIM, font=self.f_text)
+            y += sh
+        # -- the chips
+        for key, (title, color, fill, border) in OV_CHIPS.items():
+            x0, x1 = self.PAD, OV_W - self.PAD
+            self._rrect(x0, y, x1, y + self.CHIP, 6, fill=fill, outline=border)
+            self._icon({"state": "trend", "frames": "hourglass", "channel": "hash"}[key],
+                       x0 + 8, y + (self.CHIP - self.ICON) / 2, color, ("chip_icon",))
+            c.create_text(x0 + 8 + self.ICON + 4, y + self.CHIP / 2, text=title, anchor="w", fill=color,
+                          font=self.f_title)
+            if key == "channel":
+                self._button("next", "next", x1 - 8 - self.BTN, y + (self.CHIP - self.BTN) / 2)
+                it["channel"] = c.create_text(x1 - 8 - self.BTN - 2, y + self.CHIP / 2, text="—", anchor="e",
+                                              fill=OV_TEXT, font=self.f_title)
+                it["prev_x"] = x1 - 8 - self.BTN - 2
+            else:
+                it[key] = c.create_text(x1 - 8, y + self.CHIP / 2, text="—", anchor="e", fill=OV_TEXT, font=self.f_title)
+            y += self.CHIP + self.GAP
+        c.tag_raise("btn")
+        self._place_prev()
+
+    def _place_prev(self):
+        """The ‹ button sits just left of the channel number, wherever that ends."""
+        c, it = self.c, self._items
+        c.delete("btn_prev")
+        bb = c.bbox(it["channel"])
+        x = (bb[0] if bb else it["prev_x"]) - 2 - self.BTN
+        y0 = c.coords(it["channel"])[1]
+        self._button("prev", "prev", x, y0 - self.BTN / 2)
+
+    # -- no focus for the game to lose: WS_EX_NOACTIVATE (and no taskbar button) on Windows
+    def _no_activate(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            hwnd = u.GetParent(self.winfo_id())
+            style = u.GetWindowLongW(hwnd, -20)                       # GWL_EXSTYLE
+            u.SetWindowLongW(hwnd, -20, style | 0x08000000 | 0x00000080)   # NOACTIVATE | TOOLWINDOW
+            self._hwnd = hwnd
+        except Exception:
+            self._hwnd = None
+
+    def keep_on_top(self):
+        """Windows can push a topmost window behind the game when you alt-tab: put it
+        back, without activating it."""
+        if self._hwnd:
+            try:
+                import ctypes
+                # HWND_TOPMOST; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+                ctypes.windll.user32.SetWindowPos(self._hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+                return
+            except Exception:
+                pass
+        self.attributes("-topmost", True)
+
+    # -- dragging, from anywhere but a button
+    def _drag_start(self, e):
+        if "btn" in self.c.gettags("current"):
+            return
+        self._drag = (e.x_root - self.winfo_x(), e.y_root - self.winfo_y())
+
+    def _drag_move(self, e):
+        if self._drag:
+            self.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
+
+    def _drag_end(self, e):
+        if self._drag:
+            self._drag = None
+            self.app.cfg["overlay_pos"] = [self.winfo_x(), self.winfo_y()]
+            mfm.save_config(self.app.cfg)
+
+    # -- what it shows
+    def _set(self, key, **kw):
+        """itemconfig only when something changed (the canvas isn't touched otherwise)."""
+        if self._shown.get(key) != kw:
+            self._shown[key] = kw
+            self.c.itemconfig(self._items[key], **kw)
+
+    def tick(self):
+        if not self.winfo_exists():
+            return
+        a = self.app
+        alive = bool(a.worker and a.worker.is_alive())
+        stopping = alive and a.stop_event is not None and a.stop_event.is_set()
+        running = alive and not stopping
+        secs = int((time.time() - a.run_started) if running and a.run_started else a.run_elapsed)
+        ch = a.channel()
+        if stopping:
+            status, warn = f"Stopping: still reading {a.backlog} captured frames.", False
+        elif not running:
+            key = hotkey_cfg(a.cfg)["monitor"] if a.cfg.get("hotkeys_on", True) and a._hotkeys else ""
+            status, warn = (f"Press {key} to start monitoring." if key
+                            else "Press Start monitoring in the app."), False
+        elif a.backlog >= 10:
+            status, warn = f"Reading is {a.backlog} frames behind. Nothing is lost.", True
+        elif not ch:
+            status, warn = "Set your channel: it's saved with every listing.", True
+        else:
+            status, warn = "Open shops and scroll through them.", False
+        if self._shown.get("status") != (status, warn):
+            self._shown["status"] = (status, warn)
+            if self._status_height(status, warn) != self._status_h or "status" not in self._items:
+                self._draw()
+            else:
+                self.c.itemconfig(self._items["status"], text=status, fill=OV_WARN if warn else OV_DIM)
+                if warn:
+                    self._recolor("status_icon", OV_WARN)
+        self._set("timer", text=f"{secs // 3600:02d}:{secs // 60 % 60:02d}:{secs % 60:02d}",
+                  fill=OV_OK if running else OV_TEXT)
+        if self._shown.get("alive") != alive:
+            self._shown["alive"] = alive
+            self.c.itemconfig("ic_pause", state="normal" if alive else "hidden")
+            for item in self.c.find_withtag("ic_play"):
+                if "ic_pause" not in self.c.gettags(item):
+                    self.c.itemconfig(item, state="hidden" if alive else "normal")
+        self._set("state", text="Running" if running else "Finishing…" if stopping else "Stopped",
+                  fill=OV_OK if running else OV_WARN if stopping else OV_ERR)
+        self._set("frames", text=str(a.backlog), fill=OV_WARN if a.backlog >= 10 else OV_TEXT)
+        before = self.c.bbox(self._items["channel"])
+        self._set("channel", text=f"CH {ch}" if ch else "—", fill=OV_TEXT if ch else OV_ERR)
+        if self.c.bbox(self._items["channel"]) != before:
+            self._place_prev()
+        self.keep_on_top()
+        self.after(500, self.tick)
+
 class App:
     def __init__(self, root: tk.Tk):
         import sys
@@ -720,6 +1120,9 @@ class App:
         self.logged_today = 0
         self.backlog = 0        # captured frames waiting for OCR (0 = reading live)
         self._behind = False    # "the OCR is behind" is showing in the status bar
+        self.run_started = None   # when this monitoring run began (the widget's clock)
+        self.run_elapsed = 0.0    # how long the last run took, shown once it's stopped
+        self.overlay = None       # the widget over the game (see show_overlay)
         self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
         self._own_rects: list = []   # where the app's windows are on screen, for the monitor (see own_windows)
         self.chan_popup = None
@@ -735,6 +1138,10 @@ class App:
         if self.cfg.get("channel_prompt"):
             root.after(500, lambda: self.ask_channel(changed=False))
         threading.Thread(target=self._channel_idle_check, daemon=True).start()
+        self._hotkeys = None
+        self._grabbing_hotkey = False
+        self._start_hotkeys()
+        self.show_overlay(bool(self.cfg.get("overlay_on", True)))
         if not mfm.ITEMS_PATH.exists():
             root.after(800, self.offer_item_list)
         elif mfm.needs_type_refresh() or mfm.needs_map_refresh():
@@ -769,6 +1176,13 @@ class App:
         ttk.Checkbutton(bar, text="Always on top", variable=self.top_var,
                         command=lambda: self.root.attributes("-topmost", self.top_var.get())
                         ).pack(side="right")
+        self.overlay_var = tk.BooleanVar(value=bool(self.cfg.get("overlay_on", True)))
+        cb = ttk.Checkbutton(bar, text="Widget", variable=self.overlay_var,
+                             command=lambda: self.show_overlay(self.overlay_var.get(), save=True))
+        cb.pack(side="right", padx=(0, 10))
+        tip("A small card that stays on top of the game: monitoring time and state, frames "
+            "waiting and the channel, with Start / Stop, Next shop and the channel chevrons. "
+            "Drag it by its top bar.", cb)
         ttk.Button(bar, text="Settings", command=self.settings).pack(side="right", padx=6)
         ttk.Button(bar, text="Import prices", command=self.import_ref).pack(side="right")
         ttk.Button(bar, text="Export prices", command=self.export_prices).pack(side="right", padx=(0, 6))
@@ -966,6 +1380,7 @@ class App:
         self.monitor.own_windows = lambda: self._own_rects
         self.worker = threading.Thread(target=self.monitor.run, args=(self.stop_event,), daemon=True)
         self.worker.start()
+        self.run_started = time.time()
         self.start_btn.config(text="Stop monitoring")
         self._run_mark(True)
         self._set_status("Monitoring — open shops and scroll through them normally.")
@@ -982,6 +1397,8 @@ class App:
 
     def stop(self):
         aborting = False
+        if self.run_started:
+            self.run_elapsed, self.run_started = time.time() - self.run_started, None
         if self.stop_event:
             if self.stop_event.is_set() and self.monitor:
                 self.monitor.abort = True   # pressed again while finishing: drop the queue
@@ -1021,6 +1438,84 @@ class App:
         if self.monitor:
             self.monitor.request_split()
             self._set_status("Next shop: the current visit was ended (Ctrl+N).")
+
+    # ------------------------------------------------------------------ hotkeys
+    def _start_hotkeys(self):
+        """Listens for the hotkeys (Settings → General → Hotkeys) in every window, the
+        game's included. Nothing on Wayland, where apps can't see other windows' keys,
+        or without pynput. Called again when Settings changes them."""
+        self._stop_hotkeys()
+        if not self.cfg.get("hotkeys_on", True) or mfm.session_type() == "wayland":
+            return
+        try:
+            from pynput import keyboard
+        except ImportError:
+            mfm.app_log("hotkeys: pynput isn't installed, so none")
+            return
+        combos = []
+        for name, _ in HOTKEY_ACTIONS:
+            spec = hotkey_spec(hotkey_cfg(self.cfg).get(name, ""))
+            if not spec:
+                continue
+            try:
+                combos.append(keyboard.HotKey(keyboard.HotKey.parse(spec),
+                                              lambda n=name: self.events.put(("hotkey", n))))
+            except (ValueError, KeyError):
+                mfm.app_log(f"hotkey {name}: {spec!r} isn't a key")
+        if not combos:
+            return
+
+        # matched here rather than by pynput's GlobalHotKeys, which ignores keys another
+        # program sends (a remapping tool, a macro), so those count too
+        def on_press(key):
+            k = listener.canonical(key)
+            for h in combos:
+                h.press(k)
+
+        def on_release(key):
+            k = listener.canonical(key)
+            for h in combos:
+                h.release(k)
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        listener.daemon = True
+        try:
+            listener.start()
+        except Exception as e:
+            mfm.app_log(f"hotkeys not started: {e}")
+            return
+        self._hotkeys = listener
+
+    def _stop_hotkeys(self):
+        listener, self._hotkeys = self._hotkeys, None
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+
+    def on_hotkey(self, name):
+        """A hotkey was pressed, in whichever window had focus."""
+        if self._grabbing_hotkey:
+            return                    # Settings is waiting for a key to assign
+        if name == "monitor":
+            self.toggle()
+        elif name == "channel_up":
+            self.step_channel(+1)
+        elif name == "channel_down":
+            self.step_channel(-1)
+
+    # ------------------------------------------------------------------ overlay widget
+    def show_overlay(self, on: bool, save: bool = False):
+        """Show or hide the widget over the game (the Widget box in the toolbar, its ✕)."""
+        if on and self.overlay is None:
+            self.overlay = Overlay(self)
+        elif not on and self.overlay is not None:
+            self.overlay.destroy()
+            self.overlay = None
+        self.overlay_var.set(on)
+        if save or self.cfg.get("overlay_on", True) != on:
+            self.cfg["overlay_on"] = on
+            mfm.save_config(self.cfg)
 
     # ------------------------------------------------------------------ channel prompt
     def _channel_idle_check(self):
@@ -5232,6 +5727,79 @@ class App:
         win.geometry("980x300")
         load()
 
+    def _hotkeys_frame(self, parent):
+        """Settings → General → Hotkeys: a key for each action, set by pressing it.
+        Returns the frame and a function giving (on, {action: key})."""
+        box = ttk.LabelFrame(parent, text=" Hotkeys ", padding=(10, 2, 10, 6))
+        on = tk.BooleanVar(value=bool(self.cfg.get("hotkeys_on", True)))
+        keys = hotkey_cfg(self.cfg)
+        cb = ttk.Checkbutton(box, text="Keys that work while the game has focus", variable=on)
+        cb.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))
+        tip("The keys below do their action in whichever window has focus, the game's "
+            "included. The game gets them too: pick keys it doesn't use.", cb)
+        wayland = mfm.session_type() == "wayland"
+        try:
+            import pynput  # noqa: F401
+            usable = not wayland
+        except ImportError:
+            usable = False
+        if not usable:
+            ttk.Label(box, foreground="#666", wraplength=330, justify="left", text=(
+                "Not available on Wayland: apps can't see keys pressed in other windows."
+                if wayland else "Needs pynput: run  pip install pynput  and open the app again.")
+                      ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 4))
+            cb.state(["disabled"])
+        buttons = {}
+
+        def show(name):
+            buttons[name].config(text=keys[name] or "(none)")
+
+        def grab(name):
+            b = buttons[name]
+            b.config(text="Press a key…")
+            b.focus_set()
+            self._grabbing_hotkey = True
+
+            def done():
+                self._grabbing_hotkey = False
+                b.unbind("<KeyPress>")
+                b.unbind("<FocusOut>")
+                show(name)
+
+            def pressed(e):
+                if e.keysym in _MODIFIER_KEYSYMS:
+                    return "break"            # wait for the key that goes with it
+                if e.keysym != "Escape":
+                    key = hotkey_from_event(e)
+                    if key is None or not hotkey_spec(key):
+                        self.root.bell()
+                        return "break"
+                    keys[name] = key
+                done()
+                return "break"
+            b.bind("<KeyPress>", pressed)
+            b.bind("<FocusOut>", lambda e: done())
+
+        def clear(name):
+            keys[name] = ""
+            show(name)
+
+        for i, (name, label) in enumerate(HOTKEY_ACTIONS, start=2):
+            ttk.Label(box, text=label).grid(row=i, column=0, sticky="w", pady=1)
+            b = ttk.Button(box, width=14, command=lambda n=name: grab(n))
+            b.grid(row=i, column=1, padx=(8, 4), pady=1)
+            x = ttk.Button(box, text="×", width=2, command=lambda n=name: clear(n))
+            x.grid(row=i, column=2, pady=1)
+            tip("Click, then press the key (with Ctrl, Alt or Shift if you like). "
+                "Esc keeps the one set.", b)
+            tip("No key for this action.", x)
+            if not usable:
+                b.state(["disabled"])
+                x.state(["disabled"])
+            buttons[name] = b
+            show(name)
+        return box, lambda: (on.get(), dict(keys))
+
     def _window_detection_frame(self, win):
         """Settings → Reading → Window detection: each capture area, found automatically or drawn
         by hand (with its coordinates), a button to draw it and one to go back to automatic."""
@@ -5511,9 +6079,11 @@ class App:
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
         cb = ttk.Checkbutton(gen, text="Ignore outliers in market rates",
                              variable=outliers_on)
-        cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
+        cb.grid(row=7, column=2, sticky="w", padx=(0, 12), pady=4)
         tip("Leaves troll prices and misreads out of the market price. "
             "200% ceiling = more than 3x the usual price; 75% floor = less than 1/4 of it.", cb)
+        hot_box, hotkeys = self._hotkeys_frame(gen)
+        hot_box.grid(row=8, column=2, rowspan=3, sticky="nwe", padx=(0, 12), pady=(4, 0))
 
         def save():
             try:
@@ -5540,7 +6110,14 @@ class App:
                                      parent=win)
                 return
             self.cfg["outliers_on"] = outliers_on.get()
+            hot_on, hot = hotkeys()
+            used = [k for k in hot.values() if k]
+            if len(used) != len(set(used)):
+                messagebox.showerror("Hotkeys", "Two actions have the same key.", parent=win)
+                return
+            self.cfg["hotkeys_on"], self.cfg["hotkeys"] = hot_on, hot
             mfm.save_config(self.cfg)
+            self._start_hotkeys()
             self.refresh_tables()
             win.destroy()
 
@@ -6024,6 +6601,7 @@ class App:
 
     def on_close(self):
         self.stop()
+        self._stop_hotkeys()
         if self.shared:
             self.shared.stop()
         if getattr(self, "_icons_stop", None):

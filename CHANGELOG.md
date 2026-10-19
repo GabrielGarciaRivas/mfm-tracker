@@ -2,6 +2,21 @@
 
 ## 2610.19.002 — 2026-10-19
 
+### Added
+- **Hotkeys** that work while the game has focus: **F5** starts / stops monitoring,
+  **F4** and **F3** set the app's channel to the next / previous one (what the chevrons
+  beside the Channel box do), so its channel keeps up with the game without leaving it.
+  Change the keys (Ctrl, Alt and Shift combinations too), or turn them off, in
+  **Settings → General → Hotkeys**. The game sees the keys too, so pick ones it doesn't
+  use. Not on Wayland, where apps can't see keys pressed in other windows. The packaged
+  app includes pynput for this now; from source, `pip install pynput`.
+- **A widget that stays on top of the game**: how long you've been monitoring, Start /
+  Stop, Next shop, Settings, a hint line (or a warning: reading behind, no channel), and
+  rows for Monitoring, Frames waiting and Channel with ‹ › to change it. Drag it from
+  anywhere but its buttons; it opens where you left it, and on Windows clicking it never
+  takes the focus from the game. The **Widget** box in the toolbar, or its ✕, hides and
+  shows it.
+
 ### Fixed
 - "shop photo not saved: KeyError: 'WEBP'" when monitoring with the Linux app: its image
   library can't write WebP. Shop photos are saved as JPEG there instead.

@@ -160,6 +160,10 @@ DEFAULT_CONFIG = {
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
     "channel_count": 20,       # channels shown in the channel picker (1-100)
+    "hotkeys_on": True,        # the keys below work while the game has focus (the app)
+    "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
+    "overlay_on": True,        # the widget over the game: monitoring, frames waiting, channel
+    "overlay_pos": None,       # where it was left [x, y]; None = top left of the screen
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
