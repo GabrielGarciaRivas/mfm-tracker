@@ -62,6 +62,13 @@
   channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
 
 ### Fixed
+- **No megaphone was ever saved when the chat shows no times.** The game can show chat
+  lines with or without a time in front ("[04:01] Player : ..."); without one, every
+  line was thrown away while the Megaphones tab said "on screen: 4". A line without a
+  time is now read as "Player : message" and gets the time it was seen. The channel
+  badge was also missed on teal and yellow lines (its white box is translucent and takes
+  the line's tint), so those lines were read with the badge's letters in the message;
+  and "S>" / "B>" read as "5>" / "8>" now count as selling / buying.
 - **A shop photo open in the app was read as a shop open in the game.** The photo is
   the store window at its real size, and the monitor looks for a store anywhere on the
   screen, so opening one (right-click a listing → Show shop photo) started a visit and

@@ -6722,8 +6722,11 @@ def find_chat(full: Image.Image) -> list | None:
 
 
 def chat_badges(img: Image.Image) -> list[tuple]:
-    """Channel badges in a crop of the chat: white boxes with red text, top to bottom."""
-    white = _rgb_mask(img, (245, 245, 245), (255, 255, 255))
+    """Channel badges in a crop of the chat: white boxes with red text, top to bottom.
+    The box is translucent, so it takes a tint from the line it's on (over a teal
+    line it's about (231, 249, 246), over a yellow one (248, 240, 216)): white-ish is
+    enough, the red text inside tells a badge from anything else that light."""
+    white = _rgb_mask(img, (205, 205, 205), (255, 255, 255))
     rpx = _rgb_mask(img, (170, 0, 0), (255, 90, 90)).load()
     out = []
     for b in _blobs(white, min_w=16, min_h=6):
@@ -6849,16 +6852,22 @@ _DIGITISH = str.maketrans({"/": "7", "o": "0", "O": "0", "D": "0", "l": "1", "I"
                            "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2"})
 
 
-def parse_chat_line(text: str) -> tuple[str, str, str] | None:
-    """'[04:01] Player : message' -> ("04:01", "Player", "message")."""
+def parse_chat_line(text: str) -> tuple[str | None, str, str] | None:
+    """'[04:01] Player : message' -> ("04:01", "Player", "message"). A chat without
+    times (the game can show them or not) gives 'Player : message' -> (None, ...)."""
     # (the trained OCR model sometimes reads a 7 as "/", or a stray digit before the "]")
     m = re.search(r"([0-9oOlIDSZz|/]{2})\s*[:;.\-,]\s*([0-9oOlIDSZz|/]{2})[0-9/]?\s*[\]\)}|lI1J]?\s*(.+)$", text)
-    if not m:
-        return None
-    hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
-    if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
-        return None
-    rest = m.group(3)
+    if m:
+        hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
+        if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
+            return None
+        time, rest = f"{hh}:{mm}", m.group(3)
+    else:
+        # no time: a player name (letters and digits, one word) then the ':'
+        m = re.match(r"\s*([A-Za-z0-9][\w().'\-]{1,15})\s*:(.+)$", text)
+        if not m:
+            return None
+        time, rest = None, m.group(1) + ":" + m.group(2)
     if ":" not in rest:
         return None
     name, msg = rest.split(":", 1)
@@ -6868,7 +6877,7 @@ def parse_chat_line(text: str) -> tuple[str, str, str] | None:
     name = re.sub(r"[^\w().'\-]+", "", "".join(name.split()))
     if name.endswith(")") and "(" not in name:
         name = name[:-1]
-    return f"{hh}:{mm}", name, msg.strip()
+    return time, name, msg.strip()
 
 
 def clean_megaphone(msg: str) -> str:
@@ -6917,8 +6926,9 @@ def fix_megaphone_words(msg: str, con=None) -> str:
 
 
 # ("S=" and "B=" are how the chat font's ">" is sometimes read)
-SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|S=(?=\S)|C\s?/\s?O\b|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
-BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
+# "S>" and "B>" as the OCR sometimes reads them too: the S as a 5, the B as an 8
+SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|(?<![0-9])5\s?>|S=(?=\S)|C\s?/\s?O\b|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
+BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|(?<![0-9])8\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
                        re.I)
 
 
@@ -7175,7 +7185,8 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     if not parsed:
         return None
     hhmm, name, message = parsed
-    hhmm = _read_chat_time(left, u * 3) or hhmm
+    # the time: read again from the picture; a chat without times gets the time now
+    hhmm = _read_chat_time(left, u * 3) or hhmm or datetime.now(timezone.utc).strftime("%H:%M")
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
     grp = f"{datetime.now():%Y%m%d}|{hhmm}|{fold(name)}"
