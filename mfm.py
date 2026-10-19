@@ -442,7 +442,14 @@ def grab_full_screen() -> Image.Image:
             LAST_SCREEN_SIZE[:] = img.size
             return img
 
-    # Wayland: X11 grabbers only see black, so shell out to a native tool. grim only
+    # Wayland: the game (Wine, through Lutris or Steam) is an X11 window in XWayland, and
+    # an X11 program can copy that one window's picture straight from memory. That takes
+    # milliseconds, with no prompt, where a screenshot tool takes about a second.
+    img = xwayland_window_grab()
+    if img is not None:
+        LAST_SCREEN_SIZE[:] = img.size
+        return img
+    # Otherwise, X11 grabbers only see black, so shell out to a native tool. grim only
     # works on wlroots desktops (Sway, Hyprland...): on KDE or GNOME it fails even when
     # it's installed, so the desktop's own tool goes first, and a tool that fails is
     # skipped from then on.
@@ -487,6 +494,193 @@ def grab_full_screen() -> Image.Image:
 
 
 _GRAB_FAILED: dict = {}   # Wayland screenshot tools: failures in a row here
+
+
+class _XWindowGrab:
+    """Copies the game's window from XWayland (libX11 + libXcomposite through ctypes):
+    the window is found by its title (MapleStory, or "game_window_title" in settings),
+    redirected off-screen with the Composite extension, and read with XGetImage, so
+    even a covered window is read whole. Returns None when there's no such window
+    (the game isn't running, or runs as a native Wayland window)."""
+
+    def __init__(self):
+        self.ok = None          # None: not set up yet; False: can't be used here
+        self.win = None
+        self.found_at = 0.0
+        self.lock = threading.Lock()
+
+    def _setup(self) -> bool:
+        import ctypes
+        import ctypes.util
+
+        if not os.environ.get("DISPLAY"):
+            return False
+        try:
+            x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
+            xc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("Xcomposite") or "libXcomposite.so.1")
+        except OSError:
+            return False
+        c = ctypes
+        win_t = c.c_ulong
+
+        class XImage(c.Structure):
+            _fields_ = [("width", c.c_int), ("height", c.c_int), ("xoffset", c.c_int), ("format", c.c_int),
+                        ("data", c.c_void_p), ("byte_order", c.c_int), ("bitmap_unit", c.c_int),
+                        ("bitmap_bit_order", c.c_int), ("bitmap_pad", c.c_int), ("depth", c.c_int),
+                        ("bytes_per_line", c.c_int), ("bits_per_pixel", c.c_int), ("red_mask", c.c_ulong),
+                        ("green_mask", c.c_ulong), ("blue_mask", c.c_ulong)]
+
+        class XWindowAttributes(c.Structure):
+            _fields_ = [("x", c.c_int), ("y", c.c_int), ("width", c.c_int), ("height", c.c_int),
+                        ("border_width", c.c_int), ("depth", c.c_int), ("visual", c.c_void_p),
+                        ("root", win_t), ("class_", c.c_int), ("bit_gravity", c.c_int),
+                        ("win_gravity", c.c_int), ("backing_store", c.c_int), ("backing_planes", c.c_ulong),
+                        ("backing_pixel", c.c_ulong), ("save_under", c.c_int), ("colormap", c.c_ulong),
+                        ("map_installed", c.c_int), ("map_state", c.c_int), ("all_event_masks", c.c_long),
+                        ("your_event_mask", c.c_long), ("do_not_propagate_mask", c.c_long),
+                        ("override_redirect", c.c_int), ("screen", c.c_void_p)]
+
+        x.XOpenDisplay.restype = c.c_void_p
+        x.XOpenDisplay.argtypes = [c.c_char_p]
+        x.XDefaultRootWindow.restype = win_t
+        x.XDefaultRootWindow.argtypes = [c.c_void_p]
+        x.XQueryTree.argtypes = [c.c_void_p, win_t, c.POINTER(win_t), c.POINTER(win_t),
+                                 c.POINTER(c.POINTER(win_t)), c.POINTER(c.c_uint)]
+        x.XFetchName.argtypes = [c.c_void_p, win_t, c.POINTER(c.c_char_p)]
+        x.XGetWindowAttributes.argtypes = [c.c_void_p, win_t, c.POINTER(XWindowAttributes)]
+        x.XGetImage.restype = c.POINTER(XImage)
+        x.XGetImage.argtypes = [c.c_void_p, win_t, c.c_int, c.c_int, c.c_uint, c.c_uint, c.c_ulong, c.c_int]
+        x.XDestroyImage.argtypes = [c.POINTER(XImage)]
+        x.XFree.argtypes = [c.c_void_p]
+        x.XFreePixmap.argtypes = [c.c_void_p, c.c_ulong]
+        x.XSync.argtypes = [c.c_void_p, c.c_int]
+        x.XInternAtom.restype = c.c_ulong
+        x.XInternAtom.argtypes = [c.c_void_p, c.c_char_p, c.c_int]
+        x.XGetWindowProperty.argtypes = [c.c_void_p, win_t, c.c_ulong, c.c_long, c.c_long, c.c_int, c.c_ulong,
+                                         c.POINTER(c.c_ulong), c.POINTER(c.c_int), c.POINTER(c.c_ulong),
+                                         c.POINTER(c.c_ulong), c.POINTER(c.c_void_p)]
+        xc.XCompositeRedirectWindow.argtypes = [c.c_void_p, win_t, c.c_int]
+        xc.XCompositeNameWindowPixmap.restype = c.c_ulong
+        xc.XCompositeNameWindowPixmap.argtypes = [c.c_void_p, win_t]
+        dpy = x.XOpenDisplay(None)
+        if not dpy:
+            return False
+        # an X error (e.g. the window closed between finding and reading it) must not
+        # end the app: Xlib's default handler exits
+        handler_t = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_void_p)
+        self._errors = [0]
+
+        def on_error(_d, _e):
+            self._errors[0] += 1
+            return 0
+        self._handler = handler_t(on_error)
+        x.XSetErrorHandler(self._handler)
+        self.c, self.x, self.xc, self.dpy = c, x, xc, dpy
+        self.XImage, self.XWindowAttributes, self.win_t = XImage, XWindowAttributes, win_t
+        self.root = x.XDefaultRootWindow(dpy)
+        self.net_name = x.XInternAtom(dpy, b"_NET_WM_NAME", 0)
+        self.utf8 = x.XInternAtom(dpy, b"UTF8_STRING", 0)
+        return True
+
+    def _title(self, w) -> str:
+        c, x = self.c, self.x
+        t, fmt, n, after, data = c.c_ulong(), c.c_int(), c.c_ulong(), c.c_ulong(), c.c_void_p()
+        if x.XGetWindowProperty(self.dpy, w, self.net_name, 0, 256, 0, self.utf8, c.byref(t), c.byref(fmt),
+                                c.byref(n), c.byref(after), c.byref(data)) == 0 and data.value:
+            s = c.string_at(data.value, n.value).decode("utf-8", "replace")
+            x.XFree(data)
+            if s:
+                return s
+        name = c.c_char_p()
+        if x.XFetchName(self.dpy, w, c.byref(name)) and name.value is not None:
+            s = name.value.decode("latin-1", "replace")
+            x.XFree(name)
+            return s
+        return ""
+
+    def _attrs(self, w):
+        a = self.XWindowAttributes()
+        if not self.x.XGetWindowAttributes(self.dpy, w, self.c.byref(a)):
+            return None
+        return a
+
+    def _find(self, title: str):
+        """The biggest mapped window whose title has `title` in it."""
+        c, x = self.c, self.x
+        best, best_area = None, 0
+        stack = [self.root]
+        seen = 0
+        while stack and seen < 5000:
+            w = stack.pop()
+            seen += 1
+            root, parent, kids, n = self.win_t(), self.win_t(), c.POINTER(self.win_t)(), c.c_uint()
+            if x.XQueryTree(self.dpy, w, c.byref(root), c.byref(parent), c.byref(kids), c.byref(n)):
+                stack.extend(kids[i] for i in range(n.value))
+                if kids:
+                    x.XFree(kids)
+            if w == self.root or title not in self._title(w).lower():
+                continue
+            a = self._attrs(w)
+            if a and a.map_state == 2 and a.width * a.height > best_area and a.width >= 300 and a.height >= 200:
+                best, best_area = w, a.width * a.height
+        return best
+
+    def grab(self, title: str = "maplestory"):
+        with self.lock:
+            if self.ok is None:
+                try:
+                    self.ok = self._setup()
+                except Exception:
+                    self.ok = False
+            if not self.ok:
+                return None
+            c, x = self.c, self.x
+            if self.win is None or (self.win and not self._attrs(self.win)):
+                if time.monotonic() - self.found_at < 2:
+                    return None               # looked a moment ago: don't walk the tree every frame
+                self.found_at = time.monotonic()
+                self.win = self._find(title.lower())
+                if self.win is None:
+                    return None
+                self.xc.XCompositeRedirectWindow(self.dpy, self.win, 0)   # automatic: still shown
+            a = self._attrs(self.win)
+            if not a or a.map_state != 2:
+                self.win = None
+                return None
+            self._errors[0] = 0
+            pix = self.xc.XCompositeNameWindowPixmap(self.dpy, self.win)
+            img_p = x.XGetImage(self.dpy, pix or self.win, 0, 0, a.width, a.height, 0xFFFFFFFF, 2) if pix else None
+            if not img_p:
+                img_p = x.XGetImage(self.dpy, self.win, 0, 0, a.width, a.height, 0xFFFFFFFF, 2)
+            if pix:
+                x.XFreePixmap(self.dpy, pix)
+            x.XSync(self.dpy, 0)
+            if not img_p or self._errors[0]:
+                if img_p:
+                    x.XDestroyImage(img_p)
+                self.win = None
+                return None
+            im = img_p.contents
+            try:
+                if im.bits_per_pixel != 32:
+                    return None
+                raw = c.string_at(im.data, im.bytes_per_line * im.height)
+                out = Image.frombuffer("RGB", (im.width, im.height), raw, "raw", "BGRX", im.bytes_per_line, 1)
+                return out.copy()
+            finally:
+                x.XDestroyImage(img_p)
+
+
+_XGRAB = _XWindowGrab()
+
+
+def xwayland_window_grab(cfg: dict | None = None):
+    """The game's window, copied from XWayland (see _XWindowGrab), or None."""
+    title = ((cfg or getattr(ocr_lang_arg, "cfg", None) or {}).get("game_window_title") or "MapleStory")
+    try:
+        return _XGRAB.grab(title)
+    except Exception:
+        return None
 
 
 def mac_screen_access(ask: bool = False) -> bool:

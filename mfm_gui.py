@@ -962,11 +962,18 @@ class App:
             try:
                 if not self.cfg.get("channel_prompt") or (self.worker and self.worker.is_alive()):
                     continue
-                # Wayland screenshots go through a screenshot tool (too heavy to run
-                # every second); macOS needs Screen Recording permission first
-                if mfm.session_type() not in ("windows", "x11", "macos") or not mfm.mac_screen_access():
+                # on Wayland only when the game's window can be read directly (a
+                # screenshot tool is too slow to run this often); macOS needs Screen
+                # Recording permission first
+                if mfm.session_type() == "wayland":
+                    shot = mfm.xwayland_window_grab(self.cfg)
+                    if shot is None:
+                        continue
+                elif not mfm.mac_screen_access():
                     continue
-                if self.chan_watch.feed(mfm.grab_full_screen()):
+                else:
+                    shot = mfm.grab_full_screen()
+                if self.chan_watch.feed(shot):
                     self.events.put(("channel_change", self.chan_watch.channel))
                 elif self.chan_watch.take_cancelled():
                     self.events.put(("channel_cancel", None))

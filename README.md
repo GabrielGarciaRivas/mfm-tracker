@@ -25,11 +25,15 @@ needs to be installed.
   Recording), then reopen the app.
 - **Linux:** extract it and double-click **Free Market Tracker** (if it opens as text:
   right-click → Properties → "Is executable"). Runs on 64-bit distros with glibc 2.35 or
-  newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland, also
-  install your desktop's screenshot tool: `grim` (Hyprland, Sway), `spectacle` (KDE) or
-  `gnome-screenshot` (GNOME). (grim doesn't work on KDE or GNOME even when it's installed;
-  the app uses your desktop's tool first.) These tools take about a second per
-  screenshot, so on KDE or GNOME an X11 session reads shops much faster.
+  newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland,
+  the app reads the game's window directly when the game runs through Wine (Lutris, Steam
+  or plain Wine), as it does by default: Wine's window lives in XWayland, and the app copies
+  its picture in a few milliseconds, with no prompt, even when another window covers part
+  of it. The window is found by its title, "MapleStory"; if yours is different, put
+  `"game_window_title": "..."` in `settings/config.json`. If the game window can't be
+  read that way, the app falls back to your desktop's screenshot tool, which takes about
+  a second per screenshot: `spectacle` (KDE), `gnome-screenshot` (GNOME) or `grim`
+  (Hyprland, Sway; grim doesn't work on KDE or GNOME).
 
 Play the game **windowed or borderless**, not exclusive fullscreen.
 
