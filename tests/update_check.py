@@ -98,7 +98,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except BaseException as e:
+    except Exception as e:
         import traceback
         traceback.print_exc()
         tb = traceback.extract_tb(e.__traceback__)[-1]
