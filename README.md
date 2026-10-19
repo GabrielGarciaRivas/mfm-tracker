@@ -27,7 +27,9 @@ needs to be installed.
   right-click → Properties → "Is executable"). Runs on 64-bit distros with glibc 2.35 or
   newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland, also
   install your desktop's screenshot tool: `grim` (Hyprland, Sway), `spectacle` (KDE) or
-  `gnome-screenshot` (GNOME).
+  `gnome-screenshot` (GNOME). (grim doesn't work on KDE or GNOME even when it's installed;
+  the app uses your desktop's tool first.) These tools take about a second per
+  screenshot, so on KDE or GNOME an X11 session reads shops much faster.
 
 Play the game **windowed or borderless**, not exclusive fullscreen.
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2610.19.001 — 2026-10-19
+
+### Fixed
+- **Wayland:** "CalledProcessError: Command '['grim', ...]' returned non-zero exit status 1"
+  when starting monitoring on KDE or GNOME with grim installed. grim only works on Sway,
+  Hyprland and other wlroots desktops. The app now uses your desktop's own tool first
+  (spectacle on KDE, gnome-screenshot on GNOME), moves on to the next tool if one fails,
+  and says which tool to install if none works.
+
 ## 2610.18.005 — 2026-10-18
 
 ### Changed

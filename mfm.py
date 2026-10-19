@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.005"
+VERSION = "2610.19.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -442,25 +442,51 @@ def grab_full_screen() -> Image.Image:
             LAST_SCREEN_SIZE[:] = img.size
             return img
 
-    # Wayland: X11 grabbers only see black, so shell out to a native tool.
+    # Wayland: X11 grabbers only see black, so shell out to a native tool. grim only
+    # works on wlroots desktops (Sway, Hyprland...): on KDE or GNOME it fails even when
+    # it's installed, so the desktop's own tool goes first, and a tool that fails is
+    # skipped from then on.
     import threading
     tmp = Path(tempfile.gettempdir()) / f"mfm-tracker-grab-{threading.get_ident()}.png"
-    candidates = [
-        ["grim", str(tmp)],                                   # Hyprland, Sway, river...
-        ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],      # KDE Plasma
-        ["gnome-screenshot", "-f", str(tmp)],                 # GNOME
-    ]
-    for cmd in candidates:
-        if shutil.which(cmd[0]):
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    desk = (os.environ.get("XDG_CURRENT_DESKTOP", "") + ":" + os.environ.get("DESKTOP_SESSION", "")).lower()
+    tools = {
+        "grim": ["grim", str(tmp)],                                    # Hyprland, Sway, river...
+        "spectacle": ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],  # KDE Plasma
+        "gnome-screenshot": ["gnome-screenshot", "-f", str(tmp)],      # GNOME
+    }
+    order = (["spectacle"] if "kde" in desk or "plasma" in desk else
+             ["gnome-screenshot"] if "gnome" in desk else []) + ["grim", "spectacle", "gnome-screenshot"]
+    errors = []
+    for name in dict.fromkeys(order):
+        if _GRAB_FAILED.get(name, 0) >= 3 or not shutil.which(name):
+            continue
+        try:
+            tmp.unlink(missing_ok=True)
+            r = subprocess.run(tools[name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15)
+            if r.returncode != 0 or not tmp.exists():
+                raise RuntimeError((r.stderr or b"").decode(errors="replace").strip().splitlines()[-1:]
+                                   or [f"exit status {r.returncode}"])
             img = Image.open(tmp).convert("RGB")
             img.load()
-            LAST_SCREEN_SIZE[:] = img.size
-            return img
+        except Exception as e:
+            msg = e.args[0][0] if isinstance(e, RuntimeError) and e.args and isinstance(e.args[0], list) else str(e)
+            errors.append(f"{name}: {msg}")
+            _GRAB_FAILED[name] = _GRAB_FAILED.get(name, 0) + 1   # 3 in a row: not on this desktop
+            continue
+        _GRAB_FAILED.pop(name, None)
+        LAST_SCREEN_SIZE[:] = img.size
+        return img
+    if errors:
+        raise RuntimeError("Couldn't take a screenshot on Wayland (" + "; ".join(errors) + "). On KDE install "
+                           "spectacle, on GNOME gnome-screenshot; grim only works on Sway, Hyprland and "
+                           "other wlroots desktops. Or log in to an X11 session.")
     sys.exit(
         "No screenshot tool found. Install the one for your desktop:\n"
         "  grim (Hyprland, Sway), spectacle (KDE) or gnome-screenshot (GNOME)"
     )
+
+
+_GRAB_FAILED: dict = {}   # Wayland screenshot tools: failures in a row here
 
 
 def mac_screen_access(ask: bool = False) -> bool:
