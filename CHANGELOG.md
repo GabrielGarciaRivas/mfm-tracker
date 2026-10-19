@@ -1,8 +1,28 @@
 # Changelog
 
-## 2610.18.006 — 2026-10-18
+## 2610.19.002 — 2026-10-19
+
+### Fixed
+- "shop photo not saved: KeyError: 'WEBP'" when monitoring with the Linux app: its image
+  library can't write WebP. Shop photos are saved as JPEG there instead.
+
+## 2610.19.001 — 2026-10-19
 
 ### Changed
+- **Nicknames are called aliases** now, everywhere in the app and its documentation.
+  Your aliases are kept; they sync with servers before 2.6.0 too.
+- **Review → Megaphones:** a **Type: Item / Words** button at the bottom, like the Type in
+  Edit aliases: Accept suggestion and Match manually then teach an item or words.
+- **The game window is read on its own** (Windows, macOS and Linux), so the app keeps
+  reading while other windows cover the game (not while it's minimized). It's found by
+  "MapleStory" in its title; **Settings → Window detection** can change that or turn it
+  off (then the whole screen is read). Areas drawn on the whole screen before aren't used
+  while the game window is read: draw them again if you need them.
+- **Wayland:** reading the game's window from XWayland (where Wine runs it) takes a few
+  milliseconds instead of about a second with a screenshot tool, with no prompt. Shops,
+  megaphones and the Change Channel window are read as fast as on X11 or Windows, and the
+  channel is noticed when you're not monitoring too. A screenshot tool is only used when
+  the game window can't be read this way.
 - **Reading is about twice as fast, and keeps up with scrolling better.** Tesseract is
   now used through its library when it's next to the program (it is in the packaged
   app on Windows): the models are loaded once instead of on every read, which took
@@ -20,6 +40,8 @@
   check), and the whole session then ran the program, ~200 ms slower a read.
 
 ### New
+- **Settings in tabs:** General, Reading (Window detection and OCR training) and Game
+  data, so the window fits on smaller screens.
 - **Windows open on the screen the app is on.** An item's history, a shop photo,
   Settings, the error window and the other windows now open over the main window,
   centred on it. With two monitors they used to open on the main monitor even when
@@ -43,8 +65,14 @@
 - **A shop photo open in the app was read as a shop open in the game.** The photo is
   the store window at its real size, and the monitor looks for a store anywhere on the
   screen, so opening one (right-click a listing → Show shop photo) started a visit and
-  logged its rows again. The app's own windows are now painted over in every screenshot
-  before it's looked at.
+  logged its rows again. When the desktop is read (the game's window can't be copied on
+  its own), the app's own windows are now painted over in every screenshot before it's
+  looked at.
+- **Wayland:** "CalledProcessError: Command '['grim', ...]' returned non-zero exit status 1"
+  when starting monitoring on KDE or GNOME with grim installed. grim only works on Sway,
+  Hyprland and other wlroots desktops. The app now uses your desktop's own tool first
+  (spectacle on KDE, gnome-screenshot on GNOME), moves on to the next tool if one fails,
+  and says which tool to install if none works.
 - **Free Market room read as "Free Market Entrance":** the room number on the minimap
   was sometimes read as a look-alike ("<7>" as "</>"), and a name without a number was
   then matched to the Entrance, so a whole visit to room 7 was logged there. Look-alikes
@@ -60,10 +88,30 @@
   logged row, no longer forces the full OCR on every frame of the visit while the screen
   stands still. That was the usual reason the reading fell behind without any scrolling.
 
+### Server 2.6.0
+- Nicknames are called aliases: `/api/v1/aliases` (the old `/api/v1/nicknames` still works
+  for older apps), and `mfm-server purge aliases`. The stored ones are kept.
+
+
 ## 2610.18.005 — 2026-10-18
 
 ### Changed
-- **Shared Database:** the window also counts nicknames sent and received.
+- **Shared Database:** the window also counts aliases sent and received.
+- **Megaphones:** a **Filter** box shows only megaphones whose message has every word
+  typed in it.
+- **OCR training (Settings):** the app can keep pictures of the megaphone lines it reads.
+  Lines read the same way several times, or the same by the standard and the app's own
+  model, get their text automatically. The rest wait in **Check lines** for you to fix
+  or skip. Agreed and checked lines go to the Shared Database server, for training the
+  OCR model.
+
+### Server 2.5.0
+- Keeps the OCR training lines the apps send. `mfm-server export-ocr FILE.zip` exports
+  them, and `mfm-server purge ocr` deletes them.
+- **Channel:** the channel read from the Change Channel window is set only when the
+  screen fades to black within 3 seconds of the window closing (the game changing
+  channel). CANCEL, Esc, and changes the game refuses (restricted maps, in combat) leave
+  the channel as it was. This replaces watching for Esc and the mouse over CANCEL.
 - **Watched items:** a listing with a watched item is shown in bold red text (the whole
   row) instead of an outline around its icon. Megaphones with a watched item are shown
   the same way.
@@ -82,9 +130,9 @@
 
 ### Changed
 - **Shared Database:** when the server's admin deletes data (`mfm-server purge`), the app
-  deletes the same prices, megaphones and nicknames from its own data on its next sync.
+  deletes the same prices, megaphones and aliases from its own data on its next sync.
   When the app and the server disagree, the server's copy wins. The Shared Database
-  window shows how many prices, megaphones and nicknames were purged this way.
+  window shows how many prices, megaphones and aliases were purged this way.
 - **Monitoring:** a green arrow left of the button while monitoring, a red square when
   stopped.
 - **Settings → Window detection:** the Shop, Map, Chat and Inventory area buttons moved
@@ -97,10 +145,10 @@
   file name. The app itself keeps its plain name.
 
 ### Server 2.4.0
-- New command `mfm-server purge` deletes prices, megaphones or nicknames: older than a time
+- New command `mfm-server purge` deletes prices, megaphones or aliases: older than a time
   (`--older-than 1d`), from the past while (`--last 1h`), or all (`--all`). Connected apps
   delete the same from their own data.
-- "Not an item" marks are stored with the nicknames again (2.3.0 left them out). Apps
+- "Not an item" marks are stored with the aliases again (2.3.0 left them out). Apps
   send theirs again once.
 
 ## 2610.18.002 — 2026-10-18
@@ -117,7 +165,7 @@
   is looked for as often as **Capture every (seconds)** (0.1 by default). Closing the
   window with **Esc** or **CANCEL** keeps the channel you had.
 - **Review → Megaphones:** a **Delete megaphone** button deletes the megaphones the
-  selected rows came from, without adding a nickname. Deleted megaphones aren't copied
+  selected rows came from, without adding an alias. Deleted megaphones aren't copied
   back from the Shared Database.
 
 ### Fixed
@@ -130,9 +178,9 @@
 - Bits of 1-2 letters ("CH") are no longer listed as megaphone items.
 - A shop item's stack count is no longer read as part of its name ("4 Meba").
 - Scrolls in megaphones match much more often: "att 60%" no longer loses its "60",
-  "60 %" and "60%atk" are read as "60%", and common shorthand comes as word nicknames
+  "60 %" and "60%atk" are read as "60%", and common shorthand comes as word aliases
   ("att", "atk", "matk", "acc", "avoid", "ohs", "2h", "bw", "xbow", "overall", "top",
-  "pants", "helm" and more). With your grade nicknames, "60% glove att" matches Gloves
+  "pants", "helm" and more). With your grade aliases, "60% glove att" matches Gloves
   Attack Scroll: Intermediate.
 
 - Shop names are read more accurately: Tesseract is given every word of the item names, so
@@ -142,7 +190,7 @@
 ### Changed
 - **Shared Database:** the window shows "Connected to (server name) (version) as (you)",
   and how many megaphones were sent and received as well as prices.
-- "Add manual nicknames" is now "Edit nicknames".
+- "Add manual aliases" is now "Edit aliases".
 
 ## 2610.18.001 — 2026-10-18
 
@@ -150,16 +198,16 @@
 - **Megaphone items and prices:** each item a megaphone sells or buys gets its own line in
   the Megaphones tab, with the item's icon, name, price and market price. The time is the
   first column; a megaphone's other items are the lines below it. Items are found
-  from item links, names and learned nicknames.
-- **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
+  from item links, names and learned aliases.
+- **Aliases:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
-- **Edit nicknames:** a sheet of nicknames (Megaphone term, Nickname) to
+- **Edit aliases:** a sheet of aliases (Megaphone term, Alias) to
   type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
-  matches every megaphone again with the current nicknames.
-- **Word nicknames:** a nickname can stand for words instead of an item ("60%" =
+  matches every megaphone again with the current aliases.
+- **Word aliases:** an alias can stand for words instead of an item ("60%" =
   Intermediate, "att" = Attack), so "60% gloves att" matches Gloves Attack Scroll:
-  Intermediate without a nickname for each scroll. Switch a nickname with its Type cell.
+  Intermediate without an alias for each scroll. Switch an alias with its Type cell.
   Megaphone items also match when every word of the item's name is there, in any order.
 - **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
   a Buying / Selling column. Shop listings shows the price, shop, player and channel in
@@ -168,7 +216,7 @@
   you match it in Review.
 - The Items tab shows the median megaphone selling and buying prices, and the price
   history window has a Megaphones tab.
-- **Shared Database:** nicknames are shared too, so new players don't have to teach them
+- **Shared Database:** aliases are shared too, so new players don't have to teach them
   again (needs server 2.2.0).
 
 ### Changed

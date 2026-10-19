@@ -25,11 +25,21 @@ needs to be installed.
   Recording), then reopen the app.
 - **Linux:** extract it and double-click **Free Market Tracker** (if it opens as text:
   right-click → Properties → "Is executable"). Runs on 64-bit distros with glibc 2.35 or
-  newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland, also
-  install your desktop's screenshot tool: `grim` (Hyprland, Sway), `spectacle` (KDE) or
-  `gnome-screenshot` (GNOME).
+  newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland,
+  the app reads the game's window directly when the game runs through Wine (Lutris, Steam
+  or plain Wine), as it does by default: Wine's window lives in XWayland, and the app copies
+  its picture in a few milliseconds, with no prompt. If the game window can't be read that
+  way, the app falls back to your desktop's screenshot tool, which takes about
+  a second per screenshot: `spectacle` (KDE), `gnome-screenshot` (GNOME) or `grim`
+  (Hyprland, Sway; grim doesn't work on KDE or GNOME).
 
 Play the game **windowed or borderless**, not exclusive fullscreen.
+
+The app reads the game's window on its own, so it keeps reading while other windows cover
+the game (not while it's minimized), on Windows, macOS and Linux. The window is found by
+"MapleStory" in its title; change that, or turn this off to read the whole screen
+instead, in **Settings → Reading → Window detection**. If the game window can't be read on its
+own, the whole screen is read, and then the game has to be visible.
 
 ### Run from source (optional)
 
@@ -87,9 +97,11 @@ saved with its item, price, shop, player, map, channel and time. The panel on th
 shows what's being read.
 
 If the shop, map, chat, inventory or Change Channel window is ever not found, draw a box
-around it in **Settings → Window detection** (**Draw area**). That section lists each area
+around it in **Settings → Reading → Window detection** (**Draw area**). That section lists each area
 as **Automatic** or **Manual**, with the coordinates of a drawn one. **Automatic** next to
 an area, or **Auto Detection** for all of them, goes back to finding them by themselves.
+An area is drawn on what's being read (the game window, or the whole screen), and is only
+used while the same is read.
 
 ## Channel
 
@@ -99,11 +111,11 @@ channel stays set until you change it.
 
 The app also asks for your channel when it starts. When you change channel in the game,
 it reads the channel highlighted in the game's Change Channel window (the blue button,
-like CH.19) and sets it when the window closes; it only asks if it can't read it. It
-looks for the window as often as **Capture every (seconds)** in Settings (0.1 by default).
-If you close the window with **Esc** or **CANCEL**, the channel stays as it was. (CANCEL
-is told by the mouse pointer being over it when the window closes. On Wayland, Esc is
-only seen when the game runs through XWayland, which is the default for Wine and Lutris.) For 15 seconds after you pick
+like CH.19). It sets it only if the screen fades to black within 3 seconds of the window
+closing, which is what the game does when it changes channel; it only asks if it can't
+read it. Closing the window with **CANCEL** or **Esc**, or a change the game refuses (a
+restricted map, or in combat), has no fade, so the channel stays as it was. It looks for
+the window as often as **Capture every (seconds)** in Settings (0.1 by default). For 15 seconds after you pick
 your channel at start, channel changes aren't detected, in case you had the Change Channel
 window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.
@@ -126,7 +138,7 @@ channels the picker shows, in **Settings**.
   - **Megaphones:** what megaphones sell or buy that isn't matched to an item yet, with a
     **Buying / Selling** column. **Enter** accepts the suggested item, **M** picks one,
     **Delete** marks it as "not an item". **Delete megaphone** deletes the megaphones a
-    row came from (a misread line, spam) without adding a nickname. See [Nicknames](#nicknames).
+    row came from (a misread line, spam) without adding an alias. See [Aliases](#aliases).
 - **Watched**, **Ignored** and **My Inventory:** see below.
 
 Double-click any item for its **price history**: a chart and every sighting, plus a
@@ -158,7 +170,7 @@ its other items. For example, "S> Black cat beanie 520k, B> Fondue Scepter" show
 520,000 under Selling and the scepter under Buying. The app finds the item from:
 
 - an item link in brackets, like `[Korean Fan]`;
-- a nickname it has learned, like "kumbis";
+- an alias it has learned, like "kumbis";
 - the item's name, even with a plural "s".
 
 Prices like 90k, 1.5m, 3,2 mil and 250,000 are read. "c/o" (current offer), "each" and
@@ -168,21 +180,26 @@ megaphone's message as it was read (with no price), and the phrase goes to
 
 Megaphones are kept for 72 hours and then deleted; change this with the box at the top of
 the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
-item's history, copy its message or player name, or delete it. If the chat window isn't
-found, draw it in **Settings → Window detection** (Chat).
+item's history, copy its message or player name, or delete it. **Filter** at the top shows
+only megaphones whose message has every word you type (any order, upper or lower case).
+If the chat window isn't
+found, draw it in **Settings → Reading → Window detection** (Chat).
 
-### Nicknames
+### Aliases
 
 Players call items many things ("kumbis" for Kumbi Throwing-Stars). When you match a
 megaphone phrase to an item (in **Review → Megaphones**, or by right-clicking it), the app
-learns it as a nickname and uses it for every megaphone from then on, including older ones.
+learns it as an alias and uses it for every megaphone from then on, including older ones.
 "Not an item" teaches it to ignore a phrase. A phrase also matches an item when it has
 every word of the item's name, in any order ("gloves attack scroll intermediate").
+In Review → Megaphones, **Type: Item / Words** at the bottom sets what **Accept
+suggestion** and **Match manually** teach: an item, or words (see **Words** below; Match
+manually then asks for the words).
 
 Two buttons at the top of the Megaphones tab and of Review → Megaphones:
 
-- **Edit nicknames** opens a sheet of every nickname: **Megaphone term** (what
-  players write), **Nickname** (what it means) and **Type**. Click a cell to type in it; the last
+- **Edit aliases** opens a sheet of every alias: **Megaphone term** (what
+  players write), **Alias** (what it means) and **Type**. Click a cell to type in it; the last
   row adds a new one, and **Delete** removes the selected ones. Click the Type cell to
   switch between:
   - **Item:** the phrase is that item ("kumbis" = Kumbi Throwing-Stars). If the name you
@@ -190,12 +207,12 @@ Two buttons at the top of the Megaphones tab and of Review → Megaphones:
   - **Words:** the phrase stands for other words, for any item. For example "60%" =
     Intermediate, "10%" = Greater, "100%" = Lesser and "att" = Attack: then "60% gloves att"
     matches Gloves Attack Scroll: Intermediate, and "10% claw att" matches Claw Attack
-    Scroll: Greater, without a nickname for each scroll. Common shorthand comes already
-    filled in as word nicknames ("att"/"atk" = attack, "matk" = magic attack, "acc",
+    Scroll: Greater, without an alias for each scroll. Common shorthand comes already
+    filled in as word aliases ("att"/"atk" = attack, "matk" = magic attack, "acc",
     "avoid", "ohs", "2h", "bw", "xbow", "overall", "top", "pants", "helm" and more); change
     or remove them like any other. The scroll grades ("60%" = Intermediate and so on) are
     yours to fill in.
-- **Refresh** matches every megaphone again with the current nicknames. Phrases that now
+- **Refresh** matches every megaphone again with the current aliases. Phrases that now
   match an item leave Review → Megaphones.
 
 ## Notes
@@ -306,15 +323,15 @@ While connected, your new sightings are saved both here and on the server, sold 
 seen-again updates go to it too, and everyone else's sightings are copied into your
 prices every few seconds. Only items from the item list are shared: a name in Review is
 shared once you match it to an item. Megaphones are shared too: when several players
-read the same one, the clearest read is kept. Nicknames are shared as well, so a new player
+read the same one, the clearest read is kept. Aliases are shared as well, so a new player
 starts with everything the group has taught, including phrases marked "Not an item". The
 Review list itself isn't shared: it's worked out in each app from its megaphones. If the
 server's admin deletes data on the server (`mfm-server purge`), your app deletes the same
 from its own data the next time it syncs. The Shared Database window counts the prices,
-megaphones and nicknames sent, received, and removed this way ("purged"). When your app and the
+megaphones and aliases sent, received, and removed this way ("purged"). When your app and the
 server disagree, the server's copy wins. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
-prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
+prices, megaphones and aliases logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;
 **Stop sharing** disconnects. Everything you send is marked with your account, so use
 your own.
@@ -333,11 +350,14 @@ Exported files get the date and time in their name, e.g.
 
 ## Settings
 
-Rest the mouse on any setting for a short explanation.
+Settings has three tabs: **General** (capturing, market prices, data retention and the
+channel), **Reading** (Window detection and OCR training) and **Game data** (the item and
+map lists). Rest the mouse on any setting for a short explanation.
 
 | Setting | Default | What it does |
 |---|---|---|
 | Capture every (seconds) | 0.1 | how often the screen is captured while monitoring (the reading catches up at its own pace) |
+| Frames read at once | 3 | while you scroll, this many captured frames are read at the same time |
 | Frames to confirm a row | 2 | identical reads needed before a listing is saved |
 | Extra reads for names not in database | 2 | extra reads before an unknown name is saved |
 | Empty frames = shop closed | 3 | reads without a shop before it counts as closed |
@@ -354,6 +374,23 @@ Megaphones and shop names are read with the app's own OCR model (trained on the 
 chat and shops) together with Tesseract's standard English one. On lines it hadn't seen,
 it got about 0.8% of characters wrong instead of 5.6%. To use only the standard
 model, put `"trained_ocr": false` in `settings/config.json`.
+
+**OCR training** helps make that model better from what your app reads.
+- **Collecting:** with **Collect chat lines for training the OCR** on, the app keeps a
+  picture of each megaphone line it reads, with what it read (up to 2,500 pictures, about
+  45 MB). The pictures include player names from public chat.
+- **Automatic text:** a couple of minutes after a line was last read, the app works out
+  its text. If the line was read the same way several times, or the standard English
+  model read it exactly like the app's own model, that's its text ("agreed"). Reads with
+  the OCR's usual slips (g read as q, a stray `|` or `?`, an item name that isn't on the
+  item list) are never agreed.
+- **Check lines:** the other lines wait in **Check lines**. Each shows the picture and its
+  likeliest text. Fix the text so it matches the picture exactly and press **Enter**, or
+  **Skip** a line you can't read. You can also look through the agreed ones and fix them.
+- **Sending:** with **Send them to the Shared Database server** on (and connected to a
+  server 2.5.0 or newer), agreed and checked lines go to your server. Its admin exports
+  them with `mfm-server export-ocr` for the next training run. Lines still to check
+  aren't sent.
 
 **Data retention:** listings not seen for 30 days are copied to an archive file and then
 removed (or just deleted, or kept forever). This runs at start, every 6 hours, and when you

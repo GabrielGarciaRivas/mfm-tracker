@@ -150,11 +150,22 @@ class Server:
     def megaphone_changes(self, since: int, hours: float) -> dict:
         return self.call("GET", "/api/v1/megaphones", query={"since": since, "hours": hours, "limit": 2000})
 
-    def send_nicknames(self, nicknames: list[dict]) -> dict:
-        return self.call("POST", "/api/v1/nicknames", {"nicknames": nicknames})
+    # servers before 2.6.0 call aliases "nicknames" (the address and the JSON key)
+    alias_word = "aliases"
 
-    def nickname_changes(self, since: int) -> dict:
-        return self.call("GET", "/api/v1/nicknames", query={"since": since, "limit": 5000})
+    def send_aliases(self, aliases: list[dict]) -> dict:
+        w = self.alias_word
+        return self.call("POST", f"/api/v1/{w}", {w: aliases})
+
+    def alias_changes(self, since: int) -> dict:
+        w = self.alias_word
+        res = self.call("GET", f"/api/v1/{w}", query={"since": since, "limit": 5000})
+        if w != "aliases":
+            res["aliases"] = res.pop(w, [])
+        return res
+
+    def send_ocr(self, lines: list[dict]) -> dict:
+        return self.call("POST", "/api/v1/ocr", {"lines": lines})
 
     def purges(self, since: int) -> dict:
         return self.call("GET", "/api/v1/purges", query={"since": since})
@@ -183,7 +194,7 @@ def reset_megaphones(con, url: str) -> None:
     con.commit()
 
 
-def _nick_sig(item, deleted) -> str:
+def _alias_sig(item, deleted) -> str:
     return json.dumps([item or "", 1 if deleted else 0])
 
 
@@ -225,8 +236,10 @@ class SharedSync:
         self.thread: threading.Thread | None = None
         self.sent = self.received = 0
         self.mega_sent = self.mega_received = 0
-        self.nick_sent = self.nick_received = 0
-        self.purged = {"prices": 0, "megaphones": 0, "nicknames": 0}   # deleted here by server purges
+        self.alias_sent = self.alias_received = 0
+        self.ocr_sent = 0
+        self._ocr_settled = 0.0
+        self.purged = {"prices": 0, "megaphones": 0, "aliases": 0}   # deleted here by server purges
         self.ok = False
         self.info: dict = {}
         self.caught_up = False
@@ -245,7 +258,8 @@ class SharedSync:
         you = self.info.get("you", "")
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
                         "mega_sent": self.mega_sent, "mega_received": self.mega_received,
-                        "nick_sent": self.nick_sent, "nick_received": self.nick_received,
+                        "alias_sent": self.alias_sent, "alias_received": self.alias_received,
+                        "ocr_sent": self.ocr_sent, "ocr_server": "ocr_lines" in self.info,
                         "purged": dict(self.purged),
                         "server": self.info.get("name", ""), "version": self.info.get("version", ""),
                         "you": you.get("name", "") if isinstance(you, dict) else you, **more})
@@ -270,8 +284,9 @@ class SharedSync:
                 self._receive(con)
                 self._send_megaphones(con)
                 self._receive_megaphones(con)
-                self._send_nicknames(con)
-                self._receive_nicknames(con)
+                self._send_aliases(con)
+                self._receive_aliases(con)
+                self._send_ocr(con)
                 self._status(True, "Connected")
             except SignedOut as e:
                 forget_login()                # the token is no good any more
@@ -333,7 +348,7 @@ class SharedSync:
         """Catch up after being offline (or on first connecting):
         - sightings logged here while not connected are sent (as far back as sightings
           are kept), and so are changes made to shared ones (sold, seen again, notes);
-        - megaphones read here while not connected are sent, and so are nicknames
+        - megaphones read here while not connected are sent, and so are aliases
           taught here;
         - everything on the server is read again, so nothing missed while offline (or
           deleted here) is left out."""
@@ -345,15 +360,15 @@ class SharedSync:
             self._status(True, f"Catching up with the server… sent {self.sent:,}")
         while not self.stop_event.is_set() and self._send_megaphones(con):
             pass
-        while not self.stop_event.is_set() and self._send_nicknames(con):
+        while not self.stop_event.is_set() and self._send_aliases(con):
             pass
         url = self.server.url
         con.execute("DELETE FROM shared_state WHERE server IN (?, ?, ?)", (url, url + "#megaphones",
-                                                                           url + "#nicknames"))
+                                                                           url + "#aliases"))
         con.commit()
         self._receive(con)
         self._receive_megaphones(con)
-        self._receive_nicknames(con)
+        self._receive_aliases(con)
 
     # -- server -> local
     def _receive(self, con) -> None:
@@ -471,6 +486,34 @@ class SharedSync:
         if mfm.update_offers(con) or new:
             self.on_megaphones(new)
 
+    # -- OCR training lines (Settings → OCR training): checked ones go to the server
+    def _send_ocr(self, con) -> int:
+        if "ocr_lines" not in self.info or not self.cfg.get("ocr_collect") or not self.cfg.get("ocr_share", True):
+            return 0
+        if time.monotonic() - self._ocr_settled >= 60:
+            self._ocr_settled = time.monotonic()
+            mfm.settle_ocr_lines(con)
+        rows = con.execute("SELECT id, uid, png, text, status, read FROM ocr_lines WHERE sent = 0 AND "
+                           "status IN ('auto', 'fixed', 'skip') ORDER BY id LIMIT 50").fetchall()
+        if not rows:
+            return 0
+        import base64
+        out, mark = [], []
+        for rid, uid, png, text, status, read in rows:
+            if status == "skip" and not uid:
+                mark.append((None, rid))      # never sent: nothing to take back
+                continue
+            uid = uid or uuid.uuid4().hex
+            out.append({"uid": uid, "png": base64.b64encode(png).decode(), "text": text or "",
+                        "status": status, "read": read or ""})
+            mark.append((uid, rid))
+        if out:
+            self.server.send_ocr(out)
+        con.executemany("UPDATE ocr_lines SET sent = 1, uid = COALESCE(?, uid) WHERE id = ?", mark)
+        con.commit()
+        self.ocr_sent += sum(1 for o in out if o["status"] != "skip")
+        return len(rows)
+
     # -- purges: what the server's admin deleted (mfm-server purge) is deleted here too
     def _apply_purges(self, con) -> None:
         if "purge_id" not in self.info:       # servers before 2.4.0
@@ -484,11 +527,12 @@ class SharedSync:
             con.commit()
             return
         res = self.server.purges(row[0])
-        done = {"prices": 0, "megaphones": 0, "nicknames": 0}
+        done = {"prices": 0, "megaphones": 0, "aliases": 0}
         last = row[0]
         for p in res.get("purges", []):
             try:
-                done[p["what"]] = done.get(p["what"], 0) + mfm.apply_purge(
+                w = "aliases" if p["what"] == "nicknames" else p["what"]    # (servers before 2.6.0)
+                done[w] = done.get(w, 0) + mfm.apply_purge(
                     con, p["what"], p.get("field") or "first", p.get("start"), p["end"], p.get("ts"))
             except (KeyError, TypeError):
                 pass
@@ -500,66 +544,73 @@ class SharedSync:
                 self.purged[k] = self.purged.get(k, 0) + n
             if done["prices"]:
                 self.on_new_rows(0)
-            if done["megaphones"] or done["nicknames"]:
+            if done["megaphones"] or done["aliases"]:
                 mfm.update_offers(con)
                 self.on_megaphones(0)
             if any(done.values()):
                 self._status(True, "The server's admin deleted data: removed here too ("
                              + ", ".join(f"{n} {k}" for k, n in done.items() if n) + ")")
 
-    # -- nicknames (what players call items in megaphones)
-    def _has_nicknames(self) -> bool:
-        return "nicknames" in self.info       # servers before 2.2.0 don't keep them
+    # -- aliases (what players call items in megaphones)
+    def _has_aliases(self) -> bool:
+        # servers before 2.2.0 don't keep them; 2.2.0 to 2.5.0 call them "nicknames"
+        if "aliases" in self.info:
+            self.server.alias_word = "aliases"
+            return True
+        if "nicknames" in self.info:
+            self.server.alias_word = "nicknames"
+            return True
+        return False
 
-    def _send_nicknames(self, con) -> int:
-        if not self._has_nicknames():
+    def _send_aliases(self, con) -> int:
+        if not self._has_aliases():
             return 0
         if "purge_id" in self.info:
             # server 2.3.0 didn't keep "Not an item": send those again once
-            key = self.server.url + "#nick-not-items"
+            key = self.server.url + "#alias-not-items"
             if not con.execute("SELECT 1 FROM shared_state WHERE server = ?", (key,)).fetchone():
-                con.execute("UPDATE nicknames SET shared_sig = NULL WHERE COALESCE(item, '') = ''")
+                con.execute("UPDATE aliases SET shared_sig = NULL WHERE COALESCE(item, '') = ''")
                 con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, 1)", (key,))
                 con.commit()
-        rows = [r for r in con.execute("SELECT key, item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames")
-                if _nick_sig(r[1], r[2]) != r[4]][:500]
+        rows = [r for r in con.execute("SELECT key, item, COALESCE(deleted, 0), updated, shared_sig FROM aliases")
+                if _alias_sig(r[1], r[2]) != r[4]][:500]
         if not rows:
             return 0
-        self.server.send_nicknames([{"key": k, "item": i or "", "deleted": bool(d), "updated": u}
+        self.server.send_aliases([{"key": k, "item": i or "", "deleted": bool(d), "updated": u}
                                     for k, i, d, u, _ in rows])
         for k, i, d, _, _ in rows:
-            con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (_nick_sig(i, d), k))
+            con.execute("UPDATE aliases SET shared_sig = ? WHERE key = ?", (_alias_sig(i, d), k))
         con.commit()
-        self.nick_sent += len(rows)
+        self.alias_sent += len(rows)
         return len(rows)
 
-    def _receive_nicknames(self, con) -> None:
-        if not self._has_nicknames():
+    def _receive_aliases(self, con) -> None:
+        if not self._has_aliases():
             return
-        key = self.server.url + "#nicknames"
+        key = self.server.url + "#aliases"
         row = con.execute("SELECT seq FROM shared_state WHERE server = ?", (key,)).fetchone()
         seq = row[0] if row else 0
         changed = 0
         while True:
-            res = self.server.nickname_changes(seq)
-            for n in res.get("nicknames", []):
+            res = self.server.alias_changes(seq)
+            for n in res.get("aliases", []):
                 k, item, deleted = str(n.get("key") or ""), n.get("item") or "", 1 if n.get("deleted") else 0
                 if not k:
                     continue
-                sig = _nick_sig(item, deleted)
-                local = con.execute("SELECT item, COALESCE(deleted, 0), updated, shared_sig FROM nicknames "
+                sig = _alias_sig(item, deleted)
+                local = con.execute("SELECT item, COALESCE(deleted, 0), updated, shared_sig FROM aliases "
                                     "WHERE key = ?", (k,)).fetchone()
                 if local:
                     # the server is the source of truth (what's changed here was sent first,
                     # and the server kept the newest change)
-                    if _nick_sig(local[0], local[1]) == sig:
-                        con.execute("UPDATE nicknames SET shared_sig = ? WHERE key = ?", (sig, k))
+                    if _alias_sig(local[0], local[1]) == sig:
+                        con.execute("UPDATE aliases SET shared_sig = ? WHERE key = ?", (sig, k))
                         continue
-                    con.execute("UPDATE nicknames SET item = ?, deleted = ?, updated = ?, by = ?, shared_sig = ? "
+                    con.execute("UPDATE aliases SET item = ?, deleted = ?, updated = ?, by = ?, shared_sig = ? "
                                 "WHERE key = ?", (item, deleted, n.get("updated") or mfm.utc_now(), n.get("by"),
                                                   sig, k))
                 else:
-                    con.execute("INSERT INTO nicknames (key, item, deleted, added, by, updated, shared_sig) "
+                    con.execute("INSERT INTO aliases (key, item, deleted, added, by, updated, shared_sig) "
                                 "VALUES (?,?,?,?,?,?,?)", (k, item, deleted, mfm.utc_now(), n.get("by"),
                                                            n.get("updated") or mfm.utc_now(), sig))
                 changed += 1
@@ -568,7 +619,7 @@ class SharedSync:
             con.commit()
             if not res.get("more"):
                 break
-        self.nick_received += changed
+        self.alias_received += changed
         if changed and mfm.update_offers(con):
             self.on_megaphones(0)
 

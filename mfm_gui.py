@@ -137,7 +137,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
         "side": "Buying / Selling", "phrase": "Item", "mprice": "Price", "msell": "Megaphones: selling",
-        "mbuy": "Megaphones: buying", "nick": "Megaphone term", "nitem": "Nickname", "ntype": "Type",
+        "mbuy": "Megaphones: buying", "aterm": "Megaphone term", "avalue": "Alias", "atype": "Type",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -147,7 +147,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
          "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600,
-         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "nick": 240, "nitem": 300, "ntype": 90, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "aterm": 240, "avalue": 300, "atype": 90, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
@@ -205,7 +205,7 @@ def num(s: str) -> float:
 
 WATCH_FG = "#d50000"       # rows with a watched item for sale (shops and megaphones): bold red
 
-# the capture areas you can draw (Settings → Window detection): config key, name, what
+# the capture areas you can draw (Settings → Reading → Window detection): config key, name, what
 # it's for
 AREAS = [("region", "Shop", "the store window"),
          ("map_region", "Map name", "the minimap's street and map name"),
@@ -687,6 +687,7 @@ class App:
         sys.setswitchinterval(0.001)
         self.root = root
         self.cfg = mfm.load_config()
+        mfm.CAPTURE_CFG = self.cfg              # how the screen is read (game window or whole screen)
         self.con = mfm.db()
         self.events: queue.Queue = queue.Queue()
         self.stop_event: threading.Event | None = None
@@ -1033,11 +1034,18 @@ class App:
             try:
                 if not self.cfg.get("channel_prompt") or (self.worker and self.worker.is_alive()):
                     continue
-                # Wayland screenshots go through a screenshot tool (too heavy to run
-                # every second); macOS needs Screen Recording permission first
-                if mfm.session_type() not in ("windows", "x11", "macos") or not mfm.mac_screen_access():
+                # on Wayland only when the game's window can be read directly (a
+                # screenshot tool is too slow to run this often); macOS needs Screen
+                # Recording permission first
+                if mfm.session_type() == "wayland":
+                    shot = mfm.game_window_grab(self.cfg) if self.cfg.get("capture_window", True) else None
+                    if shot is None:
+                        continue
+                elif not mfm.mac_screen_access():
                     continue
-                if self.chan_watch.feed(mfm.grab_full_screen()):
+                else:
+                    shot = mfm.grab_full_screen()
+                if self.chan_watch.feed(shot):
                     self.events.put(("channel_change", self.chan_watch.channel))
                 elif self.chan_watch.take_cancelled():
                     self.events.put(("channel_cancel", None))
@@ -1045,8 +1053,10 @@ class App:
                 time.sleep(5)
 
     def on_channel_cancel(self, _=None):
-        """The game's Change Channel window was cancelled (Esc, or CANCEL): the channel stays."""
-        self._set_status(f"Change Channel window cancelled: still channel {self.channel() or '(not set)'}.")
+        """The game's Change Channel window closed but the game didn't change channel
+        (no fade to black: CANCEL, Esc, or a change the game refused): the channel stays."""
+        self._set_status(f"Change Channel window closed without changing channel: still channel "
+                         f"{self.channel() or '(not set)'}.")
 
     def on_channel_change(self, channel=None):
         """The game's Change Channel window was closed. The channel highlighted in it
@@ -1515,7 +1525,7 @@ class App:
     def _update_stats(self, rows, ocr_ms):
         on_screen = "—" if rows is None else rows
         speed = "—" if ocr_ms is None else f"{ocr_ms} ms"
-        region, mregion = self.cfg.get("region"), self.cfg.get("map_region")
+        region, mregion = mfm.drawn_area(self.cfg, "region"), mfm.drawn_area(self.cfg, "map_region")
 
         def area(r, auto_r):
             # a saved area covering most of the screen is ignored (auto is used)
@@ -2094,8 +2104,8 @@ class App:
                         f" · purged: {(st.get('purged') or {}).get('prices', 0):,}\n"
                         f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}"
                         f" · purged: {(st.get('purged') or {}).get('megaphones', 0):,}\n"
-                        f"Nicknames sent: {st.get('nick_sent', 0):,} · received: {st.get('nick_received', 0):,}"
-                        f" · purged: {(st.get('purged') or {}).get('nicknames', 0):,}\n"
+                        f"Aliases sent: {st.get('alias_sent', 0):,} · received: {st.get('alias_received', 0):,}"
+                        f" · purged: {(st.get('purged') or {}).get('aliases', 0):,}\n"
                         "(since the app started)")
             status.config(text=text)
             signed_in = bool(saved.get("token"))
@@ -2201,7 +2211,23 @@ class App:
         sp.bind("<FocusOut>", lambda e: self._mega_hours_changed())
         tip("Megaphones older than this are deleted.", sp)
         ttk.Label(top, text="hours. Newest first, read from the chat window while monitoring.").pack(side="left")
-        self._nickname_buttons(top).pack(side="left", padx=(12, 0))
+        self._alias_buttons(top).pack(side="left", padx=(12, 0))
+        # filter: only megaphones whose message has every word typed here
+        ttk.Label(top, text="Filter:").pack(side="left", padx=(16, 4))
+        self.mega_filter = tk.StringVar()
+        fe = ttk.Entry(top, textvariable=self.mega_filter, width=26)
+        fe.pack(side="left")
+        tip("Shows only megaphones whose message has every word you type here "
+            "(any order, upper or lower case). Empty shows them all.", fe)
+        fe.bind("<Escape>", lambda e: self.mega_filter.set(""))
+        ttk.Button(top, text="Clear", width=6, command=lambda: self.mega_filter.set("")).pack(side="left", padx=(4, 0))
+        self._mega_filter_job = None
+
+        def filter_changed(*_):
+            if self._mega_filter_job:
+                self.root.after_cancel(self._mega_filter_job)
+            self._mega_filter_job = self.root.after(250, self._refilter_megaphones)
+        self.mega_filter.trace_add("write", filter_changed)
         self.mega_status = ttk.Label(top, foreground="#666")
         self.mega_status.pack(side="right")
         # right: what the OCR sees (the chat window, megaphones outlined)
@@ -2243,12 +2269,12 @@ class App:
 
     def _mega_status_text(self, found):
         running = bool(self.worker and self.worker.is_alive())
-        manual = self.cfg.get("chat_region")
+        manual = mfm.drawn_area(self.cfg, "chat_region")
         self.mega_status.config(text=(
             "Start monitoring to read megaphones." if not running else
             "Reading the chat area you drew." if manual and found else
             "Reading the chat window." if found else
-            "Chat window not found: open it in the game (or draw it in Settings → Window detection)." if found is False else
+            "Chat window not found: open it in the game (or draw it in Settings → Reading → Window detection)." if found is False else
             "Looking for the chat window…"))
 
     def on_chat(self, p):
@@ -2406,9 +2432,21 @@ class App:
                 mfm.UI_FREE.set()
         return cm()
 
+    def _refilter_megaphones(self):
+        self._mega_filter_job = None
+        last = getattr(self, "_mega_last", None)
+        if last:
+            with self._ui_busy():
+                self._fill_megaphones(*last)
+
     def _fill_megaphones(self, rows, markets):
         """One row per offer in a megaphone (an item it sells or buys), with the item's
-        icon, name and price once it's matched to an item."""
+        icon, name and price once it's matched to an item. With words in the Filter
+        box, only megaphones whose message has all of them."""
+        self._mega_last = (rows, markets)
+        words = [w.lower() for w in (self.mega_filter.get() if hasattr(self, "mega_filter") else "").split()]
+        if words:
+            rows = [r for r in rows if all(w in (r[4] or "").lower() for w in words)]
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())
@@ -2485,8 +2523,8 @@ class App:
     def _offer_phrases(self, tree) -> list[str]:
         return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
 
-    def _nicknames_changed(self, note: str = ""):
-        """Nicknames were taught or changed: read every megaphone again (in the
+    def _aliases_changed(self, note: str = ""):
+        """Aliases were taught or changed: read every megaphone again (in the
         background), then show the result."""
         if note:
             self._set_status(note)
@@ -2509,15 +2547,15 @@ class App:
             return
         name = self._choose_item(self.root, f"Which item is \"{phrases[0]}\"?", phrases[0].title())
         if name:
-            mfm.set_nickname(self.con, phrases[0], name)
-            self._nicknames_changed(f"\"{phrases[0]}\" is now a nickname for {name}.")
+            mfm.set_alias(self.con, phrases[0], name)
+            self._aliases_changed(f"\"{phrases[0]}\" is now an alias for {name}.")
 
     def megaphone_not_item(self, tree):
         phrases = self._offer_phrases(tree)
         for ph in phrases:
-            mfm.set_nickname(self.con, ph, None)
+            mfm.set_alias(self.con, ph, None)
         if phrases:
-            self._nicknames_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
+            self._aliases_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
 
     def _megaphone_history_of(self, tree):
         if any(k in getattr(tree, "matched", set()) for k in tree.selection()):
@@ -3082,7 +3120,7 @@ class App:
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
                   "ones you want and click Add.",
                   wraplength=560, justify="left").pack(side="left")
-        ttk.Label(top, text="Not found? Settings → Window detection.", foreground="#666").pack(side="right")
+        ttk.Label(top, text="Not found? Settings → Reading → Window detection.", foreground="#666").pack(side="right")
         body = ttk.Frame(win, padding=(12, 4, 12, 4))
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
@@ -3274,7 +3312,7 @@ class App:
             t0 = time.monotonic()
             try:
                 full = mfm.grab_full_screen()
-                manual = self.cfg.get("inventory_region")
+                manual = mfm.drawn_area(self.cfg, "inventory_region")
                 if manual and not mfm.is_auto(manual, full.size):
                     region, how = manual, "manual area"
                 else:
@@ -3282,7 +3320,7 @@ class App:
                     how = f"auto, found at {region[0]},{region[1]}" if region else ""
                 if not region:
                     self.events.put(("inv_scan", {"status": "Item Inventory not found. Open it in the game "
-                                                            "(or draw it in Settings → Window detection)."}))
+                                                            "(or draw it in Settings → Reading → Window detection)."}))
                 else:
                     win = mfm.crop(full, region)
                     tab = mfm.inventory_tab(win)
@@ -3617,10 +3655,10 @@ class App:
         self.review_nb.add(tab, text="  Megaphones  ")
         ttk.Label(tab, wraplength=1040, justify="left", text=(
             "Things megaphones sell or buy that aren't matched to an item yet. Matching one teaches the "
-            "app a nickname, used for every megaphone from then on (and shared through the Shared "
+            "app an alias, used for every megaphone from then on (and shared through the Shared "
             "Database). Enter = accept the suggestion · M = pick an item · Delete = not an item.")
                   ).pack(anchor="w", pady=(0, 6))
-        self._nickname_buttons(tab).pack(fill="x", pady=(0, 6))
+        self._alias_buttons(tab).pack(fill="x", pady=(0, 6))
         t = make_tree(tab, ("phrase", "side", "mprice", "suggest", "score", "count", "message"))
         t.heading("count", text="Seen")
         t.column("message", stretch=True)
@@ -3642,21 +3680,28 @@ class App:
         bottom.pack(fill="x", pady=(6, 0))
         ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
         ttk.Button(bottom, text="Match manually", command=self.mreview_match).pack(side="left", padx=4)
+        # Item or Words: what Accept and Match manually teach, like the Type in Edit aliases
+        self.mreview_words = False
+        self.mreview_type_btn = ttk.Button(bottom, text="Type: Item", width=12, command=self._mreview_toggle_type)
+        self.mreview_type_btn.pack(side="left", padx=(0, 4))
+        tip("What Accept suggestion and Match manually teach. Item: the phrase is an item. Words: the "
+            "phrase stands for words, used in any item's name (\"att\" = Attack). Click to switch.",
+            self.mreview_type_btn)
         ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
         b = ttk.Button(bottom, text="Delete megaphone", command=self.mreview_delete)
         b.pack(side="left", padx=4)
         tip("Delete the megaphones these rows came from (a misread line, spam). Nothing is "
-            "added to the nicknames.", b)
+            "added to the aliases.", b)
         self.mreview_more = ttk.Label(bottom, foreground="#666")
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
-        # common shorthand ("att" = attack, "ohs" = one handed sword) as word nicknames
+        # common shorthand ("att" = attack, "ohs" = one handed sword) as word aliases
         try:
             mfm.seed_default_words(self.con)
         except sqlite3.Error:
             pass
         # read items and prices from megaphones saved before (or by an older version)
-        self.root.after(800, self._nicknames_changed)
+        self.root.after(800, self._aliases_changed)
 
     def _fill_megaphone_review(self, rows, total):
         if not hasattr(self, "mreview"):
@@ -3680,15 +3725,20 @@ class App:
             self.mreview_more.config(text=f"Showing the {len(rows):,} most seen of {total:,}." if total > len(rows)
                                      else "")
 
+    def _mreview_toggle_type(self):
+        self.mreview_words = not self.mreview_words
+        self.mreview_type_btn.config(text="Type: Words" if self.mreview_words else "Type: Item")
+
     def mreview_accept(self):
         done = 0
         for key in self.mreview.selection():
             r = self.mreview_rows.get(key)
             if r and r["suggest"]:
-                mfm.set_nickname(self.con, r["phrase"], r["suggest"])
+                # Words: the suggested item's name as the words (like Item -> Words in Edit aliases)
+                mfm.set_alias(self.con, r["phrase"], (mfm.WORDS_PREFIX if self.mreview_words else "") + r["suggest"])
                 done += 1
         if done:
-            self._nicknames_changed(f"Learned {mfm.plural(done, 'nickname')}.")
+            self._aliases_changed(f"Learned {mfm.plural(done, 'alias')}.")
         else:
             self.root.bell()
 
@@ -3699,41 +3749,55 @@ class App:
         r = self.mreview_rows.get(sel[0])
         if not r:
             return
+        if self.mreview_words:
+            from tkinter import simpledialog
+            words = simpledialog.askstring(
+                "Words", f"What words does \"{r['phrase']}\" stand for?\n(e.g. \"att\" = Attack, "
+                "\"60%\" = Intermediate)", initialvalue=r["phrase"], parent=self.root)
+            words = " ".join((words or "").split())
+            if not words:
+                return
+            for key in sel:
+                rr = self.mreview_rows.get(key)
+                if rr:
+                    mfm.set_alias(self.con, rr["phrase"], mfm.WORDS_PREFIX + words)
+            self._aliases_changed(f"\"{r['phrase']}\" now stands for the words \"{words}\".")
+            return
         name = self._choose_item(self.root, f"Which item is \"{r['phrase']}\"?", r["suggest"] or r["phrase"].title())
         if name:
             for key in sel:                       # the same item for every selected phrase
                 rr = self.mreview_rows.get(key)
                 if rr:
-                    mfm.set_nickname(self.con, rr["phrase"], name)
-            self._nicknames_changed(f"\"{r['phrase']}\" is now a nickname for {name}.")
+                    mfm.set_alias(self.con, rr["phrase"], name)
+            self._aliases_changed(f"\"{r['phrase']}\" is now an alias for {name}.")
 
     def mreview_not_item(self):
         sel = list(self.mreview.selection())
         for key in sel:
             r = self.mreview_rows.get(key)
             if r:
-                mfm.set_nickname(self.con, r["phrase"], None)
+                mfm.set_alias(self.con, r["phrase"], None)
         if sel:
-            self._nicknames_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
+            self._aliases_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
 
-    def _nickname_buttons(self, parent):
+    def _alias_buttons(self, parent):
         bar = ttk.Frame(parent)
-        b = ttk.Button(bar, text="Edit nicknames", command=self.nicknames_window)
+        b = ttk.Button(bar, text="Edit aliases", command=self.aliases_window)
         b.pack(side="left")
-        tip("A sheet of every nickname: what megaphones call an item, and the item it is. "
+        tip("A sheet of every alias: what megaphones call an item, and the item it is. "
             "Add, change or remove them.", b)
-        b = ttk.Button(bar, text="Refresh", command=self.reapply_nicknames)
+        b = ttk.Button(bar, text="Refresh", command=self.reapply_aliases)
         b.pack(side="left", padx=(6, 0))
-        tip("Match every megaphone again with the current nicknames. Phrases that now match "
+        tip("Match every megaphone again with the current aliases. Phrases that now match "
             "leave Review.", b)
         return bar
 
-    def reapply_nicknames(self):
-        """Read every megaphone again with the current nicknames (in the background)."""
+    def reapply_aliases(self):
+        """Read every megaphone again with the current aliases (in the background)."""
         if getattr(self, "_reapplying", False):
             return
         self._reapplying = True
-        self._set_status("Matching megaphones with the nicknames…")
+        self._set_status("Matching megaphones with the aliases…")
         hours = max(1, float(self.cfg.get("megaphone_hours", 72) or 72))
 
         def work():
@@ -3763,7 +3827,7 @@ class App:
         text = " ".join((text or "").split())
         if not text:
             return None
-        hit = mfm._item_index().get(mfm.nick_key(text))   # the name as the item list spells it
+        hit = mfm._item_index().get(mfm.alias_key(text))   # the name as the item list spells it
         if hit:
             return hit
         if mfm.is_known_item(text):
@@ -3798,17 +3862,17 @@ class App:
             self.root.after(600, lambda: self.mreview.exists(nxt) and (self.mreview.selection_set(nxt),
                                                                        self.mreview.see(nxt)))
 
-    def nicknames_window(self):
-        """An editable sheet of nicknames: "Megaphone term" (what players write),
-        "Nickname" (what it means), and "Type": Item (the phrase is that item) or Words (the
+    def aliases_window(self):
+        """An editable sheet of aliases: "Megaphone term" (what players write),
+        "Alias" (what it means), and "Type": Item (the phrase is that item) or Words (the
         phrase stands for other words, used to read any item's name: "60%" =
         "Intermediate", "att" = "Attack"). Click a cell to type in it."""
-        if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():
-            self._nick_win.lift()
+        if getattr(self, "_alias_win", None) and self._alias_win.winfo_exists():
+            self._alias_win.lift()
             return
         win = self.window()
-        self._nick_win = win
-        win.title("Nicknames")
+        self._alias_win = win
+        win.title("Aliases")
         win.geometry("860x560")
         win.transient(self.root)
         ttk.Label(win, padding=(10, 8), wraplength=820, justify="left", text=(
@@ -3819,20 +3883,20 @@ class App:
             "Type \"Words\": the phrase stands for other words, for any item (\"60%\" = Intermediate, "
             "\"att\" = Attack): \"60% gloves att\" then matches Gloves Attack Scroll: Intermediate. "
             "Click the Type cell to switch.")).pack(anchor="w")
-        t = make_tree(win, ("nick", "nitem", "ntype"))
-        t.column("nitem", stretch=True)
-        t.column("ntype", anchor="center")
+        t = make_tree(win, ("aterm", "avalue", "atype"))
+        t.column("avalue", stretch=True)
+        t.column("atype", anchor="center")
         t.tag_configure("new", foreground="#888")
         t.tag_configure("ignored", foreground="#888")
         t.tag_configure("words", foreground="#1f4e9a")
         t.frame.pack(fill="both", expand=True, padx=10)
         NEW = "__new__"
         WP = mfm.WORDS_PREFIX
-        pending = {}                     # rows with a nickname typed but nothing else yet
+        pending = {}                     # rows with an alias typed but nothing else yet
 
         def fill(select=None):
             t.delete(*t.get_children())
-            rows = sorted(mfm.load_nicknames(self.con).items(), key=lambda kv: (kv[1].startswith(WP), kv[0]))
+            rows = sorted(mfm.load_aliases(self.con).items(), key=lambda kv: (kv[1].startswith(WP), kv[0]))
             for key, val in rows:
                 if val.startswith(WP):
                     t.insert("", "end", iid="k:" + key, tags=("words",), values=(key, val[len(WP):], "Words"))
@@ -3841,7 +3905,7 @@ class App:
                              tags=() if val else ("ignored",), values=(key, val or self.NOT_ITEM, "Item"))
             for pid, p in pending.items():
                 t.insert("", "end", iid=pid, values=(p["phrase"], "", "Words" if p["words"] else "Item"))
-            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add a nickname)", "", ""))
+            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add an alias)", "", ""))
             if select and t.exists(select):
                 t.selection_set(select)
                 t.focus(select)
@@ -3849,7 +3913,7 @@ class App:
 
         def saved(key):
             fill("k:" + key)
-            self._nicknames_changed()
+            self._aliases_changed()
 
         def value_for(raw, words):
             """What to store for what was typed (None = cancelled)."""
@@ -3862,17 +3926,17 @@ class App:
         def on_done(tree, row, col, raw):
             raw = " ".join((raw or "").split())
             if row == NEW:
-                if col != "nick" or not mfm.nick_key(raw):
+                if col != "aterm" or not mfm.alias_key(raw):
                     return
                 pid = f"p:{len(pending) + 1}:{time.monotonic()}"
                 pending[pid] = {"phrase": raw, "words": False}
                 fill(pid)
-                win.after(50, lambda: start_edit(pid, "nitem"))   # straight on to its meaning
+                win.after(50, lambda: start_edit(pid, "avalue"))   # straight on to its meaning
                 return
             if row in pending:
                 p = pending[row]
-                if col == "nick":
-                    if mfm.nick_key(raw):
+                if col == "aterm":
+                    if mfm.alias_key(raw):
                         p["phrase"] = raw
                     fill(row)
                     return
@@ -3880,20 +3944,20 @@ class App:
                 if val is None:
                     return                      # cancelled the pick
                 pending.pop(row)
-                saved(mfm.set_nickname(self.con, p["phrase"], val or None))
+                saved(mfm.set_alias(self.con, p["phrase"], val or None))
                 return
             key = row[2:]
-            cur = mfm.load_nicknames(self.con).get(key, "")
-            if col == "nick":
-                new = mfm.nick_key(raw)
+            cur = mfm.load_aliases(self.con).get(key, "")
+            if col == "aterm":
+                new = mfm.alias_key(raw)
                 if not new or new == key:
                     return
-                mfm.delete_nickname(self.con, key)
-                saved(mfm.set_nickname(self.con, new, cur or None))
+                mfm.delete_alias(self.con, key)
+                saved(mfm.set_alias(self.con, new, cur or None))
             else:
                 val = value_for(raw, cur.startswith(WP))
                 if val is not None:
-                    saved(mfm.set_nickname(self.con, key, val or None))
+                    saved(mfm.set_alias(self.con, key, val or None))
 
         def toggle_type(row):
             if row in pending:
@@ -3903,34 +3967,34 @@ class App:
             if not row.startswith("k:"):
                 return
             key = row[2:]
-            cur = mfm.load_nicknames(self.con).get(key, "")
+            cur = mfm.load_aliases(self.con).get(key, "")
             if cur.startswith(WP):              # Words -> Item: the words should name an item
                 val = value_for(cur[len(WP):], False)
                 if val is None:
                     return
             else:                               # Item -> Words: the item's name as the words
                 val = WP + cur
-            saved(mfm.set_nickname(self.con, key, val or None))
+            saved(mfm.set_alias(self.con, key, val or None))
 
         def start_edit(row, col):
             if t.exists(row):
                 if row == NEW:
-                    t.set(NEW, "nick", "")
+                    t.set(NEW, "aterm", "")
                 t.see(row)
                 t.update_idletasks()
                 self._inline_edit(t, row, col, on_done)
 
         def on_double(e):
             row, col = t.identify_row(e.y), self._clicked_column(t, e)
-            if row and col and col != "ntype":
+            if row and col and col != "atype":
                 self._cancel_inline(t)
                 start_edit(row, col)
 
         def on_click(e):
             row, col = t.identify_row(e.y), self._clicked_column(t, e)
-            if row == NEW:               # one click on the last row starts a new nickname
-                win.after(10, lambda: start_edit(NEW, "nick"))
-            elif row and col == "ntype":
+            if row == NEW:               # one click on the last row starts a new alias
+                win.after(10, lambda: start_edit(NEW, "aterm"))
+            elif row and col == "atype":
                 win.after(10, lambda: toggle_type(row))
 
         def remove():
@@ -3938,10 +4002,10 @@ class App:
             for k in t.selection():
                 pending.pop(k, None)
             for k in keys:
-                mfm.delete_nickname(self.con, k[2:])
+                mfm.delete_alias(self.con, k[2:])
             fill()
             if keys:
-                self._nicknames_changed(f"Removed {mfm.plural(len(keys), 'nickname')}.")
+                self._aliases_changed(f"Removed {mfm.plural(len(keys), 'alias')}.")
 
         def edit_selected(col):
             sel = t.selection()
@@ -3952,29 +4016,29 @@ class App:
             sel = [k for k in t.selection() if k != NEW]
             if not sel:
                 return
-            cur = t.set(sel[0], "nitem")
-            name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'nick')}\"?",
+            cur = t.set(sel[0], "avalue")
+            name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'aterm')}\"?",
                                      "" if cur == self.NOT_ITEM else cur)
             if not name:
                 return
             row = sel[0]
-            if row in pending:                  # a picked item makes it an Item nickname
+            if row in pending:                  # a picked item makes it an Item alias
                 pending[row]["words"] = False
-                on_done(t, row, "nitem", name)
+                on_done(t, row, "avalue", name)
             elif row.startswith("k:"):
-                saved(mfm.set_nickname(self.con, row[2:], name))
+                saved(mfm.set_alias(self.con, row[2:], name))
 
-        self._inline_editing(t, ("nick", "nitem"), on_done)
+        self._inline_editing(t, ("aterm", "avalue"), on_done)
         t.on_done = on_done
         t.bind("<Double-1>", on_double)
         t.bind("<ButtonRelease-1>", on_click, add="+")
-        t.bind("<Return>", lambda e: edit_selected("nitem"))
-        t.bind("<F2>", lambda e: edit_selected("nick"))
+        t.bind("<Return>", lambda e: edit_selected("avalue"))
+        t.bind("<F2>", lambda e: edit_selected("aterm"))
         t.bind("<Delete>", lambda e: remove())
         t.bind("<BackSpace>", lambda e: remove())
         bar = ttk.Frame(win, padding=10)
         bar.pack(fill="x")
-        ttk.Button(bar, text="Add a nickname", command=lambda: start_edit(NEW, "nick")).pack(side="left")
+        ttk.Button(bar, text="Add an alias", command=lambda: start_edit(NEW, "aterm")).pack(side="left")
         ttk.Button(bar, text="Pick the item…", command=pick).pack(side="left", padx=6)
         ttk.Button(bar, text="Item / Words", command=lambda: [toggle_type(k) for k in t.selection()[:1]]
                    ).pack(side="left")
@@ -4894,6 +4958,8 @@ class App:
                 show()
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
+                    # drawn on the game's window or the whole screen: only used on the same
+                    self.cfg["area_modes"] = {**(self.cfg.get("area_modes") or {}), key: mfm.GRAB_MODE[0]}
                     mfm.save_config(self.cfg)
                     self._update_stats(None, None)
                     self._set_status(f"{AREA_NAMES.get(key, key)} set to {area_text(region)}.")
@@ -5007,6 +5073,7 @@ class App:
                 return
             backup = mfm.reset_settings(parts)
             self.cfg = mfm.load_config()
+            mfm.CAPTURE_CFG = self.cfg
             self.watch = mfm.load_watchlist()
             self.watched_listings = mfm.load_watched_listings()
             self.refresh_watched_listings()
@@ -5033,26 +5100,202 @@ class App:
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
         ttk.Button(btns, text="Reset", command=go).pack(side="right", padx=6)
 
+    # ------------------------------------------------------------------ OCR training lines
+    def _ocr_training_frame(self, win):
+        """Settings → Reading → OCR training: collect chat line images, send the checked ones to
+        the Shared Database server, and check the ones the reads didn't agree on."""
+        box = ttk.LabelFrame(win, text=" OCR training ", padding=(10, 2, 10, 4))
+        collect = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect", False)))
+        share = tk.BooleanVar(value=bool(self.cfg.get("ocr_share", True)))
+        c1 = ttk.Checkbutton(box, text="Collect chat lines for training the OCR", variable=collect)
+        c1.pack(anchor="w")
+        tip("Keeps each megaphone line the OCR reads, as a picture with what was read. When several "
+            "reads agree, that's its text; the rest wait for you in Check lines.", c1)
+        c2 = ttk.Checkbutton(box, text="Send them to the Shared Database server", variable=share)
+        c2.pack(anchor="w")
+        tip("Lines with agreed or checked text go to your Shared Database server; the server's admin "
+            "exports them (mfm-server export-ocr) for training.", c2)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=(2, 0))
+        counts = ttk.Label(row, foreground="#555")
+        counts.pack(side="left")
+        ttk.Button(row, text="Check lines", command=self.ocr_lines_dialog).pack(side="right")
+
+        def show():
+            try:
+                n = mfm.settle_ocr_lines(self.con)
+            except Exception:
+                n = {}
+            counts.config(text=f"{n.get('unsure', 0):,} to check · {n.get('auto', 0):,} agreed · "
+                               f"{n.get('fixed', 0):,} checked")
+        show()
+        box.refresh_counts = show
+        self._ocr_counts_label = show
+        return box, (collect, share)
+
+    def ocr_lines_dialog(self):
+        """One line at a time: its picture, and its text to fix. Enter saves it as
+        checked and goes to the next; Skip leaves it out of training."""
+        old = getattr(self, "ocr_win", None)
+        if old is not None and old.winfo_exists():
+            old.deiconify()
+            old.lift()
+            return
+        mfm.settle_ocr_lines(self.con)
+        win = tk.Toplevel(self.root)
+        self.ocr_win = win
+        win.title("OCR lines")
+        win.transient(self.root)
+        top = ttk.Frame(win, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        which = tk.StringVar(value="unsure")
+        for val, text in (("unsure", "To check"), ("auto", "Agreed"), ("fixed", "Checked"), ("skip", "Skipped")):
+            ttk.Radiobutton(top, text=text, value=val, variable=which, command=lambda: load()).pack(side="left",
+                                                                                              padx=(0, 10))
+        where = ttk.Label(top, foreground="#555")
+        where.pack(side="right")
+        ttk.Label(win, foreground="#555", wraplength=900, justify="left", padding=(12, 0, 12, 4), text=(
+            "Type exactly what the picture says (keep spaces, brackets and capitals as shown), then press "
+            "Enter. Skip leaves a line out of training: use it when you can't tell what it says.")).pack(anchor="w")
+        pic = ttk.Label(win, relief="solid", anchor="w", padding=4)
+        pic.pack(fill="x", padx=12, pady=(4, 6))
+        read_lbl = ttk.Label(win, foreground="#777", padding=(12, 0))
+        read_lbl.pack(anchor="w")
+        text = tk.StringVar()
+        entry = ttk.Entry(win, textvariable=text, font=("TkFixedFont", 14))
+        entry.pack(fill="x", padx=12, pady=(2, 8))
+        bottom = ttk.Frame(win, padding=(12, 0, 12, 12))
+        bottom.pack(fill="x")
+        state = {"grps": [], "i": 0, "img": None}
+
+        def load(keep: int = 0):
+            state["grps"] = [g for (g,) in self.con.execute(
+                "SELECT grp FROM ocr_lines WHERE status = ? GROUP BY grp ORDER BY MIN(id)", (which.get(),))]
+            state["i"] = min(keep, max(0, len(state["grps"]) - 1))
+            show()
+
+        def show():
+            grps = state["grps"]
+            if not grps:
+                where.config(text="none")
+                pic.config(image="", text="Nothing here." if which.get() != "unsure" else
+                           "Nothing to check. Lines show up here a couple of minutes after they're read.")
+                text.set("")
+                read_lbl.config(text="")
+                return
+            g = grps[state["i"]]
+            rows = self.con.execute("SELECT png, read, text FROM ocr_lines WHERE grp = ? ORDER BY id",
+                                    (g,)).fetchall()
+            import io
+            img = Image.open(io.BytesIO(rows[0][0]))
+            if img.width > 1100:
+                img = img.resize((1100, max(1, img.height * 1100 // img.width)), Image.LANCZOS)
+            state["img"] = ImageTk.PhotoImage(img)
+            pic.config(image=state["img"], text="")
+            reads = sorted({r for _, r, _ in rows if r})
+            read_lbl.config(text="Read as: " + "  |  ".join(reads[:3]) if len(reads) > 1 else "")
+            text.set(rows[0][2] or rows[0][1] or "")
+            where.config(text=f"{state['i'] + 1} of {len(grps)}")
+            entry.focus_set()
+            entry.icursor("end")
+
+        def step(d):
+            if state["grps"]:
+                state["i"] = max(0, min(len(state["grps"]) - 1, state["i"] + d))
+                show()
+
+        def mark(status):
+            if not state["grps"]:
+                return
+            g = state["grps"][state["i"]]
+            t = text.get().strip()
+            if status == "fixed" and not t:
+                return
+            mfm.set_ocr_line(self.con, g, t if status == "fixed" else None, status)
+            if status == which.get():
+                step(1)                       # (re-saved in its own list: just move on)
+            else:
+                load(keep=state["i"])
+            if callable(getattr(self, "_ocr_counts_label", None)):
+                try:
+                    self._ocr_counts_label()
+                except tk.TclError:
+                    pass
+
+        ttk.Button(bottom, text="◀ Previous", command=lambda: step(-1)).pack(side="left")
+        ttk.Button(bottom, text="Next ▶", command=lambda: step(1)).pack(side="left", padx=(6, 0))
+        ttk.Button(bottom, text="Skip", command=lambda: mark("skip")).pack(side="right")
+        ttk.Button(bottom, text="Save (Enter)", command=lambda: mark("fixed")).pack(side="right", padx=(0, 6))
+        entry.bind("<Return>", lambda e: mark("fixed"))
+        entry.bind("<Prior>", lambda e: step(-1))
+        entry.bind("<Next>", lambda e: step(1))
+        win.geometry("980x300")
+        load()
+
     def _window_detection_frame(self, win):
-        """Settings → Window detection: each capture area, found automatically or drawn
+        """Settings → Reading → Window detection: each capture area, found automatically or drawn
         by hand (with its coordinates), a button to draw it and one to go back to automatic."""
         box = ttk.LabelFrame(win, text=" Window detection ", padding=(10, 4, 10, 6))
         ttk.Label(box, foreground="#666", wraplength=700, justify="left", text=(
             "Each area is found on the screen by itself. If one isn't found, draw it: the app then "
-            "reads only that part of the screen (coordinates in screen pixels).")).grid(
+            "reads only that part (coordinates in pixels of what's read: the game window, or the whole screen).")).grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
         labels = {}
+        # what's read: the game's window on its own (read even when covered), or the screen
+        cap = ttk.Frame(box)
+        cap.grid(row=100, column=0, columnspan=4, sticky="we", pady=(8, 0))
+        use_win = tk.BooleanVar(value=bool(self.cfg.get("capture_window", True)))
+        title = tk.StringVar(value=self.cfg.get("game_window_title") or "MapleStory")
+        cb = ttk.Checkbutton(cap, text="Read only the game window (still read when other windows cover it)",
+                             variable=use_win)
+        cb.pack(side="left")
+        tip("Reads the game's window on its own, so it's read even behind other windows (not when "
+            "it's minimized). Off: the whole screen is read, and the game must be visible.", cb)
+        ttk.Label(cap, text="Window title:").pack(side="left", padx=(14, 4))
+        te = ttk.Entry(cap, textvariable=title, width=16)
+        te.pack(side="left")
+        tip("The game's window is found by this in its title.", te)
+        now = ttk.Label(box, foreground="#555")
+        now.grid(row=101, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
+        def capture_changed(*_):
+            self.cfg["capture_window"] = use_win.get()
+            self.cfg["game_window_title"] = title.get().strip() or "MapleStory"
+            mfm.save_config(self.cfg)
+            refresh()
+        use_win.trace_add("write", capture_changed)
+        te.bind("<FocusOut>", capture_changed)
+        te.bind("<Return>", capture_changed)
 
         def refresh():
+            mode = mfm.GRAB_MODE[0]
+            try:
+                if not (self.worker and self.worker.is_alive()):
+                    mfm.grab_full_screen()        # (not while monitoring: it's reading already)
+                    mode = mfm.GRAB_MODE[0]
+            except Exception:
+                pass
+            size = "×".join(str(v) for v in mfm.LAST_SCREEN_SIZE) if mfm.LAST_SCREEN_SIZE else ""
+            now.config(text=("Reading now: the game window" + (f" ({size})" if size else "") if mode == "window"
+                             else "Reading now: the whole screen" + (
+                                 " (the game window wasn't found: is the game running, and not minimized?)"
+                                 if self.cfg.get("capture_window", True) else "")))
+            modes = self.cfg.get("area_modes") or {}
             for key, lab in labels.items():
                 r = self.cfg.get(key)
-                lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
-                           foreground="#1565c0" if r else "#555")
+                drawn_on = modes.get(key, "screen")
+                if r and drawn_on != mode:
+                    lab.config(text="Drawn on the " + ("game window" if drawn_on == "window" else "whole screen")
+                               + ": not used now", foreground="#b26a00")
+                else:
+                    lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
+                               foreground="#1565c0" if r else "#555")
 
         def auto(key=None):
             for k, _, _ in AREAS:
                 if key in (None, k):
                     self.cfg[k] = None
+                    (self.cfg.get("area_modes") or {}).pop(k, None)
             mfm.save_config(self.cfg)
             self.found_at = None
             self._update_stats(None, None)
@@ -5063,11 +5306,12 @@ class App:
         for i, (key, name, what) in enumerate(AREAS, start=1):
             n = ttk.Label(box, text=name)
             n.grid(row=i, column=0, sticky="w", pady=2)
-            lab = ttk.Label(box, width=34)
+            lab = ttk.Label(box, width=40)
             lab.grid(row=i, column=1, sticky="w", padx=(10, 6))
             labels[key] = lab
             d = ttk.Button(box, text="Draw area",
-                           command=lambda k=key: self.calibrate(key=k, hide=(win,), on_set=refresh))
+                           command=lambda k=key: self.calibrate(key=k, hide=(win.winfo_toplevel(),),
+                                                                on_set=refresh))
             d.grid(row=i, column=2, padx=(0, 6), pady=2)
             a = ttk.Button(box, text="Automatic", command=lambda k=key: auto(k))
             a.grid(row=i, column=3, pady=2)
@@ -5087,6 +5331,21 @@ class App:
         win.title("Settings")
         win.transient(self.root)
         win.resizable(False, False)
+        # in tabs, so the window fits on smaller screens
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        gen = ttk.Frame(nb, padding=(0, 8, 0, 4))
+        rd = ttk.Frame(nb, padding=(12, 10, 12, 8))
+        gd = ttk.Frame(nb, padding=(12, 10, 12, 8))
+        nb.add(gen, text="  General  ")
+        nb.add(rd, text="  Reading  ")
+        nb.add(gd, text="  Game data  ")
+        try:
+            nb.select(int(self.cfg.get("settings_tab", 0)))
+        except (tk.TclError, ValueError, TypeError):
+            pass
+        nb.bind("<<NotebookTabChanged>>",
+                lambda e: self.cfg.__setitem__("settings_tab", nb.index(nb.select())), add="+")
         fields = [
             ("interval_seconds", "Capture every (seconds)", 0.05, 10, 0.05),
             ("ocr_workers", "Frames read at once", 1, 8, 1),
@@ -5094,7 +5353,6 @@ class App:
             ("unmatched_extra_frames", "Extra reads for names not in database", 0, 5, 1),
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
             ("history_days", "Market median window (days)", 1, 90, 1),
-            ("shot_days", "Keep shop photos (days)", 0, 90, 1),
             ("upscale", "OCR upscale factor", 1, 6, 1),
             ("min_sightings", "Required sightings before judging", 1, 100, 1),
             ("deal_threshold_pct", "Flag DEAL / HIGH at ± %", 1, 90, 1),
@@ -5127,15 +5385,15 @@ class App:
         }
         vars_ = {}
         for i, (key, label, lo, hi, step) in enumerate(fields):
-            lbl = ttk.Label(win, text=label)
+            lbl = ttk.Label(gen, text=label)
             lbl.grid(row=i, column=0, sticky="w", padx=12, pady=4)
             v = tk.StringVar(value=str(self.cfg.get(key, mfm.DEFAULT_CONFIG[key])))
-            spin = ttk.Spinbox(win, from_=lo, to=hi, increment=step, width=8, textvariable=v)
+            spin = ttk.Spinbox(gen, from_=lo, to=hi, increment=step, width=8, textvariable=v)
             spin.grid(row=i, column=1, padx=12, pady=4)
             tip(tips[key], lbl, spin)
             vars_[key] = (v, type(mfm.DEFAULT_CONFIG[key]))
         # ---- data retention (top right)
-        ret = ttk.LabelFrame(win, text=" Data retention ", padding=(10, 2, 10, 4))
+        ret = ttk.LabelFrame(gen, text=" Data retention ", padding=(10, 2, 10, 4))
         ret.grid(row=0, column=2, rowspan=5, sticky="nwe", padx=(0, 12), pady=(4, 0))
         r1 = ttk.Frame(ret)
         r1.pack(anchor="w", pady=(0, 2))
@@ -5146,6 +5404,14 @@ class App:
         sk.pack(side="left", padx=6)
         ttk.Label(r1, text="days").pack(side="left")
         tip("Listings not seen for this many days are cleaned up.", lk, sk)
+        ttk.Label(r1, text="· shop photos").pack(side="left", padx=(10, 0))
+        shots_var = tk.StringVar(value=str(self.cfg.get("shot_days", 7)))
+        ss = ttk.Spinbox(r1, from_=0, to=90, increment=1, width=4, textvariable=shots_var)
+        ss.pack(side="left", padx=4)
+        ttk.Label(r1, text="days").pack(side="left")
+        tip("The shop window as it was on screen when a row was logged is kept this long "
+            "(right-click a listing → Show shop photo), to check a misread name. About 20 KB "
+            "each, a few per shop visit. 0 takes none.", ss)
         mode_var = tk.StringVar(value=self.cfg.get("retention", "archive"))
         rm = ttk.Frame(ret)
         rm.pack(anchor="w", pady=(0, 2))
@@ -5182,8 +5448,12 @@ class App:
                 days = max(1, int(float(keep_var.get())))
             except ValueError:
                 days = 30
+            try:
+                shots = max(0, min(90, int(float(shots_var.get()))))
+            except ValueError:
+                shots = 7
             return {"keep_days": days, "retention": mode_var.get(),
-                    "archive_dir": arch_var.get().strip() or None}
+                    "archive_dir": arch_var.get().strip() or None, "shot_days": shots}
 
         def show_size():
             size = mfm.db_size()
@@ -5217,16 +5487,20 @@ class App:
         show_size()
 
         save_caps = tk.BooleanVar(value=self.cfg.get("save_captures", False))
-        cb = ttk.Checkbutton(win, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
-        cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self._window_detection_frame(rd).pack(fill="x")
+        ocr_box, ocr_vars = self._ocr_training_frame(rd)
+        ocr_box.pack(fill="x", pady=(10, 0))
+        cb = ttk.Checkbutton(rd, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
+        cb.pack(anchor="w", pady=(10, 0))
         tip("Saves a picture of every screen read, for troubleshooting. Leave off normally.", cb)
+        self._game_data_frame(gd).pack(fill="x")
         # ---- channel picker (under data retention)
         chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", True))
-        cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
+        cb = ttk.Checkbutton(gen, text="Ask for the channel at launch and after a channel change",
                              variable=chan_prompt)
         cb.grid(row=5, column=2, sticky="w", padx=(0, 12), pady=4)
         tip("Asks for your channel when the app opens and after you change channel in the game.", cb)
-        rc = ttk.Frame(win)
+        rc = ttk.Frame(gen)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
         chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
         lc = ttk.Label(rc, text="Channels in the channel picker")
@@ -5235,14 +5509,11 @@ class App:
         sc.pack(side="left", padx=8)
         tip("How many channel buttons the picker shows.", lc, sc)
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
-        cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
+        cb = ttk.Checkbutton(gen, text="Ignore outliers in market rates",
                              variable=outliers_on)
         cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
-        tip("Leaves troll prices and misreads out of the market price.", cb)
-        ttk.Label(win, foreground="#777", justify="left", text=(
-            "200% ceiling = more than 3x the usual price.\n"
-            "75% floor = less than 1/4 of it.")).grid(row=len(fields) - 2, column=2, rowspan=2,
-                                                       sticky="nw", padx=(0, 12))
+        tip("Leaves troll prices and misreads out of the market price. "
+            "200% ceiling = more than 3x the usual price; 75% floor = less than 1/4 of it.", cb)
 
         def save():
             try:
@@ -5260,6 +5531,7 @@ class App:
                     return
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
+            self.cfg["ocr_collect"], self.cfg["ocr_share"] = ocr_vars[0].get(), ocr_vars[1].get()
             self.cfg["channel_prompt"] = chan_prompt.get()
             try:
                 self.cfg["channel_count"] = max(1, min(100, int(float(chan_count.get()))))
@@ -5272,12 +5544,8 @@ class App:
             self.refresh_tables()
             win.destroy()
 
-        self._window_detection_frame(win).grid(row=len(fields) + 1, column=0, columnspan=3, sticky="we",
-                                               padx=12, pady=(10, 0))
-        self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
-                                        padx=12, pady=(12, 0))
         bottom = ttk.Frame(win)
-        bottom.grid(row=len(fields) + 3, column=0, columnspan=3, sticky="we", padx=12, pady=(12, 12))
+        bottom.pack(fill="x", padx=12, pady=(10, 12))
         danger = ttk.LabelFrame(bottom, text=" Your data (prices and personal settings) ", padding=(10, 6))
         danger.pack(side="left")
         b1 = ttk.Button(danger, text="Clear pricing data", command=lambda: self.clear_prices(win))
@@ -5432,10 +5700,11 @@ class App:
                     w, h = win.winfo_reqwidth(), win.winfo_reqheight()
                 x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
                 y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
-                area = monitor_work_area(parent)
-                if area:
-                    x = max(area[0], min(x, area[2] - w))
-                    y = max(area[1], min(y, area[3] - h))
+                # kept on the monitor (its title bar above all): Windows knows each
+                # monitor's area; elsewhere the screen is used
+                area = monitor_work_area(parent) or (0, 0, parent.winfo_screenwidth(), parent.winfo_screenheight())
+                x = max(area[0], min(x, area[2] - w))
+                y = max(area[1], min(y, area[3] - h))
                 win.geometry(f"+{x}+{y}")
             except tk.TclError:
                 pass                 # closed before it was placed

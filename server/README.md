@@ -126,8 +126,8 @@ server's VPN IP as the address. No port forwarding is needed then.
   then `reset-password NAME` and `enable-user NAME` to give it back.
 - Plain HTTP sends passwords and tokens unencrypted. That's fine on your home network or
   over a VPN. Over the internet, use HTTPS (below).
-- Only price sightings, megaphones and nicknames are stored: item, price, shop, player
-  name, map, channel, times, notes, megaphone messages and item nicknames, plus who sent
+- Only price sightings, megaphones and aliases are stored: item, price, shop, player
+  name, map, channel, times, notes, megaphone messages and item aliases, plus who sent
   them and from where. The apps' Review lists aren't stored; they're worked out in each
   app.
 
@@ -201,13 +201,14 @@ Run these on the server computer, in the folder with `docker-compose.yml`:
 | `docker compose exec mfm-server mfm-server remove-user NAME` | delete an account (what it sent stays, with its name and id) |
 | `docker compose exec mfm-server mfm-server stats` | how much is stored, and from whom |
 | `docker compose exec mfm-server mfm-server purge WHAT WHEN` | delete stored data (see below) |
+| `docker compose exec mfm-server mfm-server export-ocr /data/ocr.zip` | the OCR training lines the apps sent (see below) |
 | `docker compose logs -f mfm-server` | the server's log |
 | `docker compose pull && docker compose up -d` | update to the latest version |
 | `docker compose down` | stop it (the data stays) |
 
 ## Deleting stored data
 
-`purge` deletes prices, megaphones or nicknames from the server:
+`purge` deletes prices, megaphones, aliases or OCR training lines from the server:
 
 ```
 docker compose exec mfm-server mfm-server purge prices --older-than 1d
@@ -216,7 +217,8 @@ docker compose exec mfm-server mfm-server purge prices,megaphones --last 2h
 docker compose exec mfm-server mfm-server purge all --all
 ```
 
-- **What:** `prices`, `megaphones`, `nicknames`, several joined with commas, or `all`.
+- **What:** `prices`, `megaphones`, `aliases`, `ocr` (the OCR training lines), several
+  joined with commas, or `all`.
 - **Which:**
   - `--older-than TIME` deletes data older than that. Prices count from when the listing
     was last seen.
@@ -229,7 +231,26 @@ docker compose exec mfm-server mfm-server purge all --all
   next sync, so wrong data is fixed everywhere. It also deletes data it logged itself
   in that time range. An app that connects to the server for the first time after a
   purge isn't affected by it.
-- **Nicknames** are marked deleted rather than removed, so the deletion syncs.
+- **Aliases** are marked deleted rather than removed, so the deletion syncs.
+- **OCR training lines** are only on the server, so purging them doesn't touch the apps.
+
+## OCR training lines
+
+Apps with **Settings → Reading → OCR training** turned on send pictures of megaphone lines with
+their text: agreed by the app's own reads, or checked by hand. They're kept for training
+the app's OCR model (up to 20,000 pictures; set `MFM_OCR_LINES` to change that). The
+pictures include player names from public chat, so keep the export private.
+
+```
+docker compose exec mfm-server mfm-server export-ocr /data/ocr.zip
+docker compose cp mfm-server:/data/ocr.zip ./ocr.zip
+```
+
+- **Which lines:** `--fixed` exports only the lines checked by hand, and `--auto` only
+  the agreed ones. `--last 7d` exports only lines from the past week.
+- **What's inside:** the zip has `lines/NAME.png` and `lines/NAME.gt.txt` (the text) for
+  each line. Hand it over for the next training run.
+- **Deleting them:** `purge ocr --all` deletes them.
 - **The log:** each purge is written to the server's event log (`mfm-server log`).
 
 ## Backups
@@ -282,13 +303,14 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `POST /api/v1/login` with `{"username", "password"}` | `{"token", "user": {"id", "name"}, "expires"}` |
 | `POST /api/v1/logout` | ends this token |
 | `POST /api/v1/password` with `{"password", "new_password"}` | changes it; signs out your other devices |
-| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "nicknames", "seq", "purge_id", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
+| `GET /api/v1/status` | `{"name", "version", "sightings", "megaphones", "aliases", "seq", "purge_id", "you": {"id", "name"}, "keep_days", "megaphone_hours"}` |
 | `POST /api/v1/sightings` with `{"sightings": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
-| `POST /api/v1/nicknames` with `{"nicknames": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each nickname wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
-| `GET /api/v1/nicknames?since=SEQ` | `{"nicknames": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
+| `POST /api/v1/ocr` with `{"lines": [{uid, png (base64), text, status, read}]}` (up to 100) | `{"stored"}`; chat line pictures for OCR training (status `auto`, `fixed`, or `skip` to remove one) |
+| `POST /api/v1/aliases` with `{"aliases": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each alias wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
+| `GET /api/v1/aliases?since=SEQ` | `{"aliases": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
 | `GET /api/v1/purges?since=ID` | `{"purges": [{id, ts, what, field, start, end}], "last"}`: what `purge` deleted, as time ranges (`field` "seen" = last seen or changed, "first" = first stored; `start` ≤ time < `end`), for the apps to delete too |
 
 A sighting is `{uid, ts, item, price, qty, shop, seller, map, channel, sold, sold_ts,

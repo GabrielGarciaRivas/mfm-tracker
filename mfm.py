@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.006"
+VERSION = "2610.19.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -163,8 +163,13 @@ DEFAULT_CONFIG = {
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
+    "capture_window": True,    # read the game's window on its own (still read when it's covered)
+    "game_window_title": "MapleStory",   # ... found by this in its title
+    "area_modes": {},          # each drawn area: drawn on the game's "window" or the whole "screen"
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
+    "ocr_collect": False,      # keep chat line images (and what was read) for OCR training
+    "ocr_share": True,         # ... and send the checked ones to the Shared Database server
     "ocr_workers": 3,          # frames read ahead at once while scrolling (1 = one at a time)
     "tesseract_library": True, # read through Tesseract's library (models loaded once) when it's there
     "shot_days": 7,            # shop photos (the shop window as a row was logged) are kept
@@ -304,6 +309,11 @@ def db() -> sqlite3.Connection:
                     f"SELECT item, png, faded, updated, {src} FROM main.icons")
         con.execute("DROP TABLE main.icons")
         con.commit()
+    # 2610.19: "nicknames" are called aliases now
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nicknames'").fetchone() and \
+            not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'aliases'").fetchone():
+        con.execute("ALTER TABLE nicknames RENAME TO aliases")
+        con.commit()
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS listings (
@@ -336,13 +346,27 @@ def db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_offers_item ON megaphone_offers(item);
         CREATE TABLE IF NOT EXISTS megaphones_deleted (uid TEXT PRIMARY KEY, ts TEXT);
-        CREATE TABLE IF NOT EXISTS nicknames (
+        CREATE TABLE IF NOT EXISTS aliases (
             key TEXT PRIMARY KEY,
             item TEXT,
             deleted INTEGER NOT NULL DEFAULT 0,
             added TEXT, by TEXT, updated TEXT,
             shared_sig TEXT
         );
+        CREATE TABLE IF NOT EXISTS ocr_lines (      -- chat line images for OCR training
+            id INTEGER PRIMARY KEY,
+            grp TEXT NOT NULL,                      -- the same line of the same megaphone
+            ts TEXT NOT NULL,
+            png BLOB NOT NULL,
+            read TEXT,                              -- what the OCR read in this image
+            text TEXT,                              -- what the line says (agreed, or fixed by you)
+            status TEXT NOT NULL DEFAULT 'new',     -- new, auto (reads agreed), unsure, fixed, skip
+            sent INTEGER NOT NULL DEFAULT 0,
+            uid TEXT,
+            alts TEXT                               -- the same image read by the other models (JSON)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ocr_grp ON ocr_lines(grp);
+        CREATE INDEX IF NOT EXISTS idx_ocr_status ON ocr_lines(status);
         CREATE TABLE IF NOT EXISTS reference (
             item TEXT PRIMARY KEY,
             price INTEGER NOT NULL,
@@ -429,8 +453,32 @@ LAST_SCREEN_SIZE: list[int] = []   # pixels of the latest screenshot (a Retina M
 LAST_SCREEN_ORIGIN: list[int] = [0, 0]   # where its pixel (0, 0) is on screen (a monitor left of the main one is at x < 0)
 
 
+CAPTURE_CFG: dict = {}             # the settings (capture_window, game_window_title); set by the app
+GRAB_MODE = ["screen"]             # what the latest capture was: "window" (the game's) or "screen"
+
+
+def drawn_area(cfg: dict, key: str):
+    """An area drawn in Settings → Reading → Window detection, if it was drawn on the same kind
+    of capture as now (the game's window, or the whole screen): an area drawn on one
+    is in the wrong place on the other, so it's left out (found automatically)."""
+    r = (cfg or {}).get(key)
+    if not r:
+        return None
+    return r if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0] else None
+
+
 def grab_full_screen() -> Image.Image:
-    """Screenshot of the whole desktop as a PIL image."""
+    """What the app reads: the game's window when it can be copied on its own (so it's
+    read even when other windows cover it; see game_window_grab), else a screenshot of
+    the whole desktop."""
+    cfg = CAPTURE_CFG
+    if cfg.get("capture_window", True):
+        img = game_window_grab(cfg)
+        if img is not None:
+            GRAB_MODE[0] = "window"
+            LAST_SCREEN_SIZE[:] = img.size
+            return img
+    GRAB_MODE[0] = "screen"
     st = session_type()
     if st in ("windows", "x11", "macos"):
         import mss  # imported lazily so `scan` works without it
@@ -443,26 +491,529 @@ def grab_full_screen() -> Image.Image:
             LAST_SCREEN_ORIGIN[:] = [mon["left"], mon["top"]]
             return img
 
-    # Wayland: X11 grabbers only see black, so shell out to a native tool.
+    # Wayland, with the game's window not readable on its own: X11 grabbers only see
+    # black, so shell out to a native tool (about a second per screenshot). grim only
+    # works on wlroots desktops (Sway, Hyprland...): on KDE or GNOME it fails even when
+    # it's installed, so the desktop's own tool goes first, and a tool that fails is
+    # skipped from then on.
     import threading
     tmp = Path(tempfile.gettempdir()) / f"mfm-tracker-grab-{threading.get_ident()}.png"
-    candidates = [
-        ["grim", str(tmp)],                                   # Hyprland, Sway, river...
-        ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],      # KDE Plasma
-        ["gnome-screenshot", "-f", str(tmp)],                 # GNOME
-    ]
-    for cmd in candidates:
-        if shutil.which(cmd[0]):
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    desk = (os.environ.get("XDG_CURRENT_DESKTOP", "") + ":" + os.environ.get("DESKTOP_SESSION", "")).lower()
+    tools = {
+        "grim": ["grim", str(tmp)],                                    # Hyprland, Sway, river...
+        "spectacle": ["spectacle", "-b", "-n", "-f", "-o", str(tmp)],  # KDE Plasma
+        "gnome-screenshot": ["gnome-screenshot", "-f", str(tmp)],      # GNOME
+    }
+    order = (["spectacle"] if "kde" in desk or "plasma" in desk else
+             ["gnome-screenshot"] if "gnome" in desk else []) + ["grim", "spectacle", "gnome-screenshot"]
+    errors = []
+    for name in dict.fromkeys(order):
+        if _GRAB_FAILED.get(name, 0) >= 3 or not shutil.which(name):
+            continue
+        try:
+            tmp.unlink(missing_ok=True)
+            r = subprocess.run(tools[name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15)
+            if r.returncode != 0 or not tmp.exists():
+                raise RuntimeError((r.stderr or b"").decode(errors="replace").strip().splitlines()[-1:]
+                                   or [f"exit status {r.returncode}"])
             img = Image.open(tmp).convert("RGB")
             img.load()
-            LAST_SCREEN_SIZE[:] = img.size
-            LAST_SCREEN_ORIGIN[:] = [0, 0]
-            return img
+        except Exception as e:
+            msg = e.args[0][0] if isinstance(e, RuntimeError) and e.args and isinstance(e.args[0], list) else str(e)
+            errors.append(f"{name}: {msg}")
+            _GRAB_FAILED[name] = _GRAB_FAILED.get(name, 0) + 1   # 3 in a row: not on this desktop
+            continue
+        _GRAB_FAILED.pop(name, None)
+        LAST_SCREEN_SIZE[:] = img.size
+        LAST_SCREEN_ORIGIN[:] = [0, 0]
+        return img
+    if errors:
+        raise RuntimeError("Couldn't take a screenshot on Wayland (" + "; ".join(errors) + "). On KDE install "
+                           "spectacle, on GNOME gnome-screenshot; grim only works on Sway, Hyprland and "
+                           "other wlroots desktops. Or log in to an X11 session.")
     sys.exit(
         "No screenshot tool found. Install the one for your desktop:\n"
         "  grim (Hyprland, Sway), spectacle (KDE) or gnome-screenshot (GNOME)"
     )
+
+
+_GRAB_FAILED: dict = {}   # Wayland screenshot tools: failures in a row here
+
+
+class _XWindowGrab:
+    """Copies the game's window from XWayland (libX11 + libXcomposite through ctypes):
+    the window is found by its title (MapleStory, or "game_window_title" in settings),
+    redirected off-screen with the Composite extension, and read with XGetImage, so
+    even a covered window is read whole. Returns None when there's no such window
+    (the game isn't running, or runs as a native Wayland window)."""
+
+    def __init__(self):
+        self.ok = None          # None: not set up yet; False: can't be used here
+        self.win = None
+        self.found_at = 0.0
+        self.lock = threading.Lock()
+
+    def _setup(self) -> bool:
+        import ctypes
+        import ctypes.util
+
+        if not os.environ.get("DISPLAY"):
+            return False
+        try:
+            x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
+            xc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("Xcomposite") or "libXcomposite.so.1")
+        except OSError:
+            return False
+        c = ctypes
+        win_t = c.c_ulong
+
+        class XImage(c.Structure):
+            _fields_ = [("width", c.c_int), ("height", c.c_int), ("xoffset", c.c_int), ("format", c.c_int),
+                        ("data", c.c_void_p), ("byte_order", c.c_int), ("bitmap_unit", c.c_int),
+                        ("bitmap_bit_order", c.c_int), ("bitmap_pad", c.c_int), ("depth", c.c_int),
+                        ("bytes_per_line", c.c_int), ("bits_per_pixel", c.c_int), ("red_mask", c.c_ulong),
+                        ("green_mask", c.c_ulong), ("blue_mask", c.c_ulong)]
+
+        class XWindowAttributes(c.Structure):
+            _fields_ = [("x", c.c_int), ("y", c.c_int), ("width", c.c_int), ("height", c.c_int),
+                        ("border_width", c.c_int), ("depth", c.c_int), ("visual", c.c_void_p),
+                        ("root", win_t), ("class_", c.c_int), ("bit_gravity", c.c_int),
+                        ("win_gravity", c.c_int), ("backing_store", c.c_int), ("backing_planes", c.c_ulong),
+                        ("backing_pixel", c.c_ulong), ("save_under", c.c_int), ("colormap", c.c_ulong),
+                        ("map_installed", c.c_int), ("map_state", c.c_int), ("all_event_masks", c.c_long),
+                        ("your_event_mask", c.c_long), ("do_not_propagate_mask", c.c_long),
+                        ("override_redirect", c.c_int), ("screen", c.c_void_p)]
+
+        x.XOpenDisplay.restype = c.c_void_p
+        x.XOpenDisplay.argtypes = [c.c_char_p]
+        x.XDefaultRootWindow.restype = win_t
+        x.XDefaultRootWindow.argtypes = [c.c_void_p]
+        x.XQueryTree.argtypes = [c.c_void_p, win_t, c.POINTER(win_t), c.POINTER(win_t),
+                                 c.POINTER(c.POINTER(win_t)), c.POINTER(c.c_uint)]
+        x.XFetchName.argtypes = [c.c_void_p, win_t, c.POINTER(c.c_char_p)]
+        x.XGetWindowAttributes.argtypes = [c.c_void_p, win_t, c.POINTER(XWindowAttributes)]
+        x.XGetImage.restype = c.POINTER(XImage)
+        x.XGetImage.argtypes = [c.c_void_p, win_t, c.c_int, c.c_int, c.c_uint, c.c_uint, c.c_ulong, c.c_int]
+        x.XDestroyImage.argtypes = [c.POINTER(XImage)]
+        x.XFree.argtypes = [c.c_void_p]
+        x.XFreePixmap.argtypes = [c.c_void_p, c.c_ulong]
+        x.XSync.argtypes = [c.c_void_p, c.c_int]
+        x.XInternAtom.restype = c.c_ulong
+        x.XInternAtom.argtypes = [c.c_void_p, c.c_char_p, c.c_int]
+        x.XGetWindowProperty.argtypes = [c.c_void_p, win_t, c.c_ulong, c.c_long, c.c_long, c.c_int, c.c_ulong,
+                                         c.POINTER(c.c_ulong), c.POINTER(c.c_int), c.POINTER(c.c_ulong),
+                                         c.POINTER(c.c_ulong), c.POINTER(c.c_void_p)]
+        xc.XCompositeRedirectWindow.argtypes = [c.c_void_p, win_t, c.c_int]
+        xc.XCompositeNameWindowPixmap.restype = c.c_ulong
+        xc.XCompositeNameWindowPixmap.argtypes = [c.c_void_p, win_t]
+        dpy = x.XOpenDisplay(None)
+        if not dpy:
+            return False
+        # an X error (e.g. the window closed between finding and reading it) must not
+        # end the app: Xlib's default handler exits
+        handler_t = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_void_p)
+        self._errors = [0]
+
+        def on_error(_d, _e):
+            self._errors[0] += 1
+            return 0
+        self._handler = handler_t(on_error)
+        x.XSetErrorHandler(self._handler)
+        self.c, self.x, self.xc, self.dpy = c, x, xc, dpy
+        self.XImage, self.XWindowAttributes, self.win_t = XImage, XWindowAttributes, win_t
+        self.root = x.XDefaultRootWindow(dpy)
+        self.net_name = x.XInternAtom(dpy, b"_NET_WM_NAME", 0)
+        self.utf8 = x.XInternAtom(dpy, b"UTF8_STRING", 0)
+        return True
+
+    def _title(self, w) -> str:
+        c, x = self.c, self.x
+        t, fmt, n, after, data = c.c_ulong(), c.c_int(), c.c_ulong(), c.c_ulong(), c.c_void_p()
+        if x.XGetWindowProperty(self.dpy, w, self.net_name, 0, 256, 0, self.utf8, c.byref(t), c.byref(fmt),
+                                c.byref(n), c.byref(after), c.byref(data)) == 0 and data.value:
+            s = c.string_at(data.value, n.value).decode("utf-8", "replace")
+            x.XFree(data)
+            if s:
+                return s
+        name = c.c_char_p()
+        if x.XFetchName(self.dpy, w, c.byref(name)) and name.value is not None:
+            s = name.value.decode("latin-1", "replace")
+            x.XFree(name)
+            return s
+        return ""
+
+    def _attrs(self, w):
+        a = self.XWindowAttributes()
+        if not self.x.XGetWindowAttributes(self.dpy, w, self.c.byref(a)):
+            return None
+        return a
+
+    def _find(self, title: str):
+        """The biggest mapped window whose title has `title` in it."""
+        c, x = self.c, self.x
+        best, best_area = None, 0
+        stack = [self.root]
+        seen = 0
+        while stack and seen < 5000:
+            w = stack.pop()
+            seen += 1
+            root, parent, kids, n = self.win_t(), self.win_t(), c.POINTER(self.win_t)(), c.c_uint()
+            if x.XQueryTree(self.dpy, w, c.byref(root), c.byref(parent), c.byref(kids), c.byref(n)):
+                stack.extend(kids[i] for i in range(n.value))
+                if kids:
+                    x.XFree(kids)
+            if w == self.root or title not in self._title(w).lower():
+                continue
+            a = self._attrs(w)
+            if a and a.map_state == 2 and a.width * a.height > best_area and a.width >= 300 and a.height >= 200:
+                best, best_area = w, a.width * a.height
+        return best
+
+    def grab(self, title: str = "maplestory"):
+        title = title.lower()
+        with self.lock:
+            if self.ok is None:
+                try:
+                    self.ok = self._setup()
+                except Exception:
+                    self.ok = False
+            if not self.ok:
+                return None
+            c, x = self.c, self.x
+            if title != getattr(self, "title", None):
+                self.title, self.win, self.found_at = title, None, 0.0     # a new title: look again now
+            if self.win is None or (self.win and not self._attrs(self.win)):
+                if time.monotonic() - self.found_at < 2:
+                    return None               # looked a moment ago: don't walk the tree every frame
+                self.found_at = time.monotonic()
+                self.win = self._find(title.lower())
+                if self.win is None:
+                    return None
+                self.xc.XCompositeRedirectWindow(self.dpy, self.win, 0)   # automatic: still shown
+            a = self._attrs(self.win)
+            if not a or a.map_state != 2:
+                self.win = None
+                return None
+            self._errors[0] = 0
+            pix = self.xc.XCompositeNameWindowPixmap(self.dpy, self.win)
+            img_p = x.XGetImage(self.dpy, pix or self.win, 0, 0, a.width, a.height, 0xFFFFFFFF, 2) if pix else None
+            if not img_p:
+                img_p = x.XGetImage(self.dpy, self.win, 0, 0, a.width, a.height, 0xFFFFFFFF, 2)
+            if pix:
+                x.XFreePixmap(self.dpy, pix)
+            x.XSync(self.dpy, 0)
+            if not img_p or self._errors[0]:
+                if img_p:
+                    x.XDestroyImage(img_p)
+                self.win = None
+                return None
+            im = img_p.contents
+            try:
+                if im.bits_per_pixel != 32:
+                    return None
+                raw = c.string_at(im.data, im.bytes_per_line * im.height)
+                out = Image.frombuffer("RGB", (im.width, im.height), raw, "raw", "BGRX", im.bytes_per_line, 1)
+                return out.copy()
+            finally:
+                x.XDestroyImage(img_p)
+
+
+class _WinWindowGrab:
+    """Windows: the game's window copied with PrintWindow (PW_RENDERFULLCONTENT), which
+    draws it into memory whatever covers it on screen. If a game draws in a way
+    PrintWindow can't copy, every copy is black: then the screen is read instead."""
+
+    def __init__(self):
+        self.hwnd = None
+        self.found_at = 0.0
+        self.good = False        # a copy of this window has shown something (not all black)
+        self.black = 0           # black copies in a row before that
+        self.lock = threading.Lock()
+        self.ready = False
+        self.busy = None         # the copy in progress (see grab)
+
+    def _setup(self):
+        import ctypes
+        from ctypes import wintypes as wt
+
+        c = ctypes
+        u, g = c.windll.user32, c.windll.gdi32
+        try:
+            c.windll.shcore.SetProcessDpiAwareness(2)      # real pixels on scaled screens
+        except Exception:
+            pass
+        u.GetDC.restype = c.c_void_p
+        u.GetDC.argtypes = [c.c_void_p]
+        u.ReleaseDC.argtypes = [c.c_void_p, c.c_void_p]
+        u.PrintWindow.argtypes = [c.c_void_p, c.c_void_p, c.c_uint]
+        u.IsWindow.argtypes = [c.c_void_p]
+        u.IsIconic.argtypes = [c.c_void_p]
+        u.IsWindowVisible.argtypes = [c.c_void_p]
+        u.GetClientRect.argtypes = [c.c_void_p, c.POINTER(wt.RECT)]
+        u.GetWindowTextLengthW.argtypes = [c.c_void_p]
+        u.GetWindowTextW.argtypes = [c.c_void_p, c.c_wchar_p, c.c_int]
+        g.CreateCompatibleDC.restype = c.c_void_p
+        g.CreateCompatibleDC.argtypes = [c.c_void_p]
+        g.CreateDIBSection.restype = c.c_void_p
+        g.CreateDIBSection.argtypes = [c.c_void_p, c.c_void_p, c.c_uint, c.POINTER(c.c_void_p), c.c_void_p,
+                                       c.c_uint]
+        g.SelectObject.restype = c.c_void_p
+        g.SelectObject.argtypes = [c.c_void_p, c.c_void_p]
+        g.DeleteObject.argtypes = [c.c_void_p]
+        g.DeleteDC.argtypes = [c.c_void_p]
+        self.c, self.wt, self.u, self.g = c, wt, u, g
+        self.ready = True
+
+    def _find(self, title: str):
+        c, u = self.c, self.u
+        found = []
+
+        @c.WINFUNCTYPE(c.c_bool, c.c_void_p, c.c_void_p)
+        def each(hwnd, _):
+            if u.IsWindowVisible(hwnd):
+                n = u.GetWindowTextLengthW(hwnd)
+                if n:
+                    buf = c.create_unicode_buffer(n + 1)
+                    u.GetWindowTextW(hwnd, buf, n + 1)
+                    if title in buf.value.lower():
+                        r = self.wt.RECT()
+                        u.GetClientRect(hwnd, c.byref(r))
+                        if r.right >= 300 and r.bottom >= 200:
+                            found.append((r.right * r.bottom, hwnd))
+            return True
+        u.EnumWindows(each, 0)
+        return max(found)[1] if found else None
+
+    def grab(self, title: str):
+        with self.lock:
+            if not self.ready:
+                self._setup()
+            c, u, g = self.c, self.u, self.g
+            if title != getattr(self, "title", None):
+                self.title, self.hwnd, self.found_at = title, None, 0.0
+            if not self.hwnd or not u.IsWindow(self.hwnd):
+                if time.monotonic() - self.found_at < 2:
+                    return None
+                self.found_at = time.monotonic()
+                self.hwnd, self.good, self.black = self._find(title), False, 0
+                if not self.hwnd:
+                    return None
+            if self.black >= 30 and not self.good:
+                return None                   # this game can't be copied this way
+            if u.IsIconic(self.hwnd):
+                return None                   # minimized: nothing to copy
+            r = self.wt.RECT()
+            u.GetClientRect(self.hwnd, c.byref(r))
+            w, h = r.right, r.bottom
+            if w < 50 or h < 50:
+                return None
+
+            class BITMAPINFOHEADER(c.Structure):
+                _fields_ = [("biSize", c.c_uint32), ("biWidth", c.c_int32), ("biHeight", c.c_int32),
+                            ("biPlanes", c.c_uint16), ("biBitCount", c.c_uint16), ("biCompression", c.c_uint32),
+                            ("biSizeImage", c.c_uint32), ("biXPelsPerMeter", c.c_int32),
+                            ("biYPelsPerMeter", c.c_int32), ("biClrUsed", c.c_uint32), ("biClrImportant", c.c_uint32)]
+            bmi = BITMAPINFOHEADER(c.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+            hwnd = self.hwnd
+            box = {}
+
+            def copy():
+                wdc = u.GetDC(hwnd)
+                mdc = g.CreateCompatibleDC(wdc)
+                bits = c.c_void_p()
+                bmp = g.CreateDIBSection(wdc, c.byref(bmi), 0, c.byref(bits), None, 0)
+                old = g.SelectObject(mdc, bmp)
+                try:
+                    ok = u.PrintWindow(hwnd, mdc, 3)         # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+                    box["raw"] = c.string_at(bits, w * h * 4) if ok and bits.value else None
+                finally:
+                    g.SelectObject(mdc, old)
+                    g.DeleteObject(bmp)
+                    g.DeleteDC(mdc)
+                    u.ReleaseDC(hwnd, wdc)
+            # PrintWindow waits for the game to draw: if the game is busy (loading, not
+            # responding), that copy is left to finish on its own and the screen is read
+            # instead, so the app never waits on the game
+            if self.busy is not None and self.busy.is_alive():
+                return None
+            self.busy = threading.Thread(target=copy, daemon=True, name="mfm-printwindow")
+            self.busy.start()
+            self.busy.join(0.5)
+            if self.busy.is_alive():
+                return None
+            raw = box.get("raw")
+            if raw is None:
+                self.black += 1
+                return None
+            img = Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", 0, 1).copy()
+            if img.getbbox() is None:         # all black: a fade, or this game can't be copied
+                self.black += 1
+                return img if self.good else None
+            self.good, self.black = True, 0
+            return img
+
+
+class _MacWindowGrab:
+    """macOS: the game's window copied with CGWindowListCreateImage, which reads one
+    window whatever covers it (needs Screen Recording permission, like any capture)."""
+
+    def __init__(self):
+        self.wid = None
+        self.found_at = 0.0
+        self.lock = threading.Lock()
+        self.ready = False
+
+    def _setup(self):
+        import ctypes
+
+        c = ctypes
+        cg = c.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = c.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+
+        class CGPoint(c.Structure):
+            _fields_ = [("x", c.c_double), ("y", c.c_double)]
+
+        class CGSize(c.Structure):
+            _fields_ = [("width", c.c_double), ("height", c.c_double)]
+
+        class CGRect(c.Structure):
+            _fields_ = [("origin", CGPoint), ("size", CGSize)]
+        vp = c.c_void_p
+        cg.CGWindowListCopyWindowInfo.restype = vp
+        cg.CGWindowListCopyWindowInfo.argtypes = [c.c_uint32, c.c_uint32]
+        cg.CGWindowListCreateImage.restype = vp
+        cg.CGWindowListCreateImage.argtypes = [CGRect, c.c_uint32, c.c_uint32, c.c_uint32]
+        cg.CGRectMakeWithDictionaryRepresentation.restype = c.c_bool
+        cg.CGRectMakeWithDictionaryRepresentation.argtypes = [vp, c.POINTER(CGRect)]
+        for f in ("CGImageGetWidth", "CGImageGetHeight", "CGImageGetBytesPerRow", "CGImageGetBitsPerPixel"):
+            getattr(cg, f).restype = c.c_size_t
+            getattr(cg, f).argtypes = [vp]
+        cg.CGImageGetDataProvider.restype = vp
+        cg.CGImageGetDataProvider.argtypes = [vp]
+        cg.CGDataProviderCopyData.restype = vp
+        cg.CGDataProviderCopyData.argtypes = [vp]
+        cf.CFArrayGetCount.restype = c.c_long
+        cf.CFArrayGetCount.argtypes = [vp]
+        cf.CFArrayGetValueAtIndex.restype = vp
+        cf.CFArrayGetValueAtIndex.argtypes = [vp, c.c_long]
+        cf.CFDictionaryGetValue.restype = vp
+        cf.CFDictionaryGetValue.argtypes = [vp, vp]
+        cf.CFStringCreateWithCString.restype = vp
+        cf.CFStringCreateWithCString.argtypes = [vp, c.c_char_p, c.c_uint32]
+        cf.CFStringGetCString.restype = c.c_bool
+        cf.CFStringGetCString.argtypes = [vp, c.c_char_p, c.c_long, c.c_uint32]
+        cf.CFNumberGetValue.restype = c.c_bool
+        cf.CFNumberGetValue.argtypes = [vp, c.c_int, vp]
+        cf.CFDataGetBytePtr.restype = vp
+        cf.CFDataGetBytePtr.argtypes = [vp]
+        cf.CFDataGetLength.restype = c.c_long
+        cf.CFDataGetLength.argtypes = [vp]
+        cf.CFRelease.argtypes = [vp]
+        self.c, self.cg, self.cf, self.CGRect = c, cg, cf, CGRect
+        self.keys = {k: cf.CFStringCreateWithCString(None, k.encode(), 0x08000100)
+                     for k in ("kCGWindowName", "kCGWindowOwnerName", "kCGWindowNumber", "kCGWindowLayer",
+                               "kCGWindowBounds")}
+        self.ready = True
+
+    def _str(self, d, key) -> str:
+        v = self.cf.CFDictionaryGetValue(d, self.keys[key])
+        if not v:
+            return ""
+        buf = self.c.create_string_buffer(512)
+        return buf.value.decode("utf-8", "replace") if self.cf.CFStringGetCString(v, buf, 512, 0x08000100) else ""
+
+    def _num(self, d, key) -> int:
+        v = self.cf.CFDictionaryGetValue(d, self.keys[key])
+        n = self.c.c_int64()
+        return n.value if v and self.cf.CFNumberGetValue(v, 4, self.c.byref(n)) else -1
+
+    def _find(self, title: str):
+        c, cg, cf = self.c, self.cg, self.cf
+        arr = cg.CGWindowListCopyWindowInfo(16, 0)          # every window but the desktop's
+        if not arr:
+            return None
+        best = (0, None)
+        try:
+            for i in range(cf.CFArrayGetCount(arr)):
+                d = cf.CFArrayGetValueAtIndex(arr, i)
+                if self._num(d, "kCGWindowLayer") != 0:
+                    continue
+                name = (self._str(d, "kCGWindowName") + " " + self._str(d, "kCGWindowOwnerName")).lower()
+                if title not in name:
+                    continue
+                r = self.CGRect()
+                b = cf.CFDictionaryGetValue(d, self.keys["kCGWindowBounds"])
+                if b and cg.CGRectMakeWithDictionaryRepresentation(b, c.byref(r)):
+                    area = r.size.width * r.size.height
+                    if r.size.width >= 300 and r.size.height >= 200 and area > best[0]:
+                        best = (area, self._num(d, "kCGWindowNumber"))
+        finally:
+            cf.CFRelease(arr)
+        return best[1]
+
+    def grab(self, title: str):
+        with self.lock:
+            if not self.ready:
+                self._setup()
+            c, cg, cf = self.c, self.cg, self.cf
+            if title != getattr(self, "title", None):
+                self.title, self.wid, self.found_at = title, None, 0.0
+            if self.wid is None:
+                if time.monotonic() - self.found_at < 2:
+                    return None
+                self.found_at = time.monotonic()
+                self.wid = self._find(title)
+                if self.wid is None:
+                    return None
+            null = self.CGRect()
+            null.origin.x = null.origin.y = float("inf")              # CGRectNull: the window's own bounds
+            img = cg.CGWindowListCreateImage(null, 8, self.wid, 1)    # just this window, without its shadow
+            if not img:
+                self.wid = None                                       # closed: look for it again
+                return None
+            try:
+                w, h = cg.CGImageGetWidth(img), cg.CGImageGetHeight(img)
+                bpr, bpp = cg.CGImageGetBytesPerRow(img), cg.CGImageGetBitsPerPixel(img)
+                if w < 50 or h < 50 or bpp != 32:
+                    if w <= 1:
+                        self.wid = None                               # minimized or gone
+                    return None
+                data = cg.CGDataProviderCopyData(cg.CGImageGetDataProvider(img))
+                try:
+                    raw = c.string_at(cf.CFDataGetBytePtr(data), cf.CFDataGetLength(data))
+                finally:
+                    cf.CFRelease(data)
+                return Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", bpr, 1).copy()
+            finally:
+                cf.CFRelease(img)
+
+
+_XGRAB = _XWindowGrab()
+_WGRAB = _WinWindowGrab()
+_MGRAB = _MacWindowGrab()
+
+
+def game_window_grab(cfg: dict | None = None):
+    """The game's window on its own, read even when other windows cover it, or None
+    when it can't be (not running, minimized, or not readable this way): Linux
+    (X11 or XWayland) through the Composite extension, Windows with PrintWindow,
+    macOS with CGWindowListCreateImage. Found by its title: "MapleStory", or
+    game_window_title in settings."""
+    title = ((cfg or CAPTURE_CFG or {}).get("game_window_title") or "MapleStory").strip().lower()
+    st = session_type()
+    try:
+        if st == "windows":
+            return _WGRAB.grab(title)
+        if st == "macos":
+            return _MGRAB.grab(title)
+        return _XGRAB.grab(title)
+    except Exception:
+        return None
+
+
+def xwayland_window_grab(cfg: dict | None = None):
+    """(Old name.) The game's window, or None."""
+    return game_window_grab(cfg)
 
 
 def mac_screen_access(ask: bool = False) -> bool:
@@ -611,6 +1162,7 @@ def bundled_tesseract() -> Path | None:
 
 
 def setup_tesseract(cfg: dict) -> None:
+    globals()["CAPTURE_CFG"] = cfg          # what grab_full_screen reads (capture_window, the title)
     import pytesseract
 
     global OCR_IN_PROCESS
@@ -847,11 +1399,22 @@ class _EnginePool:
 def _parse_ocr_config(config: str) -> tuple[int, str | None, str, str | None, dict]:
     """The pieces of a Tesseract command line: psm, tessdata dir, languages,
     user-words file and -c variables."""
-    psm = int(m.group(1)) if (m := re.search(r"--psm\s+(\d+)", config)) else 3
-    datapath = m.group(1) if (m := re.search(r"--tessdata-dir\s+(\S+)", config)) else None
-    lang = m.group(1) if (m := re.search(r"(?:^|\s)-l\s+(\S+)", config)) else "eng"
-    words = m.group(1) if (m := re.search(r"--user-words\s+(\S+)", config)) else None
-    cvars = dict(re.findall(r"-c\s+(\w+)=(\S*)", config))
+    import shlex
+
+    # split like the shell does: a path with spaces comes quoted (see _short_path)
+    try:
+        toks = shlex.split(config, posix=(sys.platform != "win32"))
+    except ValueError:
+        toks = config.split()
+    toks = [t.strip('"') for t in toks]
+
+    def after(flag):
+        return toks[toks.index(flag) + 1] if flag in toks and toks.index(flag) + 1 < len(toks) else None
+    psm = int(after("--psm") or 3)
+    datapath = after("--tessdata-dir")
+    lang = after("-l") or "eng"
+    words = after("--user-words")
+    cvars = dict(t.split("=", 1) for i, t in enumerate(toks) if i and toks[i - 1] == "-c" and "=" in t)
     if datapath is None:
         import pytesseract
 
@@ -2315,27 +2878,6 @@ def _join_row_blobs(boxes: list) -> list:
     return out
 
 
-def cursor_on_cancel(full: Image.Image, pair: list) -> bool:
-    """Is the game's mouse pointer (the white glove) over the CANCEL button of the
-    change-channel dialog? The glove is pale blue-white; nothing inside the orange
-    button is (its lettering is pure white)."""
-    x0, y0, w, h = pair
-    img = full.convert("RGB")
-    cl = int(x0 + w * 0.64)                       # CANCEL's left edge
-    box = (cl + 2, y0 + 2, x0 + w - 2, y0 + h - 2)
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return False
-    n = sum(1 for r, g, b in img.crop(box).getdata()
-            if min(r, g, b) >= 165 and b - r >= 10 and g - r >= 4)
-    if n < max(4, round(6 * (h / 27) ** 2)):
-        return False
-    # the glove's fingertip is its top left: if the glove also covers the right end of
-    # CHANGE CHANNEL (plain blue there, no lettering), the pointer is on that button
-    strip = (cl - int(0.8 * h), y0 + 3, cl - int(0.37 * h), y0 + h - 3)
-    pale = sum(1 for r, g, b in img.crop(strip).getdata() if min(r, g, b) >= 165)
-    return pale < 3
-
-
 def find_channel_dialog(full: Image.Image) -> list | None:
     """The game's change-channel dialog, found by its two buttons side by side:
     a blue CHANGE CHANNEL with an orange CANCEL just to its right, the same
@@ -2451,95 +2993,27 @@ def read_dialog_channel(full: Image.Image, pair: list | None = None) -> str | No
     return str(round((cy - y0_) / sy) * 8 + round((cx - x0_) / sx) + 1)
 
 
-_ESC_PROBE = None
-
-
-def esc_key_down() -> bool | None:
-    """Is Esc held down (or, on Windows, pressed since the last look)? Read straight
-    from the system, whatever window has focus. None where that can't be read
-    (e.g. Wayland)."""
-    global _ESC_PROBE
-    if _ESC_PROBE is None:
-        _ESC_PROBE = False
-        try:
-            import ctypes
-            import ctypes.util
-            kind = session_type()
-            if kind == "windows":
-                gaks = ctypes.windll.user32.GetAsyncKeyState
-                gaks.restype = ctypes.c_short
-                _ESC_PROBE = lambda: bool(gaks(0x1B) & 0x8001)
-            elif kind == "x11" or (kind == "wayland" and os.environ.get("DISPLAY")):
-                # on Wayland this goes through XWayland: it sees keys while an X11
-                # window (like the game under Wine) has focus
-                x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
-                x.XOpenDisplay.restype = ctypes.c_void_p
-                x.XOpenDisplay.argtypes = [ctypes.c_char_p]
-                x.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-                x.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-                dpy = x.XOpenDisplay(None)
-                if dpy:
-                    code = x.XKeysymToKeycode(dpy, 0xFF1B)       # XK_Escape
-                    buf = ctypes.create_string_buffer(32)
-                    lock = threading.Lock()
-
-                    def probe():
-                        with lock:
-                            x.XQueryKeymap(dpy, buf)
-                            return bool(buf.raw[code // 8] & (1 << (code % 8)))
-                    _ESC_PROBE = probe
-            elif kind == "macos":
-                q = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
-                q.CGEventSourceKeyState.restype = ctypes.c_bool
-                q.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
-                _ESC_PROBE = lambda: bool(q.CGEventSourceKeyState(0, 53))   # combined state, kVK_Escape
-        except Exception:
-            _ESC_PROBE = False
-    if not _ESC_PROBE:
-        return None
-    try:
-        return _ESC_PROBE()
-    except Exception:
-        return None
-
-
-class _EscWatch:
-    """Looks at the Esc key every 15 ms on a small thread, from start() until
-    stop(), so a quick tap between screenshots isn't missed."""
-
-    def __init__(self):
-        self.pressed = False
-        self._stop = threading.Event()
-        self._thread = None
-
-    def start(self) -> None:
-        self.stop()
-        self.pressed = False
-        if esc_key_down() is None:
-            return
-        self._stop = threading.Event()
-        stop = self._stop
-
-        def run():
-            while not stop.is_set():
-                if esc_key_down():
-                    self.pressed = True
-                    return
-                stop.wait(0.015)
-        self._thread = threading.Thread(target=run, daemon=True, name="esc-watch")
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
+def faded_to_black(full: Image.Image, box) -> bool:
+    """Has the game faded to black here? (It does while it changes channel.)"""
+    l, t, r, b = (int(v) for v in box)
+    l, t = max(0, l), max(0, t)
+    r, b = min(full.width, r), min(full.height, b)
+    if r - l < 8 or b - t < 8:
+        return False
+    px = full.crop((l, t, r, b)).convert("RGB").resize((48, 24)).getdata()
+    dark = sum(1 for p in px if max(p) <= 30)
+    return dark >= 0.92 * len(px)
 
 
 class ChannelWatch:
     """Notices a channel change: the change-channel dialog (find_channel_dialog)
-    was on screen and has gone away, i.e. you changed channel (or cancelled).
-    It only counts as gone after `misses` checks in a row without it, so a
-    mouse over a button or one bad frame doesn't end it early. Pressing Esc while
-    the dialog is open, or closing it with the mouse over CANCEL, cancels it: no
-    change until the dialog shows up again."""
+    was on screen and went away, and the game then faded to black within
+    FADE_SECONDS (it does when it changes channel). Closing the dialog any other
+    way (CANCEL, Esc, or a change the game refuses: a restricted map, in combat)
+    has no fade, so it changes nothing. One frame without the dialog doesn't end
+    it: it counts as gone after `misses` checks in a row (about half a second)."""
+
+    FADE_SECONDS = 3.0
 
     def __init__(self, misses: int = 2, every: float | None = None, cfg: dict | None = None):
         # how often to look: `every` seconds, or the Capture every (seconds) setting
@@ -2547,23 +3021,21 @@ class ChannelWatch:
         self._read_memo: dict = {}
         self.seen = False
         self.gone = 0
+        self.gone_at = 0.0                  # when the dialog was last seen
+        self.waiting = False                # gone: waiting up to FADE_SECONDS for the fade
+        self.box = None                     # where the dialog was (checked for the fade)
         self.last = 0.0
         self.picked: str | None = None      # the channel highlighted while the dialog was open
         self.channel: str | None = None     # ... when it closed: the channel you changed to
-        self.esc = _EscWatch()
-        self.escaped = False                # Esc was pressed while the dialog was open
-        self.cancelled = False              # set when a dialog closed after Esc; see take_cancelled()
+        self.cancelled = False              # set when a dialog closed with no fade; see take_cancelled()
 
     def take_cancelled(self) -> bool:
-        """True once after a Change Channel window was closed with Esc."""
+        """True once after a Change Channel window closed without changing channel."""
         c, self.cancelled = self.cancelled, False
         return c
 
-    on_cancel = False                       # the mouse was over CANCEL when last seen
-
     def _reset(self) -> None:
-        self.seen, self.gone, self.escaped, self.on_cancel = False, 0, False, False
-        self.esc.stop()
+        self.seen, self.gone, self.waiting = False, 0, False
 
     paused = False
 
@@ -2599,13 +3071,19 @@ class ChannelWatch:
     def due(self) -> bool:
         return not self._off() and time.monotonic() - self.last >= self.every
 
+    def _changed(self) -> bool:
+        self._reset()
+        self.channel, self.picked = self.picked, None
+        return True
+
     def feed(self, full: Image.Image) -> bool:
-        """Check one screenshot; True once the dialog has come and gone."""
-        self.last = time.monotonic()
+        """Check one screenshot; True once the dialog has gone and the game faded
+        to black (self.channel: the channel highlighted in it, or None)."""
+        now = self.last = time.monotonic()
         if self._off():
             self._reset()
             return False
-        area = (self.cfg or {}).get("channel_region")
+        area = drawn_area(self.cfg, "channel_region")
         if area:
             try:
                 full = crop(full, area)        # only where you said the window shows
@@ -2614,17 +3092,11 @@ class ChannelWatch:
         pair = find_channel_dialog(full)
         if pair:
             if not self.seen:
-                self.picked, self.escaped = None, False
-                self.esc.start()
-            self.seen, self.gone = True, 0
-            try:
-                self.on_cancel = cursor_on_cancel(full, pair)
-            except Exception:
-                self.on_cancel = False
-            if self.escaped or self.esc.pressed:
-                self.escaped = True           # cancelled: stop reading until it closes
-                self.esc.stop()
-                return False
+                self.picked = None
+            self.seen, self.gone, self.waiting, self.gone_at = True, 0, False, now
+            x0, y0, w, h = pair
+            # the dialog: the buttons' row and the channel grid above it
+            self.box = (x0 + w - 3.2 * w, y0 - 8 * h, x0 + w, y0 + h)
             key = (tuple(pair), hashlib_md5(full.crop((max(0, pair[0] - 3 * pair[2]), max(0, pair[1] - pair[2]),
                                                        pair[0] + pair[2], pair[1])).resize((96, 32)).tobytes()))
             if key in self._read_memo:
@@ -2642,17 +3114,15 @@ class ChannelWatch:
             if ch:
                 self.picked = ch
             return False
-        if self.seen:
-            self.gone += 1
-            if self.gone >= max(self.misses, round(0.5 / self.every)):
-                escaped = self.escaped or self.esc.pressed or self.on_cancel
-                self._reset()
-                picked, self.picked = self.picked, None
-                if escaped:
-                    self.cancelled = True     # closed with Esc: keep the channel you had
-                    return False
-                self.channel = picked
-                return True
+        if not self.seen:
+            return False
+        if self.box and faded_to_black(full, self.box):
+            return self._changed()            # gone, and the game faded out: a new channel
+        self.gone += 1
+        if now - self.gone_at > self.FADE_SECONDS and self.gone >= self.misses:
+            self._reset()                     # gone with no fade: cancelled, or the game said no
+            self.picked = None
+            self.cancelled = True
         return False
 
 
@@ -5926,6 +6396,16 @@ def shots_db():
     return con
 
 
+def _webp_ok() -> bool:
+    if not hasattr(_webp_ok, "ok"):
+        try:
+            from PIL import features
+            _webp_ok.ok = bool(features.check("webp"))
+        except Exception:
+            _webp_ok.ok = False
+    return _webp_ok.ok
+
+
 def save_shot(con, session: str, ts: str, img: Image.Image) -> bool:
     """Keep the frame `img` of visit `session`, captured at `ts` (a listing's ts)."""
     import io
@@ -5934,7 +6414,10 @@ def save_shot(con, session: str, ts: str, img: Image.Image) -> bool:
     if n >= SHOTS_PER_VISIT:
         return False
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, "WEBP", quality=SHOT_QUALITY, method=4)
+    if _webp_ok():
+        img.convert("RGB").save(buf, "WEBP", quality=SHOT_QUALITY, method=4)
+    else:   # a Pillow built without WebP (the Linux app's): JPEG, a little bigger
+        img.convert("RGB").save(buf, "JPEG", quality=75, optimize=True)
     con.execute("INSERT OR IGNORE INTO shots (session, ts, webp) VALUES (?,?,?)", (session, ts, buf.getvalue()))
     con.commit()
     return True
@@ -6599,6 +7082,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     slack = int(0.15 * pitch)
     memo = memo if memo is not None else {}
     setup_tesseract(cfg)
+    OCR_COLLECT.on = bool(cfg.get("ocr_collect"))
 
     # the lines on screen, top to bottom
     lines = []
@@ -6694,8 +7178,12 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     hhmm = _read_chat_time(left, u * 3) or hhmm
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
-    for im in extra:
-        ws = _ocr_words(_chat_text(im))
+    grp = f"{datetime.now():%Y%m%d}|{hhmm}|{fold(name)}"
+    OCR_COLLECT.add(grp + "|0", line if b else left, " ".join(w for w, x, c in words))
+    for n, im in enumerate(extra, 1):
+        txt_img = _chat_text(im)
+        ws = _ocr_words(txt_img)
+        OCR_COLLECT.add(f"{grp}|{n}", txt_img, " ".join(w for w, x, c in ws))
         confs += [c for w, x, c in ws if c >= 0]
         t = _drop_junk([(w, c) for w, x, c in ws])
         message = _join_wrapped(message, t)
@@ -6703,6 +7191,152 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     conf = round(sum(confs) / len(confs), 1) if confs else 0.0
     return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
             "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf}
+
+
+# --------------------------------------------------------------------------- OCR training lines
+# With "Collect chat lines for OCR training" on, every megaphone line image the OCR reads
+# is kept with what was read (table ocr_lines). The same line is read again on every
+# frame it's on screen (and the chat is see-through, so each image differs a little):
+# when those reads agree, that's the line's text ("auto"); when they don't, it waits in
+# Settings → Reading → OCR training → Check lines for you to fix ("unsure"). Checked lines go to
+# the Shared Database server (mfm-server export-ocr), for training the app's OCR model.
+
+OCR_PER_LINE = 8          # images kept per line while it's being read
+OCR_KEEP_PER_LINE = 3     # ... and once settled (the misread ones first: they teach the most)
+OCR_LINES_MAX = 2500      # images kept here in all (about 45 MB)
+OCR_SETTLE_SECONDS = 120  # a line is settled this long after it was last read
+OCR_AGREE = 3             # reads that must agree (and 3 in 4 of all reads)
+
+
+class _OcrCollector:
+    """Takes line images from the OCR thread and saves them (its own connection)."""
+
+    def __init__(self):
+        self.on = False
+        self._local = threading.local()
+
+    def add(self, grp: str, img: Image.Image, read: str) -> None:
+        if not self.on or img is None or img.width < 20 or not read.strip():
+            return
+        try:
+            con = getattr(self._local, "con", None)
+            if con is None:
+                con = self._local.con = db()
+            n = con.execute("SELECT COUNT(*) FROM ocr_lines WHERE grp = ?", (grp,)).fetchone()[0]
+            status = con.execute("SELECT status FROM ocr_lines WHERE grp = ? LIMIT 1", (grp,)).fetchone()
+            if n >= OCR_PER_LINE or (status and status[0] != "new"):
+                return
+            import io
+            buf = io.BytesIO()
+            img.convert("L").save(buf, "PNG", optimize=True)
+            con.execute("INSERT INTO ocr_lines (grp, ts, png, read, alts) VALUES (?,?,?,?,?)",
+                        (grp, utc_now(), buf.getvalue(), " ".join(read.split()), json.dumps(self._alts(img))))
+            con.commit()
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _alts(img: Image.Image) -> list[str]:
+        """The same image read by the trained model alone and by the standard English
+        one: reads that don't share all their mistakes, so when the standard one
+        agrees with a trained one, that's very likely the line's text."""
+        import pytesseract
+
+        arg = ocr_lang_arg()
+        if f"-l {OCR_MODEL}+eng" not in arg:
+            return []
+        out = []
+        for lang in (OCR_MODEL, "eng"):
+            try:
+                t = ocr_text(ImageOps.expand(img, border=12, fill=255),
+                             "--psm 7" + arg.replace(f"{OCR_MODEL}+eng", lang))
+            except Exception:
+                t = ""
+            out.append(" ".join(t.split()))
+        return out
+
+
+OCR_COLLECT = _OcrCollector()
+
+
+def plausible_ocr_text(text: str) -> bool:
+    """False for a read with the OCR's usual slips in it, even when the models agree
+    on it (they share some): g read as q ("smeqa"), a stray "|" or "?", "=" for ">"
+    ("B= ..."), or an item in [brackets] that isn't on the item list."""
+    if re.search(r"q(?!u)", text, re.I) or "|" in text:
+        return False
+    if re.search(r"(^|\s)[?!.,:;]+(\s|$)", text.replace(" : ", " ")):
+        return False
+    if re.search(r"(^|[\s:])[SBTsbt]\s?=", text):
+        return False
+    if has_item_list():
+        for name in re.findall(r"\[([^\]]+)\]", text):
+            if not is_known_item(name):
+                return False
+    return True
+
+
+def settle_ocr_lines(con, now_iso: str | None = None) -> dict:
+    """Lines no longer being read get their text: the read most images agree on
+    ("auto"), or the likeliest one, to be checked ("unsure"). Extra images are
+    dropped, and the oldest beyond OCR_LINES_MAX. Returns counts by status."""
+    from collections import Counter
+
+    cutoff = utc_ago(seconds=OCR_SETTLE_SECONDS) if now_iso is None else now_iso
+    grps = [g for (g,) in con.execute("SELECT grp FROM ocr_lines WHERE status = 'new' GROUP BY grp "
+                                      "HAVING MAX(ts) < ?", (cutoff,))]
+    for g in grps:
+        rows = con.execute("SELECT id, read, alts FROM ocr_lines WHERE grp = ? ORDER BY id", (g,)).fetchall()
+        votes = Counter(r for _, r, _ in rows if r)
+        if not votes:
+            con.execute("DELETE FROM ocr_lines WHERE grp = ?", (g,))
+            continue
+        top, n = votes.most_common(1)[0]
+        status = "auto" if n >= OCR_AGREE and n >= 0.75 * len(rows) else "unsure"
+        if status == "unsure":
+            # or: the standard model read an image exactly as a trained one did (not for
+            # a short wrapped piece of a megaphone, like "olls dm": too little to tell)
+            for _, r, alts in rows:
+                try:
+                    trained_alone, standard = (json.loads(alts or "[]") + ["", ""])[:2]
+                except ValueError:
+                    continue
+                if standard and standard in (r, trained_alone) and (g.endswith("|0") or len(standard) >= 12):
+                    top, status = standard, "auto"
+                    break
+        if status == "auto" and not plausible_ocr_text(top):
+            status = "unsure"
+        rows = [(i, r) for i, r, _ in rows]
+        keep = sorted(rows, key=lambda r: (r[1] == top, r[0]))[:OCR_KEEP_PER_LINE]
+        ids = {i for i, _ in keep}
+        con.executemany("DELETE FROM ocr_lines WHERE id = ?", [(i,) for i, _ in rows if i not in ids])
+        con.execute("UPDATE ocr_lines SET text = ?, status = ? WHERE grp = ?", (top, status, g))
+    total = con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0]
+    if total > OCR_LINES_MAX:
+        # the oldest go first: skipped, then sent, then the rest
+        con.execute("DELETE FROM ocr_lines WHERE id IN (SELECT id FROM ocr_lines ORDER BY "
+                    "CASE WHEN status = 'skip' THEN 0 WHEN sent = 1 THEN 1 ELSE 2 END, id LIMIT ?)",
+                    (total - OCR_LINES_MAX,))
+    con.commit()
+    return ocr_line_counts(con)
+
+
+def ocr_line_counts(con) -> dict:
+    """Lines (not images) by status, and how many images were sent."""
+    out = {s: n for s, n in con.execute("SELECT status, COUNT(DISTINCT grp) FROM ocr_lines GROUP BY status")}
+    out["sent"] = con.execute("SELECT COUNT(*) FROM ocr_lines WHERE sent = 1").fetchone()[0]
+    return out
+
+
+def set_ocr_line(con, grp: str, text: str | None, status: str) -> None:
+    """You checked a line: its text (status "fixed"), or "skip" to leave it out."""
+    if text is not None:
+        con.execute("UPDATE ocr_lines SET text = ?, status = ?, sent = 0 WHERE grp = ?",
+                    (" ".join(text.split()), status, grp))
+    else:
+        con.execute("UPDATE ocr_lines SET status = ?, sent = 0 WHERE grp = ?", (status, grp))
+    con.commit()
 
 
 def _player_names(con) -> dict[str, str]:
@@ -6798,27 +7432,27 @@ def delete_megaphones(con, ids) -> int:
 
 def apply_purge(con, what: str, field: str, start: str | None, end: str, when: str | None = None) -> int:
     """Delete what the Shared Database's server purged (mfm-server purge) from this
-    app's own data too: `what` (prices, megaphones or nicknames) whose time `field`
+    app's own data too: `what` (prices, megaphones or aliases) whose time `field`
     (seen: last seen / changed, first: first stored) is >= start (if given) and < end.
-    Nicknames are marked deleted, like on the server. Returns how many."""
+    Aliases are marked deleted, like on the server. Returns how many."""
     if what == "prices":
         col = "COALESCE(last_seen, ts)" if field == "seen" else "ts"
         table = "listings"
     elif what == "megaphones":
         col, table = "ts", "megaphones"
-    elif what == "nicknames":
+    elif what in ("aliases", "nicknames"):       # (servers before 2.6.0 say nicknames)
         col = "COALESCE(updated, added)" if field == "seen" else "COALESCE(added, updated)"
-        table = "nicknames"
+        table = "aliases"
     else:
         return 0
     where, args = f"{col} < ?", [end]
     if start:
         where, args = where + f" AND {col} >= ?", args + [start]
-    if what == "nicknames":
-        rows = con.execute(f"SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 AND {where}",
+    if what in ("aliases", "nicknames"):
+        rows = con.execute(f"SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0 AND {where}",
                            args).fetchall()
         for key, item in rows:
-            con.execute("UPDATE nicknames SET deleted = 1, updated = ?, by = 'server admin', shared_sig = ? "
+            con.execute("UPDATE aliases SET deleted = 1, updated = ?, by = 'server admin', shared_sig = ? "
                         "WHERE key = ?", (when or utc_now(), json.dumps([item or "", 1]), key))
         n = len(rows)
     else:
@@ -6841,39 +7475,39 @@ def purge_megaphones(con, hours: float) -> int:
 # --------------------------------------------------------------------------- megaphone offers
 # What a megaphone sells or buys: "S> Black cat beanie 520k, B> Fondue Scepter" is two
 # offers, each with an item (when it can be told) and a price (when one is given).
-# Players' shorthand ("kumbis") is learned in Review as nicknames, which the Shared
+# Players' shorthand ("kumbis") is learned in Review as aliases, which the Shared
 # Database shares, so the whole group only teaches each one once.
 
-def nick_key(phrase: str) -> str:
+def alias_key(phrase: str) -> str:
     """How a phrase is compared: lower case, letters and digits only."""
     return " ".join(re.sub(r"[^a-z0-9%]+", " ", (phrase or "").lower()).split())
 
 
-def nickname_version(con) -> str:
-    """Changes whenever any nickname does (so megaphones get read again)."""
-    rows = con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 ORDER BY key").fetchall()
+def alias_version(con) -> str:
+    """Changes whenever any alias does (so megaphones get read again)."""
+    rows = con.execute("SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0 ORDER BY key").fetchall()
     return hashlib_md5("\n".join(f"{k}={i or ''}" for k, i in rows).encode())[:12]
 
 
-def load_nicknames(con) -> dict[str, str]:
+def load_aliases(con) -> dict[str, str]:
     """{phrase key: item} (item "" = not an item)."""
-    return {k: (i or "") for k, i in con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0")}
+    return {k: (i or "") for k, i in con.execute("SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0")}
 
 
-def set_nickname(con, phrase: str, item: str | None, by: str | None = None) -> str:
-    """Teach a nickname: `item` None or "" = the phrase isn't an item. Returns its key."""
-    key = nick_key(phrase)
+def set_alias(con, phrase: str, item: str | None, by: str | None = None) -> str:
+    """Teach an alias: `item` None or "" = the phrase isn't an item. Returns its key."""
+    key = alias_key(phrase)
     if not key:
         return key
-    con.execute("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?) "
+    con.execute("INSERT INTO aliases (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?) "
                 "ON CONFLICT (key) DO UPDATE SET item = excluded.item, deleted = 0, updated = excluded.updated",
                 (key, item or "", utc_now(), by, utc_now()))
     con.commit()
     return key
 
 
-def delete_nickname(con, key: str) -> None:
-    con.execute("UPDATE nicknames SET deleted = 1, updated = ? WHERE key = ?", (utc_now(), key))
+def delete_alias(con, key: str) -> None:
+    con.execute("UPDATE aliases SET deleted = 1, updated = ? WHERE key = ?", (utc_now(), key))
     con.commit()
 
 
@@ -6886,7 +7520,7 @@ def _item_index() -> dict[str, str]:
     if idx is None:
         idx = {}
         for n in d.names:
-            idx.setdefault(nick_key(n), n)
+            idx.setdefault(alias_key(n), n)
         d.offer_index = idx
     return idx
 
@@ -6927,7 +7561,7 @@ def _price_of(text: str) -> tuple[int | None, str]:
     return price, ", ".join(note)
 
 
-WORDS_PREFIX = "="          # a nickname whose value starts with this stands for words, not an item
+WORDS_PREFIX = "="          # an alias whose value starts with this stands for words, not an item
 _OPTIONAL_WORDS = {"scroll", "for", "of", "the", "a", "an"}
 
 
@@ -6944,7 +7578,7 @@ def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
     if idx is None:
         idx = {}
         for n in d.names:
-            words = frozenset(_plain(w) for w in nick_key(n).split()) - _OPTIONAL_WORDS
+            words = frozenset(_plain(w) for w in alias_key(n).split()) - _OPTIONAL_WORDS
             if len(words) >= 2:
                 for w in words:
                     idx.setdefault(w, []).append((n, words))
@@ -6952,8 +7586,8 @@ def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
     return idx
 
 
-# Common shorthand in megaphones, put in once as word nicknames (they can be changed or
-# removed in Edit nicknames like any other; see seed_default_words).
+# Common shorthand in megaphones, put in once as word aliases (they can be changed or
+# removed in Edit aliases like any other; see seed_default_words).
 DEFAULT_WORDS = {
     "att": "attack", "atk": "attack", "attk": "attack",
     "matk": "magic attack", "matt": "magic attack", "m att": "magic attack", "m atk": "magic attack",
@@ -6970,28 +7604,28 @@ _SEED_TIME = "2000-01-01T00:00:00Z"     # older than any real change, so those a
 
 def seed_default_words(con) -> int:
     """Put in DEFAULT_WORDS that aren't there (or weren't removed) yet."""
-    have = {r[0] for r in con.execute("SELECT key FROM nicknames")}
+    have = {r[0] for r in con.execute("SELECT key FROM aliases")}
     rows = [(k, WORDS_PREFIX + v, _SEED_TIME, "app", _SEED_TIME) for k, v in DEFAULT_WORDS.items() if k not in have]
     if rows:
-        con.executemany("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?)", rows)
+        con.executemany("INSERT INTO aliases (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?)", rows)
         con.commit()
     return len(rows)
 
 
-def split_nicknames(nicks: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
-    """({phrase: item}, {phrase: words}): nicknames for items, and ones that stand for words
+def split_aliases(aliases: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """({phrase: item}, {phrase: words}): aliases for items, and ones that stand for words
     ("60%" = "intermediate", "att" = "attack") used to read any item's name."""
     items, words = {}, {}
-    for k, v in nicks.items():
+    for k, v in aliases.items():
         if v.startswith(WORDS_PREFIX):
-            words[k] = nick_key(v[len(WORDS_PREFIX):])
+            words[k] = alias_key(v[len(WORDS_PREFIX):])
         else:
             items[k] = v
     return items, words
 
 
 def apply_words(key: str, words: dict[str, str]) -> str:
-    """A phrase key with the word nicknames put in ("60% gloves att" -> "intermediate
+    """A phrase key with the word aliases put in ("60% gloves att" -> "intermediate
     gloves attack"); the longest match wins."""
     if not words:
         return key
@@ -7032,59 +7666,59 @@ def _by_words(key: str) -> str | None:
     return None if tie else best
 
 
-def _find_item(phrase: str, links: list[str], nicks: dict[str, str],
+def _find_item(phrase: str, links: list[str], aliases: dict[str, str],
                words: dict[str, str] | None = None) -> tuple[str | None, str]:
-    """(item, how) for a phrase: how = "link", "nickname", "name", "words", "ignored" or ""."""
-    key = nick_key(phrase)
+    """(item, how) for a phrase: how = "link", "alias", "name", "words", "ignored" or ""."""
+    key = alias_key(phrase)
     for link in links:
-        lk = nick_key(link)
+        lk = alias_key(link)
         if lk and (lk in key or key in lk or not key):
             idx = _item_index()
             item = idx.get(lk)
             if item is None and has_item_list():
                 sugg = suggest_items(link, 1)
                 item = sugg[0] if sugg and difflib.SequenceMatcher(
-                    None, fold(nick_key(sugg[0])), fold(lk)).ratio() >= 0.8 else None
+                    None, fold(alias_key(sugg[0])), fold(lk)).ratio() >= 0.8 else None
             return (item or link), "link"
     if not key:
         return None, ""
-    if key in nicks:
-        return (nicks[key] or None), ("nickname" if nicks[key] else "ignored")
+    if key in aliases:
+        return (aliases[key] or None), ("alias" if aliases[key] else "ignored")
     idx = _item_index()
-    # as written, then with the word nicknames put in
+    # as written, then with the word aliases put in
     keys = [key]
     swapped = apply_words(key, words or {})
     if swapped != key:
         keys.append(swapped)
     for k0 in keys:
         how = "name" if k0 == key else "words"
-        if k0 != key and k0 in nicks:
-            return (nicks[k0] or None), ("nickname" if nicks[k0] else "ignored")
+        if k0 != key and k0 in aliases:
+            return (aliases[k0] or None), ("alias" if aliases[k0] else "ignored")
         for k in (k0, " ".join(_plain(w) for w in k0.split())):
             if k in idx:
                 return idx[k], how                     # "mithril polearms" -> Mithril Polearm
         ws = k0.split()
-        # the longest run of words that is a nickname or an item's name
+        # the longest run of words that is an alias or an item's name
         for n in range(min(len(ws), 8), 0, -1):
             for i in range(len(ws) - n + 1):
                 sub = " ".join(ws[i:i + n])
-                if sub in nicks and nicks[sub] and (n > 1 or len(sub) >= 3):
-                    return nicks[sub], "nickname"
+                if sub in aliases and aliases[sub] and (n > 1 or len(sub) >= 3):
+                    return aliases[sub], "alias"
                 if sub in idx and (n > 1 or len(sub) >= 4):
                     return idx[sub], how
                 single = " ".join(_plain(w) for w in ws[i:i + n])
                 if single != sub and single in idx and (n > 1 or len(single) >= 4):
                     return idx[single], how
-    # every word of one item's name, in any order (after the word nicknames)
+    # every word of one item's name, in any order (after the word aliases)
     item = _by_words(keys[-1])
     if item:
         return item, "words"
     return None, ""
 
 
-def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[dict]:
+def parse_offers(message: str, kind: str | None, aliases: dict[str, str]) -> list[dict]:
     """The offers in a megaphone: [{side, phrase, key, item, how, price, note}]."""
-    nicks, words = split_nicknames(nicks)
+    aliases, words = split_aliases(aliases)
     links = re.findall(r"\[([^\[\]]{2,60})\]", message or "")
     text = re.sub(r"\[([^\[\]]{2,60})\]", r" \1 ", message or "")
     text = re.sub(r"\bc\s?/\s?o\b", "c_o", text, flags=re.I)        # don't split "c/o"
@@ -7124,8 +7758,8 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
                 if price is not None and offers and offers[-1]["side"] == side and offers[-1]["price"] is None:
                     offers[-1]["price"], offers[-1]["note"] = price, note   # "Item / 200k"
                 continue
-            item, how = _find_item(phrase, links, nicks, words)
-            offers.append({"side": side, "phrase": phrase, "key": nick_key(phrase), "item": item, "how": how,
+            item, how = _find_item(phrase, links, aliases, words)
+            offers.append({"side": side, "phrase": phrase, "key": alias_key(phrase), "item": item, "how": how,
                            "price": price, "note": note})
     # "[Korean Fan] S>Korean Fan 90k": the same item twice on one side is one offer
     merged: list[dict] = []
@@ -7139,13 +7773,13 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
 
 
 def update_offers(con, force: bool = False) -> int:
-    """Work out the offers of every stored megaphone whose message (or the nicknames)
+    """Work out the offers of every stored megaphone whose message (or the aliases)
     changed since; returns how many megaphones were (re)read.
 
     Reading runs with no lock on the database; only the short write at the end does,
     so the app and the other threads aren't kept waiting ("database is locked")."""
     with _OFFERS_LOCK:                 # one at a time: a second run would redo the same work
-        ver = nickname_version(con)
+        ver = alias_version(con)
         todo = []
         for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
             want = hashlib_md5(f"{OFFERS_VERSION}|{ver}|{kind}|{msg}".encode())
@@ -7153,13 +7787,13 @@ def update_offers(con, force: bool = False) -> int:
                 todo.append((mid, msg, kind, want))
         if not todo:
             return 0
-        nicks = load_nicknames(con)
+        aliases = load_aliases(con)
         results = []
         for mid, msg, kind, want in todo:
             ui_pause()
             rows = []
             # (suggested items for Review are worked out only for the rows it shows)
-            for i, o in enumerate(parse_offers(msg, kind, nicks)):
+            for i, o in enumerate(parse_offers(msg, kind, aliases)):
                 rows.append((mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"],
                              o["note"], None, 0.0))
             results.append((mid, msg, want, rows))
@@ -7180,7 +7814,7 @@ def update_offers(con, force: bool = False) -> int:
 
 
 _OFFERS_LOCK = threading.Lock()
-OFFERS_VERSION = 3          # bump when parse_offers changes: megaphones are read again
+OFFERS_VERSION = 4          # bump when parse_offers changes: megaphones are read again
 
 # While the window is redrawing a big table, background threads doing pure-Python work
 # pause: otherwise every one of the window's thousands of small Tk calls waits for its
@@ -7273,7 +7907,7 @@ class MegaphoneWatch:
     def _work(self, full, channel):
         ui_pause()
         try:
-            region, unit = self.cfg.get("chat_region"), None
+            region, unit = drawn_area(self.cfg, "chat_region"), None
             if not region or is_auto(region, full.size):
                 region = find_chat(full)
                 unit = getattr(find_chat, "unit", None)
@@ -7695,7 +8329,11 @@ class Monitor:
             self.end_session()
 
     def _hide_own_windows(self, full: Image.Image) -> None:
-        """Black out the app's own windows (own_windows) in a screenshot."""
+        """Black out the app's own windows (own_windows) in a screenshot of the desktop.
+        A copy of the game's window alone (GRAB_MODE "window") never shows them, and
+        has its own coordinates: left as it is."""
+        if GRAB_MODE[0] != "screen":
+            return
         ox, oy = LAST_SCREEN_ORIGIN
         for l, t, w, h in self.own_windows():
             x0, y0 = max(0, l - ox), max(0, t - oy)
@@ -7707,7 +8345,7 @@ class Monitor:
         """Shop and map areas for this frame: the calibrated ones, or found
         automatically (re-located only when the cached spot stops looking like
         a store, e.g. you closed it or moved the game window)."""
-        shop_r, map_r = self.cfg.get("region"), self.cfg.get("map_region")
+        shop_r, map_r = drawn_area(self.cfg, "region"), drawn_area(self.cfg, "map_region")
         if is_auto(shop_r, full.size):
             if not (self.layout and is_store_window(crop(full, self.layout.store))):
                 found = locate_store(full)
@@ -7774,7 +8412,7 @@ class Monitor:
                 if full is None:
                     continue
                 try:
-                    area = self.cfg.get("map_region")
+                    area = drawn_area(self.cfg, "map_region")
                     if is_auto(area, full.size):
                         # where the minimap is: looked for again when it can't be read there
                         spot = spot or find_minimap(full, self.layout.store if self.layout else None)
