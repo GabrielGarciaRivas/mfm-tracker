@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import sqlite3
+import sys
 import tkinter as tk
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
@@ -152,6 +153,30 @@ NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med"
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
            "mprice", "msell", "mbuy"}
 CENTER = {"channel", "best_channel"}
+
+
+def monitor_work_area(widget) -> tuple | None:
+    """(left, top, right, bottom) of the monitor the widget is on, without the
+    taskbar. Windows only; None elsewhere (one screen is assumed there)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+        u = ctypes.windll.user32
+        mon = u.MonitorFromWindow(widget.winfo_id(), 2)      # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not u.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return None
+        r = info.rcWork
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
 
 
 def shop_text(shop, seller) -> str:
@@ -775,6 +800,35 @@ class App:
         self.channel_box.bind("<Button-1>", self._channel_box_click)
         for key in ("<Down>", "<Alt-Down>", "<F4>"):
             self.channel_box.bind(key, lambda e: (self.open_channel_picker(), "break")[1])
+        # up / down chevrons beside the box: the next or previous channel, wrapping
+        # round at the ends (drawn, so they're as tall as the box and crisp)
+        bg = style.lookup("TFrame", "background") or self.root.cget("background")
+        chev = tk.Canvas(bar, width=18, height=1, highlightthickness=0, bd=0, background=bg,
+                         cursor="hand2", takefocus=0)   # height=1: stretched to the bar's, not the bar to it
+        chev.pack(side="left", fill="y", padx=(1, 0))
+        self.chevrons = chev
+
+        def draw(hover=None):
+            chev.delete("all")
+            h, w = chev.winfo_height(), chev.winfo_width()
+            mid, half = h / 2, 4
+            for sign, cy in ((+1, mid - 6), (-1, mid + 6)):   # ^ above, v below
+                col = "#000" if hover == sign else "#555"
+                chev.create_line(w / 2 - half, cy + sign * 2, w / 2, cy - sign * 2,
+                                 w / 2 + half, cy + sign * 2, width=2, fill=col,
+                                 capstyle="round", joinstyle="round")
+        which = lambda e: +1 if e.y < chev.winfo_height() / 2 else -1
+        chev.bind("<Configure>", lambda e: draw())
+        chev.bind("<Motion>", lambda e: draw(which(e)))
+        chev.bind("<Leave>", lambda e: draw())
+        chev.bind("<Button-1>", lambda e: self.step_channel(which(e)))
+        tip("Next / previous channel. The mouse wheel over the box and the Up key do the same.",
+            chev)
+        for w in (self.channel_box, chev):
+            w.bind("<MouseWheel>", lambda e: self.step_channel(1 if e.delta > 0 else -1))
+            w.bind("<Button-4>", lambda e: self.step_channel(+1))    # X11 wheel
+            w.bind("<Button-5>", lambda e: self.step_channel(-1))
+        self.channel_box.bind("<Up>", lambda e: (self.step_channel(+1), "break")[1])
         # the map you're on, read off the minimap while monitoring
         self.map_label = ttk.Label(bar, text="Map: —")
         self.map_label.pack(side="left", padx=(14, 0))
@@ -944,6 +998,21 @@ class App:
         """The channel in the box (1-100), as saved with listings; None when empty."""
         ch = mfm.parse_channel(self.channel_var.get())
         return ch if ch and ch.isdigit() else None
+
+    def step_channel(self, delta: int):
+        """The next (+1) or previous (-1) channel from the chevrons beside the Channel
+        box, the mouse wheel over it, or Up: wraps round at 1 and the channel count."""
+        count = max(1, min(100, int(self.cfg.get("channel_count", 20) or 20)))
+        cur = self.channel()
+        if cur is None:
+            ch = 1 if delta > 0 else count
+        else:
+            ch = (int(cur) - 1 + delta) % max(count, int(cur)) + 1
+        self.channel_var.set(str(ch))
+        # you're about to change channel in the game to match: don't ask which
+        # channel it is when the game's Change Channel window closes
+        self.chan_watch.quiet(15)
+        self._set_status(f"Channel set to {mfm.channel_label(str(ch))}.")
 
     def next_shop(self):
         """Manually split visits, for when you hop shops without the window closing."""
@@ -1219,8 +1288,11 @@ class App:
         shop = (" · ".join(x for x in (p.get("title") and f"Shop: {p['title']}",
                                         p.get("seller") and f"Player: {p['seller']}") if x)
                 or p["shop"])
+        channel = p.get("channel") or self.channel()
         self.shop_title.config(text="  ·  ".join(x for x in (
-            shop, p["map"], f"opened {p['started']:%H:%M:%S}") if x))
+            shop, p["map"] and f"Map: {p['map']}",
+            channel and f"Channel: {mfm.channel_label(channel)}",
+            f"opened {p['started']:%H:%M:%S}") if x))
         self.last_map = p["map"] or self.last_map
         self._show_map()
         self._update_stats(None, None)
@@ -1249,7 +1321,7 @@ class App:
             self.live.item(iid, tags=tuple(self.live.item(iid, "tags")) + ("dupe",))
         self.scopes[(str(self.live), iid)] = {"price": s.price, "qty": s.qty, "label": s.shop,
                                               "title": s.title, "seller": s.seller, "map": s.map,
-                                              "channel": s.channel}
+                                              "channel": s.channel, "id": s.id, "item": s.item}
         self.live.yview_moveto(1.0)
         if s.status != "seen":
             self.logged_today += 1
@@ -1387,7 +1459,7 @@ class App:
         line = f"{datetime.now():%H:%M:%S}  {title}\n{msg}" + (f"\n→ {hint}" if hint else "")
         win = getattr(self, "_error_win", None)
         if win is None or not win.winfo_exists():
-            win = tk.Toplevel(self.root)
+            win = self.window()
             win.title("Free Market Tracker: error")
             win.transient(self.root)
             win.geometry("620x300")
@@ -1495,6 +1567,10 @@ class App:
                 con = mfm.db()
                 n, path = mfm.apply_retention(con, cfg)
                 con.close()
+                try:
+                    mfm.purge_shots(float(cfg.get("shot_days", 7)))
+                except Exception as e:
+                    self.events.put(("error", f"couldn't clean up old shop photos: {e}"))
                 if n or not quiet:
                     self.events.put(("status", (
                         f"Removed {mfm.plural(n, 'listing')} not seen for "
@@ -1665,7 +1741,8 @@ class App:
                     diff_text(None if pct == 999 else pct),
                     v, "sold" if sold else "for sale", notes, *where, mfm.local_time(ts)))
                 self.scopes[(tree_id, iid)] = {"price": price, "qty": qty, "shop": shop, "seller": seller,
-                                               "title": shop or "", "map": where[2], "channel": where[3]}
+                                               "title": shop or "", "map": where[2], "channel": where[3],
+                                               "item": item, "ts": ts}
             if end < len(rows):
                 self._deals_job = self.root.after(1, lambda: put(end))
             else:
@@ -3012,7 +3089,7 @@ class App:
                                    "Allow Free Market Tracker in System Settings > Privacy & Security > "
                                    "Screen Recording, then quit and reopen the app.")
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         self.inv_scan = win
         win.title("Auto Detect (beta)")
         win.geometry("920x660")
@@ -3165,7 +3242,7 @@ class App:
 
     def _choose_item(self, parent, title, cur=""):
         """A small dialog to pick an item by name (with suggestions). Returns the name or None."""
-        dlg = tk.Toplevel(parent)
+        dlg = self.window(parent)
         dlg.title(title)
         dlg.transient(parent)
         dlg.resizable(False, False)
@@ -3772,7 +3849,7 @@ class App:
         if getattr(self, "_alias_win", None) and self._alias_win.winfo_exists():
             self._alias_win.lift()
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         self._alias_win = win
         win.title("Aliases")
         win.geometry("860x560")
@@ -4249,6 +4326,8 @@ class App:
             menu.add_command(label="Match to database item", state=single,
                              command=lambda: self.match_dialog(tree))
             menu.add_command(label="Show history", state=single, command=lambda: self.open_history(tree))
+            menu.add_command(label="Show shop photo", command=lambda: self.show_shot_for(tree),
+                             state="normal" if one and self._listing_of(tree, rows[0]) else "disabled")
             menu.add_command(label="Look up on meowdb", state=single, command=lambda: self.open_meowdb(tree))
             menu.add_separator()
             menu.add_command(label="Watch this item" if len(items) == 1 else f"Watch these {len(items)} items",
@@ -4296,7 +4375,7 @@ class App:
             messagebox.showinfo("No item list", "Download the item list first "
                                 "(Settings → Game data → Update).")
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Match to database item")
         win.transient(self.root)
         win.geometry("540x520")
@@ -4891,7 +4970,7 @@ class App:
 
     def export_prices(self):
         """Save prices as CSV: one row per item (re-importable) or every sighting."""
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Export prices")
         win.transient(self.root)
         win.resizable(False, False)
@@ -4949,7 +5028,7 @@ class App:
         messagebox.showinfo("Pricing data cleared", f"Done. A backup was saved to:\n{backup}", parent=parent)
 
     def reset_personal(self, parent):
-        win = tk.Toplevel(parent)
+        win = self.window(parent)
         win.title("Reset personal settings")
         win.transient(parent)
         win.resizable(False, False)
@@ -5226,12 +5305,13 @@ class App:
         return box
 
     def settings(self):
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Settings")
         win.transient(self.root)
         win.resizable(False, False)
         fields = [
             ("interval_seconds", "Capture every (seconds)", 0.05, 10, 0.05),
+            ("ocr_workers", "Frames read at once", 1, 8, 1),
             ("confirm_frames", "Frames to confirm a row", 1, 5, 1),
             ("unmatched_extra_frames", "Extra reads for names not in database", 0, 5, 1),
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
@@ -5248,11 +5328,17 @@ class App:
             "interval_seconds": "How often the screen is captured. The OCR reads the captures "
                                 "at its own pace, so nothing is lost when you scroll fast. "
                                 "Higher uses less CPU.",
+            "ocr_workers": "While you scroll, this many captured frames are read at the same time, "
+                           "so the reading keeps up. Each one uses a processor core. 1 reads them one "
+                           "by one.",
             "confirm_frames": "How many matching reads a listing needs before it's saved.",
             "unmatched_extra_frames": "Extra reads for names not in the item list, before they're "
                                       "saved.",
             "close_frames": "Reads without a shop before the shop counts as closed.",
             "history_days": "How many days of sightings make the market price.",
+            "shot_days": "The shop window as it was on screen when a row was logged is kept this "
+                         "long (right-click a listing → Show shop photo), to check a misread name. "
+                         "About 20 KB each, a few per shop visit. 0 takes none.",
             "upscale": "Raise it if small text is misread. Higher is slower.",
             "min_sightings": "Sightings an item needs before it gets a market price, DEAL / HIGH "
                              "and outliers.",
@@ -5281,6 +5367,14 @@ class App:
         sk.pack(side="left", padx=6)
         ttk.Label(r1, text="days").pack(side="left")
         tip("Listings not seen for this many days are cleaned up.", lk, sk)
+        ttk.Label(r1, text="· shop photos").pack(side="left", padx=(10, 0))
+        shots_var = tk.StringVar(value=str(self.cfg.get("shot_days", 7)))
+        ss = ttk.Spinbox(r1, from_=0, to=90, increment=1, width=4, textvariable=shots_var)
+        ss.pack(side="left", padx=4)
+        ttk.Label(r1, text="days").pack(side="left")
+        tip("The shop window as it was on screen when a row was logged is kept this long "
+            "(right-click a listing → Show shop photo), to check a misread name. About 20 KB "
+            "each, a few per shop visit. 0 takes none.", ss)
         mode_var = tk.StringVar(value=self.cfg.get("retention", "archive"))
         rm = ttk.Frame(ret)
         rm.pack(anchor="w", pady=(0, 2))
@@ -5317,8 +5411,12 @@ class App:
                 days = max(1, int(float(keep_var.get())))
             except ValueError:
                 days = 30
+            try:
+                shots = max(0, min(90, int(float(shots_var.get()))))
+            except ValueError:
+                shots = 7
             return {"keep_days": days, "retention": mode_var.get(),
-                    "archive_dir": arch_var.get().strip() or None}
+                    "archive_dir": arch_var.get().strip() or None, "shot_days": shots}
 
         def show_size():
             size = mfm.db_size()
@@ -5326,7 +5424,8 @@ class App:
                 old = mfm.old_listing_count(self.con, ret_cfg()["keep_days"])
             except Exception:
                 old = 0
-            size_lbl.config(text=f"Database {size / 1048576:,.1f} MB  ·  {old:,} to clean up",
+            size_lbl.config(text=f"Database {size / 1048576:,.1f} MB  ·  {old:,} to clean up  ·  "
+                                 f"shop photos {mfm.shots_size() / 1048576:,.0f} MB",
                             foreground="#c62828" if size > mfm.DB_WARN_BYTES else "#666")
 
         def clean_now():
@@ -5435,7 +5534,7 @@ class App:
     def about(self, parent=None):
         import webbrowser
 
-        win = tk.Toplevel(parent or self.root)
+        win = self.window(parent)
         win.title("About Free Market Tracker")
         win.transient(parent or self.root)
         win.geometry("700x620")
@@ -5537,7 +5636,7 @@ class App:
 
     def _megaphone_history(self, item):
         """An item only seen in megaphones (no shop listings yet)."""
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title(item)
         win.geometry("1000x480")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
@@ -5549,6 +5648,104 @@ class App:
         frame, _ = self._megaphone_offers_table(win, item)
         frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
 
+    def window(self, parent=None) -> tk.Toplevel:
+        """A new window over its parent, on the same screen: with two monitors the
+        system would open it on the main one, wherever the app is. It's placed
+        beside the parent's corner at once (so it never appears elsewhere) and
+        centred on the parent once its size is known, kept within that monitor."""
+        parent = parent or self.root
+        win = tk.Toplevel(parent)
+        win.geometry(f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 60}")
+
+        def centre():
+            try:
+                win.update_idletasks()
+                w, h = win.winfo_width(), win.winfo_height()
+                if w <= 1 or h <= 1:
+                    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+                x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
+                y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+                # kept on the monitor (its title bar above all): Windows knows each
+                # monitor's area; elsewhere the screen is used
+                area = monitor_work_area(parent) or (0, 0, parent.winfo_screenwidth(), parent.winfo_screenheight())
+                x = max(area[0], min(x, area[2] - w))
+                y = max(area[1], min(y, area[3] - h))
+                win.geometry(f"+{x}+{y}")
+            except tk.TclError:
+                pass                 # closed before it was placed
+        win.after_idle(centre)
+        return win
+
+    def _listing_of(self, tree, iid) -> int | None:
+        """The price-database row behind a Live or Deals table row, if it can be found."""
+        sc = self.scopes.get((str(tree), iid))
+        if not sc:
+            return None
+        if sc.get("id"):
+            return sc["id"]
+        if "item" not in sc:
+            return None
+        r = self.con.execute(
+            "SELECT id FROM listings WHERE item = ? AND price = ? AND COALESCE(shop, '') = ? "
+            "AND COALESCE(seller, '') = ? ORDER BY COALESCE(sold_ts, last_seen, ts) DESC LIMIT 1",
+            (sc["item"], sc["price"], sc.get("title") or sc.get("shop") or "", sc.get("seller") or "")).fetchone()
+        return r[0] if r else None
+
+    def show_shot_for(self, tree):
+        sel = tree.selection()
+        lid = self._listing_of(tree, sel[0]) if len(sel) == 1 else None
+        if lid:
+            self.show_shot(lid)
+
+    def show_shot(self, lid: int, parent=None):
+        """The shop window as it was on screen when this listing was logged: to check
+        a shop, player or item name the OCR may have got wrong."""
+        import io
+
+        parent = parent or self.root
+        r = self.con.execute("SELECT session, ts, last_seen, sold_ts, item, price, qty, shop, seller, map, "
+                             "channel FROM listings WHERE id = ?", (lid,)).fetchone()
+        if not r:
+            return
+        session, ts, last_seen, sold_ts, item, price, qty, shop, seller, mp, channel = r
+        data = mfm.load_shot(session, ts, last_seen, sold_ts)
+        if not data:
+            days = self.cfg.get("shot_days", 7)
+            messagebox.showinfo("Shop photo", "There's no photo of this sighting.\n\n"
+                                + (f"Shop photos are kept for {mfm.plural(days, 'day')} (Settings)."
+                                   if days else "Shop photos are off: set Keep shop photos in Settings."),
+                                parent=parent)
+            return
+        img = Image.open(io.BytesIO(data))
+        win = self.window(parent)
+        win.title(f"{item} — {shop or 'shop'} ({seller or 'player'})")
+        win.transient(parent)
+        ttk.Label(win, padding=(12, 10, 12, 4), style="Bold.TLabel", text=(
+            f"{item}   ·   {mfm.fmt(price)}" + (f" × {qty}" if qty and qty > 1 else ""))).pack(anchor="w")
+        # what the OCR read, as "Label: value" pairs with the labels in bold
+        row = ttk.Frame(win, padding=(12, 0, 12, 6))
+        row.pack(anchor="w")
+        for label, value in (("Shop:", shop or "—"), ("Player:", seller or "—"), ("Map:", mp or "—"),
+                             ("Channel:", mfm.channel_label(channel) if channel else "—"),
+                             ("Time:", mfm.local_time(ts))):
+            ttk.Label(row, text=label, style="Bold.TLabel").pack(side="left", padx=(0, 4))
+            ttk.Label(row, text=value, foreground="#555").pack(side="left", padx=(0, 14))
+        ttk.Label(win, padding=(12, 0, 12, 6), foreground="#777", text=(
+            "What the OCR read is above; the screen it read from is below. Click the picture to zoom.")
+            ).pack(anchor="w")
+        pic = ttk.Label(win, cursor="hand2")
+        pic.pack(padx=12, pady=(0, 12))
+        zoom = [1]
+
+        def show():
+            w, h = img.size
+            scaled = img if zoom[0] == 1 else img.resize((w * zoom[0], h * zoom[0]), Image.NEAREST)
+            pic.photo = ImageTk.PhotoImage(scaled)
+            pic.config(image=pic.photo)
+        pic.bind("<Button-1>", lambda e: (zoom.__setitem__(0, 1 if zoom[0] == 2 else 2), show()))
+        win.bind("<Escape>", lambda e: win.destroy())
+        show()
+
     def open_history(self, tree):
         sel = tree.selection()
         if not sel:
@@ -5559,7 +5756,7 @@ class App:
                 return self._megaphone_history(item)
             messagebox.showinfo(item, f"'{item}' hasn't been seen in any shop yet.", parent=self.root)
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title(item)
         win.geometry("1160x660")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
@@ -5578,7 +5775,8 @@ class App:
         c = tk.Canvas(win, background="white", highlightthickness=0, height=260)
         c.pack(fill="both", expand=True, padx=12, pady=10)
         hint = ttk.Label(win, padding=(12, 0), justify="left", text=(
-            "Right-click a sighting to change its price or channel, add a note, watch it, or delete it. "
+            "Right-click a sighting to see the shop as it was on screen, change its price or channel, "
+            "add a note, watch it, or delete it. "
             + ("Option+click" if MAC else "Alt+click") + " selects several."))
         hint.pack(anchor="w", fill="x")
         hint.bind("<Configure>", lambda e: hint.config(wraplength=max(e.width - 24, 200)))
@@ -5727,6 +5925,8 @@ class App:
                                                                    f"Note for {n} listings"),
                              command=edit_note)
             menu.add_command(label="Watch this listing", command=watch_this,
+                             state="normal" if n == 1 else "disabled")
+            menu.add_command(label="Show shop photo", command=lambda: self.show_shot(picked()[0], parent=win),
                              state="normal" if n == 1 else "disabled")
             menu.add_separator()
             menu.add_command(label="Delete listing" if n == 1 else f"Delete {n} listings", command=delete)

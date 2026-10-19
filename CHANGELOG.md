@@ -17,6 +17,39 @@
   megaphones and the Change Channel window are read as fast as on X11 or Windows, and the
   channel is noticed when you're not monitoring too. A screenshot tool is only used when
   the game window can't be read this way.
+- **Reading is about twice as fast, and keeps up with scrolling better.** Tesseract is
+  now used through its library when it's next to the program (it is in the packaged
+  app on Windows): the models are loaded once instead of on every read, which took
+  ~200 ms a time with the app's own model. A shop frame reads in ~360 ms instead of
+  ~770, a one-row re-read in ~60 instead of ~230, with the same words. And while you
+  scroll, the frames waiting behind the one being read are read ahead at the same time
+  (**Frames read at once** in Settings, 3 by default): a recorded sweep of 180 frames
+  took 27 s instead of 44, with the same rows. `"tesseract_library": false` in the
+  settings file goes back to running the program. Engines are shared from a small pool
+  (one reader at a time each), not made per thread, and nothing is closed at exit: after
+  a fault inside the library, closing hung the process for hours after its window was
+  gone. A fault is logged with the thread, image size and settings, and the program
+  takes over.
+
+### New
+- **Windows open on the screen the app is on.** An item's history, a shop photo,
+  Settings, the error window and the other windows now open over the main window,
+  centred on it. With two monitors they used to open on the main monitor even when
+  the app was on the other one.
+- **Shop photos:** the shop window as it was on screen when a row was logged is kept,
+  so a shop, player or item name the OCR got wrong can be checked against the real
+  thing. Right-click a sighting in an item's history (or a row in Live or Deals) →
+  **Show shop photo**; click the picture to zoom. A visit keeps its first frame and
+  the ones where more rows appeared while scrolling, up to 4, about 20 KB each, in
+  `cache/shots.db`. They're deleted after 7 days (**Keep shop photos** in Settings;
+  0 turns them off). Settings shows how much space they take.
+- **Channel chevrons:** two small up / down arrows beside the Channel box step to the
+  next or previous channel (wrapping round at the ends). The mouse wheel over the box
+  and the Up key do the same. Stepping doesn't trigger the "which channel are you on?"
+  prompt when the game's Change Channel window then closes.
+- Each captured frame remembers the channel it was captured on, and listings are logged
+  with that channel and that moment: frames still waiting to be read when you change
+  channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
 
 ### Fixed
 - **Wayland:** "CalledProcessError: Command '['grim', ...]' returned non-zero exit status 1"
@@ -24,10 +57,25 @@
   Hyprland and other wlroots desktops. The app now uses your desktop's own tool first
   (spectacle on KDE, gnome-screenshot on GNOME), moves on to the next tool if one fails,
   and says which tool to install if none works.
+- **Free Market room read as "Free Market Entrance":** the room number on the minimap
+  was sometimes read as a look-alike ("<7>" as "</>"), and a name without a number was
+  then matched to the Entrance, so a whole visit to room 7 was logged there. Look-alikes
+  inside the brackets are now read as the digits they are ("/" → 7, "l" → 1, "O" → 0), a
+  name whose number still can't be read isn't trusted, and the map is read again on the
+  visit's next frames.
+- **No captured frame is thrown away any more.** The capture queue used to hold at most
+  150 frames and, when the reading fell that far behind, the oldest was dropped for
+  each new one — so *Frames waiting* sat at 150 and rows seen only in the dropped frames
+  were lost. The queue now grows as needed; frames where nothing moved share one image,
+  so it only takes memory while you scroll. Press Stop twice to discard what's queued.
+- A row whose name isn't in the item list, once logged or found to be a misread of a
+  logged row, no longer forces the full OCR on every frame of the visit while the screen
+  stands still. That was the usual reason the reading fell behind without any scrolling.
 
 ### Server 2.6.0
 - Nicknames are called aliases: `/api/v1/aliases` (the old `/api/v1/nicknames` still works
   for older apps), and `mfm-server purge aliases`. The stored ones are kept.
+
 
 ## 2610.18.005 — 2026-10-18
 
