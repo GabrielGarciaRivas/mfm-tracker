@@ -1,5 +1,28 @@
 # Changelog
 
+## 2610.19.004 — 2026-10-19
+
+### Fixed
+- **"Frames waiting" climbed into the tens of thousands with a shop left open.** The
+  screen is copied every Capture interval, and a copy that hadn't changed was still
+  queued for reading, even while the reader was behind. Now, while frames are waiting,
+  only a few copies of an unchanged screen are queued (enough to confirm rows and a
+  close), so a shop sitting open no longer builds a backlog.
+- **Reading was slow for a whole session.** The faster built-in Tesseract library was
+  looked for once, sometimes before the Tesseract path was known (the change-channel
+  check reads first), and the session then ran the slower program, about 200 ms more a
+  read. It's looked for again once the path is set. (Thanks, GabrielGarciaRivas.)
+- **No megaphone was saved when the chat shows no times.** A line without a time in
+  front is now read as "Player : message" and gets the time it was seen. The red bar
+  still suggests turning chat timestamps on, since megaphones then get the time they
+  were sent. (Thanks, GabrielGarciaRivas.)
+- The channel badge was missed on teal and yellow megaphones, so the badge's letters
+  ended up in the message and the current channel was used. "S>" / "B>" read as "5>" /
+  "8>" now count as selling / buying. (Thanks, GabrielGarciaRivas.)
+- **A shop photo open in the app was read as a shop open in the game** and its rows
+  logged again. When the whole screen is read (the game's window can't be copied on its
+  own), the app's own windows are now painted over first. (Thanks, GabrielGarciaRivas.)
+
 ## 2610.19.003 — 2026-10-19
 
 ### New

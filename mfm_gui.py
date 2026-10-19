@@ -721,6 +721,7 @@ class App:
         self.backlog = 0        # captured frames waiting for OCR (0 = reading live)
         self._behind = False    # "the OCR is behind" is showing in the status bar
         self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
+        self._own_rects: list = []   # where the app's windows are on screen, for the monitor (see own_windows)
         self.chan_popup = None
 
         root.title("Free Market Tracker")
@@ -968,6 +969,7 @@ class App:
         self.monitor = mfm.Monitor(self.cfg, lambda k, p: self.events.put((k, p)),
                                    self.channel())
         self.monitor.chan_watch = self.chan_watch
+        self.monitor.own_windows = lambda: self._own_rects
         self.worker = threading.Thread(target=self.monitor.run, args=(self.stop_event,), daemon=True)
         self.worker.start()
         self.start_btn.config(text="Stop monitoring")
@@ -1286,7 +1288,26 @@ class App:
                 getattr(self, f"on_{kind.lstrip('_')}")(p)
         except queue.Empty:
             pass
+        self._own_rects = self.own_windows()
         self.root.after(100, self.drain_events)
+
+    def own_windows(self) -> list:
+        """Where this app's windows are on screen, (left, top, width, height) each:
+        the monitor paints them over before looking for a store, or a shop photo
+        open here (a store window at its real size) is read as a shop in the game."""
+        rects = []
+
+        def walk(w):
+            try:
+                if w.winfo_viewable():
+                    rects.append((w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height()))
+                for c in w.winfo_children():
+                    if isinstance(c, tk.Toplevel):
+                        walk(c)
+            except tk.TclError:
+                pass
+        walk(self.root)
+        return rects
 
     def on_session(self, p):
         self.live.delete(*self.live.get_children())
@@ -1422,8 +1443,8 @@ class App:
             self.hint_bar.pack_forget()
 
     def on_chat_hint(self, no_time):
-        self._hint("chat_time", "Megaphones can't be read: turn on chat timestamps in the game's settings, "
-                                "so each chat line starts with its time, like [13:45]." if no_time else None)
+        self._hint("chat_time", "Chat timestamps are off, so megaphones get the time they were read, not sent. "
+                                "Turn them on in the game's settings (each line then starts like [13:45])." if no_time else None)
 
     def on_map_hint(self, no_name):
         self._hint("map_name", "The map name can't be read: switch the game's minimap to the view that shows "

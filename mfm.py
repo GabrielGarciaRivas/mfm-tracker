@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.003"
+VERSION = "2610.19.004"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -450,6 +450,7 @@ def session_type() -> str:
 
 
 LAST_SCREEN_SIZE: list[int] = []   # pixels of the latest screenshot (a Retina Mac has 2 per point)
+LAST_SCREEN_ORIGIN: list[int] = [0, 0]   # where its pixel (0, 0) is on screen (a monitor left of the main one is at x < 0)
 
 
 CAPTURE_CFG: dict = {}             # the settings (capture_window, game_window_title); set by the app
@@ -487,6 +488,7 @@ def grab_full_screen() -> Image.Image:
             shot = sct.grab(mon)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             LAST_SCREEN_SIZE[:] = img.size
+            LAST_SCREEN_ORIGIN[:] = [mon["left"], mon["top"]]
             return img
 
     # Wayland, with the game's window not readable on its own: X11 grabbers only see
@@ -523,6 +525,7 @@ def grab_full_screen() -> Image.Image:
             continue
         _GRAB_FAILED.pop(name, None)
         LAST_SCREEN_SIZE[:] = img.size
+        LAST_SCREEN_ORIGIN[:] = [0, 0]
         return img
     if errors:
         raise RuntimeError("Couldn't take a screenshot on Wayland (" + "; ".join(errors) + "). On KDE install "
@@ -1239,17 +1242,29 @@ class _TessLib:
     """ctypes bindings for the handful of TessBaseAPI functions used."""
     lib = None
     path = None
-    tried = False
+    tried = None            # the Tesseract program the library was last looked for next to
     lock = threading.Lock()
 
     @classmethod
     def load(cls):
+        """The library, loaded on first use; looked for again whenever the Tesseract
+        program in use changes. A read before setup_tesseract() had run (the GUI's
+        channel-dialog check, before any shop is read) used to find no program, so
+        no library, and that stood for the rest of the session: every read ran the
+        program, and frames piled up behind the reading."""
+        import pytesseract
+
         with cls.lock:
-            if cls.tried:
+            if cls.lib is not None:
                 return cls.lib
-            cls.tried = True
+            exe = pytesseract.pytesseract.tesseract_cmd
+            if cls.tried == exe:
+                return None
+            cls.tried = exe
             path = _tesseract_library_path()
             if not path:
+                if Path(exe).is_absolute() or shutil.which(exe):
+                    app_log(f"tesseract library not found next to the program ({exe}): using the program")
                 return None
             try:
                 import ctypes
@@ -3093,6 +3108,8 @@ class ChannelWatch:
                 ch = self._read_memo[key]
             else:
                 try:
+                    if self.cfg:
+                        setup_tesseract(self.cfg)   # this may be the first read of the session
                     ch = read_dialog_channel(full, pair)
                 except Exception:
                     ch = None
@@ -6710,8 +6727,11 @@ def find_chat(full: Image.Image) -> list | None:
 
 
 def chat_badges(img: Image.Image) -> list[tuple]:
-    """Channel badges in a crop of the chat: white boxes with red text, top to bottom."""
-    white = _rgb_mask(img, (245, 245, 245), (255, 255, 255))
+    """Channel badges in a crop of the chat: white boxes with red text, top to bottom.
+    The box is translucent, so it takes a tint from the line it's on (over a teal
+    line it's about (231, 249, 246), over a yellow one (248, 240, 216)): white-ish is
+    enough, the red text inside tells a badge from anything else that light."""
+    white = _rgb_mask(img, (205, 205, 205), (255, 255, 255))
     rpx = _rgb_mask(img, (170, 0, 0), (255, 90, 90)).load()
     out = []
     for b in _blobs(white, min_w=16, min_h=6):
@@ -6837,16 +6857,22 @@ _DIGITISH = str.maketrans({"/": "7", "o": "0", "O": "0", "D": "0", "l": "1", "I"
                            "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2"})
 
 
-def parse_chat_line(text: str) -> tuple[str, str, str] | None:
-    """'[04:01] Player : message' -> ("04:01", "Player", "message")."""
+def parse_chat_line(text: str) -> tuple[str | None, str, str] | None:
+    """'[04:01] Player : message' -> ("04:01", "Player", "message"). A chat without
+    times (the game can show them or not) gives 'Player : message' -> (None, ...)."""
     # (the trained OCR model sometimes reads a 7 as "/", or a stray digit before the "]")
     m = re.search(r"([0-9oOlIDSZz|/]{2})\s*[:;.\-,]\s*([0-9oOlIDSZz|/]{2})[0-9/]?\s*[\]\)}|lI1J]?\s*(.+)$", text)
-    if not m:
-        return None
-    hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
-    if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
-        return None
-    rest = m.group(3)
+    if m:
+        hh, mm = (g.translate(_DIGITISH) for g in m.group(1, 2))
+        if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
+            return None
+        time, rest = f"{hh}:{mm}", m.group(3)
+    else:
+        # no time: a player name (letters and digits, one word) then the ':'
+        m = re.match(r"\s*([A-Za-z0-9][\w().'\-]{1,15})\s*:(.+)$", text)
+        if not m:
+            return None
+        time, rest = None, m.group(1) + ":" + m.group(2)
     if ":" not in rest:
         return None
     name, msg = rest.split(":", 1)
@@ -6856,7 +6882,7 @@ def parse_chat_line(text: str) -> tuple[str, str, str] | None:
     name = re.sub(r"[^\w().'\-]+", "", "".join(name.split()))
     if name.endswith(")") and "(" not in name:
         name = name[:-1]
-    return f"{hh}:{mm}", name, msg.strip()
+    return time, name, msg.strip()
 
 
 def clean_megaphone(msg: str) -> str:
@@ -6905,8 +6931,9 @@ def fix_megaphone_words(msg: str, con=None) -> str:
 
 
 # ("S=" and "B=" are how the chat font's ">" is sometimes read)
-SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|S=(?=\S)|C\s?/\s?O\b|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
-BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
+# "S>" and "B>" as the OCR sometimes reads them too: the S as a 5, the B as an 8
+SELL_TERMS = re.compile(r"(?<![A-Za-z])(S\s?>|(?<![0-9])5\s?>|S=(?=\S)|C\s?/\s?O\b|WTS\b|sell(?:s|ing)?\b|have\b|trad(?:e|es|ing)\b)", re.I)
+BUY_TERMS = re.compile(r"(?<![A-Za-z])(B\s?>|(?<![0-9])8\s?>|B=(?=\S)|WTB\b|buy(?:s|ing)?\b|looking\s+for\b|LF\b|need\b|want\b)",
                        re.I)
 
 
@@ -7125,14 +7152,14 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
                           + str((b[0] - lx0) if b else -1).encode())
         if key not in memo:
             memo[key] = _read_megaphone_line(row, b, lx0, lx1, u, [e for _, e in extra], chat, con)
-        if memo[key] and memo[key].get("no_time"):
-            if stats is not None:
-                stats["no_time"] = stats.get("no_time", 0) + 1
-            continue
         if memo[key]:
-            if stats is not None:
-                stats["timed"] = stats.get("timed", 0) + 1
             m = dict(memo[key])
+            # megaphones without "[hh:mm]" at the start: the game's chat timestamps are off
+            if stats is not None:
+                k = "no_time" if m.pop("untimed", False) else "timed"
+                stats[k] = stats.get(k, 0) + 1
+            else:
+                m.pop("untimed", None)
             if not m["channel"]:
                 m["channel"] = channel
             m["color"] = "#%02x%02x%02x" % (MEGAPHONE_COLORS[ln["color"]] if ln["color"] else ln["bg"])
@@ -7171,11 +7198,13 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
         confs = [c for w, x, c in words if c >= 0]
         parsed = parse_chat_line(_drop_junk([(w, c) for w, x, c in words]))
     if not parsed:
-        # no "[hh:mm]" at the start: the game's chat timestamps are probably off
-        head = " ".join(w for w, x, c in words)[:14]
-        return None if re.search(r"\d\s*[:;.]\s*\d", head) else {"no_time": True}
+        return None
     hhmm, name, message = parsed
+    # the time: read again from the picture; a chat without times (the game's chat
+    # timestamps are off) gets the time now
     hhmm = _read_chat_time(left, u * 3) or hhmm
+    untimed = not hhmm
+    hhmm = hhmm or datetime.now(timezone.utc).strftime("%H:%M")
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
     grp = f"{datetime.now():%Y%m%d}|{hhmm}|{fold(name)}"
@@ -7190,7 +7219,8 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     # how sure the OCR was of this read (0-100): the average of its words
     conf = round(sum(confs) / len(confs), 1) if confs else 0.0
     return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
-            "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf}
+            "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf,
+            "untimed": untimed}
 
 
 # --------------------------------------------------------------------------- OCR training lines
@@ -7927,7 +7957,8 @@ class MegaphoneWatch:
                 got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=channel,
                                       marks=marks, stats=stats)
                 # megaphones without a time at the start, read after read (and none with
-                # one): the game's chat timestamps are off, and megaphones can't be read
+                # one): the game's chat timestamps are off, so megaphones get the time
+                # they were read instead of the time they were sent
                 if stats.get("timed"):
                     self._untimed = 0
                 elif stats.get("no_time", 0) >= 2:
@@ -7986,6 +8017,10 @@ class Monitor:
         self.on_event = on_event or (lambda kind, payload: None)
         self.channel = channel          # the channel now (the GUI's Channel box)
         self.frame_channel = channel    # the channel the frame being read was captured on
+        # the app's own windows, (left, top, width, height) on screen: painted over
+        # before a frame is looked at, or a shop photo open in the app (a store
+        # window at its real size) is found and read as a shop open in the game
+        self.own_windows = lambda: ()
         self._frame = None              # the frame being read, for the shop photo
         self._prefetched: dict = {}     # id(frame) -> (frame, future or None, hash, geom used)
         self._pf = None                 # the entry for the frame in step()
@@ -8337,6 +8372,19 @@ class Monitor:
                 and self._now - self.empty_first >= 0.15 * self.cfg["close_frames"]:
             self.end_session()
 
+    def _hide_own_windows(self, full: Image.Image) -> None:
+        """Black out the app's own windows (own_windows) in a screenshot of the desktop.
+        A copy of the game's window alone (GRAB_MODE "window") never shows them, and
+        has its own coordinates: left as it is."""
+        if GRAB_MODE[0] != "screen":
+            return
+        ox, oy = LAST_SCREEN_ORIGIN
+        for l, t, w, h in self.own_windows():
+            x0, y0 = max(0, l - ox), max(0, t - oy)
+            x1, y1 = min(full.width, l - ox + w), min(full.height, t - oy + h)
+            if x1 > x0 and y1 > y0:
+                full.paste((0, 0, 0), (x0, y0, x1, y1))
+
     def regions_for(self, full: Image.Image) -> tuple[list | None, list | None]:
         """Shop and map areas for this frame: the calibrated ones, or found
         automatically (re-located only when the cached spot stops looking like
@@ -8440,11 +8488,13 @@ class Monitor:
         threading.Thread(target=map_watch, daemon=True, name="mfm-map").start()
 
         def capture() -> None:
-            last_h, last_imgs = None, None
+            last_h, last_imgs, same = None, None, 0
+            repeats = max(self.cfg["confirm_frames"], self.cfg["close_frames"]) + 2
             while not stop_event.is_set():
                 t0 = time.perf_counter()
                 try:
                     full = grab_full_screen()
+                    self._hide_own_windows(full)
                     latest["full"] = full
                     if self.cfg.get("channel_prompt") and self.chan_watch.due():
                         try:
@@ -8462,26 +8512,33 @@ class Monitor:
                     else:
                         imgs = (crop(full, shop_r), crop(full, map_r))
                     h = frame_hash(imgs[0])
+                    skip = False
                     if last_h is not None and bin(h ^ last_h).count("1") <= 8 and last_imgs:
                         imgs = last_imgs   # nothing moved: requeue the same image object
+                        # ... but while frames are still waiting to be read, only enough
+                        # copies in a row to confirm rows / a close: more add nothing but
+                        # backlog (a shop left open piled up tens of thousands of them)
+                        skip = same >= repeats and frames.qsize() + len(pending) > 0
+                        same += not skip
                     else:
-                        last_h, last_imgs = h, imgs
+                        last_h, last_imgs, same = h, imgs, 1
                     # stamped with the channel now, so a frame still queued when you
                     # change channel is logged under the one it was captured on
-                    frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
+                    if not skip:
+                        frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
                 except Exception as e:
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
                 stop_event.wait(max(wait, 0.02))
 
-        grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
-        grabber.start()
         # frames behind the one being read are OCR'd ahead by a pool (see _prefetch)
         from collections import deque
         from concurrent.futures import ThreadPoolExecutor
+        pending: deque = deque()
+        grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
+        grabber.start()
         workers = int(self.cfg.get("ocr_workers", 3) or 0)
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mfm-ocr") if workers > 1 else None
-        pending: deque = deque()
         lookahead = workers * 2 if pool else 0
         last_backlog = 0
         try:
