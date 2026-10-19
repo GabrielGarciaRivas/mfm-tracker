@@ -7029,6 +7029,10 @@ def _line_look(line: Image.Image) -> tuple[tuple, float]:
     return bg, near / max(1, len(pts))
 
 
+LINE_PAD_BELOW = 0.0   # a chat line is cut this much (of a line's height) below its own
+                       # band, so letters that hang below it (g, y, p, q) aren't cut off
+
+
 def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None, unit: float | None = None,
                     channel: str | None = None, marks: list | None = None, stats: dict | None = None) -> list[dict]:
     """Megaphones in a crop of the chat messages: [{time, player, channel, message,
@@ -7077,7 +7081,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     k = -1
     while True:
         y0 = int(round(phase + k * pitch))
-        y1 = y0 + int(round(pitch))
+        y1 = y0 + int(round(pitch)) + int(round(LINE_PAD_BELOW * pitch))
         k += 1
         if y0 >= H:
             break
