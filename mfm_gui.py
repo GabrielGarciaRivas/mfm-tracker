@@ -662,6 +662,7 @@ class App:
         sys.setswitchinterval(0.001)
         self.root = root
         self.cfg = mfm.load_config()
+        mfm.CAPTURE_CFG = self.cfg              # how the screen is read (game window or whole screen)
         self.con = mfm.db()
         self.events: queue.Queue = queue.Queue()
         self.stop_event: threading.Event | None = None
@@ -966,7 +967,7 @@ class App:
                 # screenshot tool is too slow to run this often); macOS needs Screen
                 # Recording permission first
                 if mfm.session_type() == "wayland":
-                    shot = mfm.xwayland_window_grab(self.cfg)
+                    shot = mfm.game_window_grab(self.cfg) if self.cfg.get("capture_window", True) else None
                     if shot is None:
                         continue
                 elif not mfm.mac_screen_access():
@@ -1431,7 +1432,7 @@ class App:
     def _update_stats(self, rows, ocr_ms):
         on_screen = "—" if rows is None else rows
         speed = "—" if ocr_ms is None else f"{ocr_ms} ms"
-        region, mregion = self.cfg.get("region"), self.cfg.get("map_region")
+        region, mregion = mfm.drawn_area(self.cfg, "region"), mfm.drawn_area(self.cfg, "map_region")
 
         def area(r, auto_r):
             # a saved area covering most of the screen is ignored (auto is used)
@@ -2170,7 +2171,7 @@ class App:
 
     def _mega_status_text(self, found):
         running = bool(self.worker and self.worker.is_alive())
-        manual = self.cfg.get("chat_region")
+        manual = mfm.drawn_area(self.cfg, "chat_region")
         self.mega_status.config(text=(
             "Start monitoring to read megaphones." if not running else
             "Reading the chat area you drew." if manual and found else
@@ -3213,7 +3214,7 @@ class App:
             t0 = time.monotonic()
             try:
                 full = mfm.grab_full_screen()
-                manual = self.cfg.get("inventory_region")
+                manual = mfm.drawn_area(self.cfg, "inventory_region")
                 if manual and not mfm.is_auto(manual, full.size):
                     region, how = manual, "manual area"
                 else:
@@ -4831,6 +4832,8 @@ class App:
                 show()
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
+                    # drawn on the game's window or the whole screen: only used on the same
+                    self.cfg["area_modes"] = {**(self.cfg.get("area_modes") or {}), key: mfm.GRAB_MODE[0]}
                     mfm.save_config(self.cfg)
                     self._update_stats(None, None)
                     self._set_status(f"{AREA_NAMES.get(key, key)} set to {area_text(region)}.")
@@ -4944,6 +4947,7 @@ class App:
                 return
             backup = mfm.reset_settings(parts)
             self.cfg = mfm.load_config()
+            mfm.CAPTURE_CFG = self.cfg
             self.watch = mfm.load_watchlist()
             self.watched_listings = mfm.load_watched_listings()
             self.refresh_watched_listings()
@@ -5108,20 +5112,64 @@ class App:
         box = ttk.LabelFrame(win, text=" Window detection ", padding=(10, 4, 10, 6))
         ttk.Label(box, foreground="#666", wraplength=700, justify="left", text=(
             "Each area is found on the screen by itself. If one isn't found, draw it: the app then "
-            "reads only that part of the screen (coordinates in screen pixels).")).grid(
+            "reads only that part (coordinates in pixels of what's read: the game window, or the whole screen).")).grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
         labels = {}
+        # what's read: the game's window on its own (read even when covered), or the screen
+        cap = ttk.Frame(box)
+        cap.grid(row=100, column=0, columnspan=4, sticky="we", pady=(8, 0))
+        use_win = tk.BooleanVar(value=bool(self.cfg.get("capture_window", True)))
+        title = tk.StringVar(value=self.cfg.get("game_window_title") or "MapleStory")
+        cb = ttk.Checkbutton(cap, text="Read only the game window (still read when other windows cover it)",
+                             variable=use_win)
+        cb.pack(side="left")
+        tip("Reads the game's window on its own, so it's read even behind other windows (not when "
+            "it's minimized). Off: the whole screen is read, and the game must be visible.", cb)
+        ttk.Label(cap, text="Window title:").pack(side="left", padx=(14, 4))
+        te = ttk.Entry(cap, textvariable=title, width=16)
+        te.pack(side="left")
+        tip("The game's window is found by this in its title.", te)
+        now = ttk.Label(box, foreground="#555")
+        now.grid(row=101, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
+        def capture_changed(*_):
+            self.cfg["capture_window"] = use_win.get()
+            self.cfg["game_window_title"] = title.get().strip() or "MapleStory"
+            mfm.save_config(self.cfg)
+            refresh()
+        use_win.trace_add("write", capture_changed)
+        te.bind("<FocusOut>", capture_changed)
+        te.bind("<Return>", capture_changed)
 
         def refresh():
+            mode = mfm.GRAB_MODE[0]
+            try:
+                if not (self.worker and self.worker.is_alive()):
+                    mfm.grab_full_screen()        # (not while monitoring: it's reading already)
+                    mode = mfm.GRAB_MODE[0]
+            except Exception:
+                pass
+            size = "×".join(str(v) for v in mfm.LAST_SCREEN_SIZE) if mfm.LAST_SCREEN_SIZE else ""
+            now.config(text=("Reading now: the game window" + (f" ({size})" if size else "") if mode == "window"
+                             else "Reading now: the whole screen" + (
+                                 " (the game window wasn't found: is the game running, and not minimized?)"
+                                 if self.cfg.get("capture_window", True) else "")))
+            modes = self.cfg.get("area_modes") or {}
             for key, lab in labels.items():
                 r = self.cfg.get(key)
-                lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
-                           foreground="#1565c0" if r else "#555")
+                drawn_on = modes.get(key, "screen")
+                if r and drawn_on != mode:
+                    lab.config(text="Drawn on the " + ("game window" if drawn_on == "window" else "whole screen")
+                               + ": not used now", foreground="#b26a00")
+                else:
+                    lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
+                               foreground="#1565c0" if r else "#555")
 
         def auto(key=None):
             for k, _, _ in AREAS:
                 if key in (None, k):
                     self.cfg[k] = None
+                    (self.cfg.get("area_modes") or {}).pop(k, None)
             mfm.save_config(self.cfg)
             self.found_at = None
             self._update_stats(None, None)
@@ -5132,7 +5180,7 @@ class App:
         for i, (key, name, what) in enumerate(AREAS, start=1):
             n = ttk.Label(box, text=name)
             n.grid(row=i, column=0, sticky="w", pady=2)
-            lab = ttk.Label(box, width=34)
+            lab = ttk.Label(box, width=40)
             lab.grid(row=i, column=1, sticky="w", padx=(10, 6))
             labels[key] = lab
             d = ttk.Button(box, text="Draw area",

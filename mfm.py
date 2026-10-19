@@ -162,6 +162,9 @@ DEFAULT_CONFIG = {
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
+    "capture_window": True,    # read the game's window on its own (still read when it's covered)
+    "game_window_title": "MapleStory",   # ... found by this in its title
+    "area_modes": {},          # each drawn area: drawn on the game's "window" or the whole "screen"
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "ocr_collect": False,      # keep chat line images (and what was read) for OCR training
@@ -429,8 +432,32 @@ def session_type() -> str:
 LAST_SCREEN_SIZE: list[int] = []   # pixels of the latest screenshot (a Retina Mac has 2 per point)
 
 
+CAPTURE_CFG: dict = {}             # the settings (capture_window, game_window_title); set by the app
+GRAB_MODE = ["screen"]             # what the latest capture was: "window" (the game's) or "screen"
+
+
+def drawn_area(cfg: dict, key: str):
+    """An area drawn in Settings → Window detection, if it was drawn on the same kind
+    of capture as now (the game's window, or the whole screen): an area drawn on one
+    is in the wrong place on the other, so it's left out (found automatically)."""
+    r = (cfg or {}).get(key)
+    if not r:
+        return None
+    return r if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0] else None
+
+
 def grab_full_screen() -> Image.Image:
-    """Screenshot of the whole desktop as a PIL image."""
+    """What the app reads: the game's window when it can be copied on its own (so it's
+    read even when other windows cover it; see game_window_grab), else a screenshot of
+    the whole desktop."""
+    cfg = CAPTURE_CFG
+    if cfg.get("capture_window", True):
+        img = game_window_grab(cfg)
+        if img is not None:
+            GRAB_MODE[0] = "window"
+            LAST_SCREEN_SIZE[:] = img.size
+            return img
+    GRAB_MODE[0] = "screen"
     st = session_type()
     if st in ("windows", "x11", "macos"):
         import mss  # imported lazily so `scan` works without it
@@ -442,14 +469,8 @@ def grab_full_screen() -> Image.Image:
             LAST_SCREEN_SIZE[:] = img.size
             return img
 
-    # Wayland: the game (Wine, through Lutris or Steam) is an X11 window in XWayland, and
-    # an X11 program can copy that one window's picture straight from memory. That takes
-    # milliseconds, with no prompt, where a screenshot tool takes about a second.
-    img = xwayland_window_grab()
-    if img is not None:
-        LAST_SCREEN_SIZE[:] = img.size
-        return img
-    # Otherwise, X11 grabbers only see black, so shell out to a native tool. grim only
+    # Wayland, with the game's window not readable on its own: X11 grabbers only see
+    # black, so shell out to a native tool (about a second per screenshot). grim only
     # works on wlroots desktops (Sway, Hyprland...): on KDE or GNOME it fails even when
     # it's installed, so the desktop's own tool goes first, and a tool that fails is
     # skipped from then on.
@@ -626,6 +647,7 @@ class _XWindowGrab:
         return best
 
     def grab(self, title: str = "maplestory"):
+        title = title.lower()
         with self.lock:
             if self.ok is None:
                 try:
@@ -635,6 +657,8 @@ class _XWindowGrab:
             if not self.ok:
                 return None
             c, x = self.c, self.x
+            if title != getattr(self, "title", None):
+                self.title, self.win, self.found_at = title, None, 0.0     # a new title: look again now
             if self.win is None or (self.win and not self._attrs(self.win)):
                 if time.monotonic() - self.found_at < 2:
                     return None               # looked a moment ago: don't walk the tree every frame
@@ -671,16 +695,286 @@ class _XWindowGrab:
                 x.XDestroyImage(img_p)
 
 
+class _WinWindowGrab:
+    """Windows: the game's window copied with PrintWindow (PW_RENDERFULLCONTENT), which
+    draws it into memory whatever covers it on screen. If a game draws in a way
+    PrintWindow can't copy, every copy is black: then the screen is read instead."""
+
+    def __init__(self):
+        self.hwnd = None
+        self.found_at = 0.0
+        self.good = False        # a copy of this window has shown something (not all black)
+        self.black = 0           # black copies in a row before that
+        self.lock = threading.Lock()
+        self.ready = False
+
+    def _setup(self):
+        import ctypes
+        from ctypes import wintypes as wt
+
+        c = ctypes
+        u, g = c.windll.user32, c.windll.gdi32
+        try:
+            c.windll.shcore.SetProcessDpiAwareness(2)      # real pixels on scaled screens
+        except Exception:
+            pass
+        u.GetDC.restype = c.c_void_p
+        u.GetDC.argtypes = [c.c_void_p]
+        u.ReleaseDC.argtypes = [c.c_void_p, c.c_void_p]
+        u.PrintWindow.argtypes = [c.c_void_p, c.c_void_p, c.c_uint]
+        u.IsWindow.argtypes = [c.c_void_p]
+        u.IsIconic.argtypes = [c.c_void_p]
+        u.IsWindowVisible.argtypes = [c.c_void_p]
+        u.GetClientRect.argtypes = [c.c_void_p, c.POINTER(wt.RECT)]
+        u.GetWindowTextLengthW.argtypes = [c.c_void_p]
+        u.GetWindowTextW.argtypes = [c.c_void_p, c.c_wchar_p, c.c_int]
+        g.CreateCompatibleDC.restype = c.c_void_p
+        g.CreateCompatibleDC.argtypes = [c.c_void_p]
+        g.CreateDIBSection.restype = c.c_void_p
+        g.CreateDIBSection.argtypes = [c.c_void_p, c.c_void_p, c.c_uint, c.POINTER(c.c_void_p), c.c_void_p,
+                                       c.c_uint]
+        g.SelectObject.restype = c.c_void_p
+        g.SelectObject.argtypes = [c.c_void_p, c.c_void_p]
+        g.DeleteObject.argtypes = [c.c_void_p]
+        g.DeleteDC.argtypes = [c.c_void_p]
+        self.c, self.wt, self.u, self.g = c, wt, u, g
+        self.ready = True
+
+    def _find(self, title: str):
+        c, u = self.c, self.u
+        found = []
+
+        @c.WINFUNCTYPE(c.c_bool, c.c_void_p, c.c_void_p)
+        def each(hwnd, _):
+            if u.IsWindowVisible(hwnd):
+                n = u.GetWindowTextLengthW(hwnd)
+                if n:
+                    buf = c.create_unicode_buffer(n + 1)
+                    u.GetWindowTextW(hwnd, buf, n + 1)
+                    if title in buf.value.lower():
+                        r = self.wt.RECT()
+                        u.GetClientRect(hwnd, c.byref(r))
+                        if r.right >= 300 and r.bottom >= 200:
+                            found.append((r.right * r.bottom, hwnd))
+            return True
+        u.EnumWindows(each, 0)
+        return max(found)[1] if found else None
+
+    def grab(self, title: str):
+        with self.lock:
+            if not self.ready:
+                self._setup()
+            c, u, g = self.c, self.u, self.g
+            if title != getattr(self, "title", None):
+                self.title, self.hwnd, self.found_at = title, None, 0.0
+            if not self.hwnd or not u.IsWindow(self.hwnd):
+                if time.monotonic() - self.found_at < 2:
+                    return None
+                self.found_at = time.monotonic()
+                self.hwnd, self.good, self.black = self._find(title), False, 0
+                if not self.hwnd:
+                    return None
+            if self.black >= 30 and not self.good:
+                return None                   # this game can't be copied this way
+            if u.IsIconic(self.hwnd):
+                return None                   # minimized: nothing to copy
+            r = self.wt.RECT()
+            u.GetClientRect(self.hwnd, c.byref(r))
+            w, h = r.right, r.bottom
+            if w < 50 or h < 50:
+                return None
+
+            class BITMAPINFOHEADER(c.Structure):
+                _fields_ = [("biSize", c.c_uint32), ("biWidth", c.c_int32), ("biHeight", c.c_int32),
+                            ("biPlanes", c.c_uint16), ("biBitCount", c.c_uint16), ("biCompression", c.c_uint32),
+                            ("biSizeImage", c.c_uint32), ("biXPelsPerMeter", c.c_int32),
+                            ("biYPelsPerMeter", c.c_int32), ("biClrUsed", c.c_uint32), ("biClrImportant", c.c_uint32)]
+            bmi = BITMAPINFOHEADER(c.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+            wdc = u.GetDC(self.hwnd)
+            mdc = g.CreateCompatibleDC(wdc)
+            bits = c.c_void_p()
+            bmp = g.CreateDIBSection(wdc, c.byref(bmi), 0, c.byref(bits), None, 0)
+            old = g.SelectObject(mdc, bmp)
+            try:
+                ok = u.PrintWindow(self.hwnd, mdc, 3)        # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+                raw = c.string_at(bits, w * h * 4) if ok and bits.value else None
+            finally:
+                g.SelectObject(mdc, old)
+                g.DeleteObject(bmp)
+                g.DeleteDC(mdc)
+                u.ReleaseDC(self.hwnd, wdc)
+            if raw is None:
+                self.black += 1
+                return None
+            img = Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", 0, 1).copy()
+            if img.getbbox() is None:         # all black: a fade, or this game can't be copied
+                self.black += 1
+                return img if self.good else None
+            self.good, self.black = True, 0
+            return img
+
+
+class _MacWindowGrab:
+    """macOS: the game's window copied with CGWindowListCreateImage, which reads one
+    window whatever covers it (needs Screen Recording permission, like any capture)."""
+
+    def __init__(self):
+        self.wid = None
+        self.found_at = 0.0
+        self.lock = threading.Lock()
+        self.ready = False
+
+    def _setup(self):
+        import ctypes
+
+        c = ctypes
+        cg = c.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = c.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+
+        class CGPoint(c.Structure):
+            _fields_ = [("x", c.c_double), ("y", c.c_double)]
+
+        class CGSize(c.Structure):
+            _fields_ = [("width", c.c_double), ("height", c.c_double)]
+
+        class CGRect(c.Structure):
+            _fields_ = [("origin", CGPoint), ("size", CGSize)]
+        vp = c.c_void_p
+        cg.CGWindowListCopyWindowInfo.restype = vp
+        cg.CGWindowListCopyWindowInfo.argtypes = [c.c_uint32, c.c_uint32]
+        cg.CGWindowListCreateImage.restype = vp
+        cg.CGWindowListCreateImage.argtypes = [CGRect, c.c_uint32, c.c_uint32, c.c_uint32]
+        cg.CGRectMakeWithDictionaryRepresentation.restype = c.c_bool
+        cg.CGRectMakeWithDictionaryRepresentation.argtypes = [vp, c.POINTER(CGRect)]
+        for f in ("CGImageGetWidth", "CGImageGetHeight", "CGImageGetBytesPerRow", "CGImageGetBitsPerPixel"):
+            getattr(cg, f).restype = c.c_size_t
+            getattr(cg, f).argtypes = [vp]
+        cg.CGImageGetDataProvider.restype = vp
+        cg.CGImageGetDataProvider.argtypes = [vp]
+        cg.CGDataProviderCopyData.restype = vp
+        cg.CGDataProviderCopyData.argtypes = [vp]
+        cf.CFArrayGetCount.restype = c.c_long
+        cf.CFArrayGetCount.argtypes = [vp]
+        cf.CFArrayGetValueAtIndex.restype = vp
+        cf.CFArrayGetValueAtIndex.argtypes = [vp, c.c_long]
+        cf.CFDictionaryGetValue.restype = vp
+        cf.CFDictionaryGetValue.argtypes = [vp, vp]
+        cf.CFStringCreateWithCString.restype = vp
+        cf.CFStringCreateWithCString.argtypes = [vp, c.c_char_p, c.c_uint32]
+        cf.CFStringGetCString.restype = c.c_bool
+        cf.CFStringGetCString.argtypes = [vp, c.c_char_p, c.c_long, c.c_uint32]
+        cf.CFNumberGetValue.restype = c.c_bool
+        cf.CFNumberGetValue.argtypes = [vp, c.c_int, vp]
+        cf.CFDataGetBytePtr.restype = vp
+        cf.CFDataGetBytePtr.argtypes = [vp]
+        cf.CFDataGetLength.restype = c.c_long
+        cf.CFDataGetLength.argtypes = [vp]
+        cf.CFRelease.argtypes = [vp]
+        self.c, self.cg, self.cf, self.CGRect = c, cg, cf, CGRect
+        self.keys = {k: cf.CFStringCreateWithCString(None, k.encode(), 0x08000100)
+                     for k in ("kCGWindowName", "kCGWindowOwnerName", "kCGWindowNumber", "kCGWindowLayer",
+                               "kCGWindowBounds")}
+        self.ready = True
+
+    def _str(self, d, key) -> str:
+        v = self.cf.CFDictionaryGetValue(d, self.keys[key])
+        if not v:
+            return ""
+        buf = self.c.create_string_buffer(512)
+        return buf.value.decode("utf-8", "replace") if self.cf.CFStringGetCString(v, buf, 512, 0x08000100) else ""
+
+    def _num(self, d, key) -> int:
+        v = self.cf.CFDictionaryGetValue(d, self.keys[key])
+        n = self.c.c_int64()
+        return n.value if v and self.cf.CFNumberGetValue(v, 4, self.c.byref(n)) else -1
+
+    def _find(self, title: str):
+        c, cg, cf = self.c, self.cg, self.cf
+        arr = cg.CGWindowListCopyWindowInfo(16, 0)          # every window but the desktop's
+        if not arr:
+            return None
+        best = (0, None)
+        try:
+            for i in range(cf.CFArrayGetCount(arr)):
+                d = cf.CFArrayGetValueAtIndex(arr, i)
+                if self._num(d, "kCGWindowLayer") != 0:
+                    continue
+                name = (self._str(d, "kCGWindowName") + " " + self._str(d, "kCGWindowOwnerName")).lower()
+                if title not in name:
+                    continue
+                r = self.CGRect()
+                b = cf.CFDictionaryGetValue(d, self.keys["kCGWindowBounds"])
+                if b and cg.CGRectMakeWithDictionaryRepresentation(b, c.byref(r)):
+                    area = r.size.width * r.size.height
+                    if r.size.width >= 300 and r.size.height >= 200 and area > best[0]:
+                        best = (area, self._num(d, "kCGWindowNumber"))
+        finally:
+            cf.CFRelease(arr)
+        return best[1]
+
+    def grab(self, title: str):
+        with self.lock:
+            if not self.ready:
+                self._setup()
+            c, cg, cf = self.c, self.cg, self.cf
+            if title != getattr(self, "title", None):
+                self.title, self.wid, self.found_at = title, None, 0.0
+            if self.wid is None:
+                if time.monotonic() - self.found_at < 2:
+                    return None
+                self.found_at = time.monotonic()
+                self.wid = self._find(title)
+                if self.wid is None:
+                    return None
+            null = self.CGRect()
+            null.origin.x = null.origin.y = float("inf")              # CGRectNull: the window's own bounds
+            img = cg.CGWindowListCreateImage(null, 8, self.wid, 1)    # just this window, without its shadow
+            if not img:
+                self.wid = None                                       # closed: look for it again
+                return None
+            try:
+                w, h = cg.CGImageGetWidth(img), cg.CGImageGetHeight(img)
+                bpr, bpp = cg.CGImageGetBytesPerRow(img), cg.CGImageGetBitsPerPixel(img)
+                if w < 50 or h < 50 or bpp != 32:
+                    if w <= 1:
+                        self.wid = None                               # minimized or gone
+                    return None
+                data = cg.CGDataProviderCopyData(cg.CGImageGetDataProvider(img))
+                try:
+                    raw = c.string_at(cf.CFDataGetBytePtr(data), cf.CFDataGetLength(data))
+                finally:
+                    cf.CFRelease(data)
+                return Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", bpr, 1).copy()
+            finally:
+                cf.CFRelease(img)
+
+
 _XGRAB = _XWindowGrab()
+_WGRAB = _WinWindowGrab()
+_MGRAB = _MacWindowGrab()
 
 
-def xwayland_window_grab(cfg: dict | None = None):
-    """The game's window, copied from XWayland (see _XWindowGrab), or None."""
-    title = ((cfg or getattr(ocr_lang_arg, "cfg", None) or {}).get("game_window_title") or "MapleStory")
+def game_window_grab(cfg: dict | None = None):
+    """The game's window on its own, read even when other windows cover it, or None
+    when it can't be (not running, minimized, or not readable this way): Linux
+    (X11 or XWayland) through the Composite extension, Windows with PrintWindow,
+    macOS with CGWindowListCreateImage. Found by its title: "MapleStory", or
+    game_window_title in settings."""
+    title = ((cfg or CAPTURE_CFG or {}).get("game_window_title") or "MapleStory").strip().lower()
+    st = session_type()
     try:
+        if st == "windows":
+            return _WGRAB.grab(title)
+        if st == "macos":
+            return _MGRAB.grab(title)
         return _XGRAB.grab(title)
     except Exception:
         return None
+
+
+def xwayland_window_grab(cfg: dict | None = None):
+    """(Old name.) The game's window, or None."""
+    return game_window_grab(cfg)
 
 
 def mac_screen_access(ask: bool = False) -> bool:
@@ -829,6 +1123,7 @@ def bundled_tesseract() -> Path | None:
 
 
 def setup_tesseract(cfg: dict) -> None:
+    globals()["CAPTURE_CFG"] = cfg          # what grab_full_screen reads (capture_window, the title)
     import pytesseract
 
     ocr_lang_arg.cfg = cfg
@@ -2447,7 +2742,7 @@ class ChannelWatch:
         if self._off():
             self._reset()
             return False
-        area = (self.cfg or {}).get("channel_region")
+        area = drawn_area(self.cfg, "channel_region")
         if area:
             try:
                 full = crop(full, area)        # only where you said the window shows
@@ -7157,7 +7452,7 @@ class MegaphoneWatch:
     def _work(self, full):
         ui_pause()
         try:
-            region, unit = self.cfg.get("chat_region"), None
+            region, unit = drawn_area(self.cfg, "chat_region"), None
             if not region or is_auto(region, full.size):
                 region = find_chat(full)
                 unit = getattr(find_chat, "unit", None)
@@ -7500,7 +7795,7 @@ class Monitor:
         """Shop and map areas for this frame: the calibrated ones, or found
         automatically (re-located only when the cached spot stops looking like
         a store, e.g. you closed it or moved the game window)."""
-        shop_r, map_r = self.cfg.get("region"), self.cfg.get("map_region")
+        shop_r, map_r = drawn_area(self.cfg, "region"), drawn_area(self.cfg, "map_region")
         if is_auto(shop_r, full.size):
             if not (self.layout and is_store_window(crop(full, self.layout.store))):
                 found = locate_store(full)
@@ -7566,7 +7861,7 @@ class Monitor:
                 if full is None:
                     continue
                 try:
-                    area = self.cfg.get("map_region")
+                    area = drawn_area(self.cfg, "map_region")
                     if is_auto(area, full.size):
                         # where the minimap is: looked for again when it can't be read there
                         spot = spot or find_minimap(full, self.layout.store if self.layout else None)

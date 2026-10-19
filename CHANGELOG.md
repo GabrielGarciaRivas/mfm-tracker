@@ -3,12 +3,16 @@
 ## 2610.19.001 — 2026-10-19
 
 ### Changed
-- **Wayland:** the app reads the game's window straight from XWayland (where Wine runs it),
-  in a few milliseconds instead of about a second with a screenshot tool, with no prompt,
-  even when another window covers part of it. Shops, megaphones and the Change Channel
-  window are read as fast as on X11 or Windows, and the channel is noticed when you're
-  not monitoring too. A screenshot tool is only used when the game window can't be read
-  this way.
+- **The game window is read on its own** (Windows, macOS and Linux), so the app keeps
+  reading while other windows cover the game (not while it's minimized). It's found by
+  "MapleStory" in its title; **Settings → Window detection** can change that or turn it
+  off (then the whole screen is read). Areas drawn on the whole screen before aren't used
+  while the game window is read: draw them again if you need them.
+- **Wayland:** reading the game's window from XWayland (where Wine runs it) takes a few
+  milliseconds instead of about a second with a screenshot tool, with no prompt. Shops,
+  megaphones and the Change Channel window are read as fast as on X11 or Windows, and the
+  channel is noticed when you're not monitoring too. A screenshot tool is only used when
+  the game window can't be read this way.
 
 ### Fixed
 - **Wayland:** "CalledProcessError: Command '['grim', ...]' returned non-zero exit status 1"

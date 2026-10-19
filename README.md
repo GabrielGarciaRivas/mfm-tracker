@@ -28,14 +28,18 @@ needs to be installed.
   newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE, Arch and others). On Wayland,
   the app reads the game's window directly when the game runs through Wine (Lutris, Steam
   or plain Wine), as it does by default: Wine's window lives in XWayland, and the app copies
-  its picture in a few milliseconds, with no prompt, even when another window covers part
-  of it. The window is found by its title, "MapleStory"; if yours is different, put
-  `"game_window_title": "..."` in `settings/config.json`. If the game window can't be
-  read that way, the app falls back to your desktop's screenshot tool, which takes about
+  its picture in a few milliseconds, with no prompt. If the game window can't be read that
+  way, the app falls back to your desktop's screenshot tool, which takes about
   a second per screenshot: `spectacle` (KDE), `gnome-screenshot` (GNOME) or `grim`
   (Hyprland, Sway; grim doesn't work on KDE or GNOME).
 
 Play the game **windowed or borderless**, not exclusive fullscreen.
+
+The app reads the game's window on its own, so it keeps reading while other windows cover
+the game (not while it's minimized), on Windows, macOS and Linux. The window is found by
+"MapleStory" in its title; change that, or turn this off to read the whole screen
+instead, in **Settings → Window detection**. If the game window can't be read on its
+own, the whole screen is read, and then the game has to be visible.
 
 ### Run from source (optional)
 
@@ -96,6 +100,8 @@ If the shop, map, chat, inventory or Change Channel window is ever not found, dr
 around it in **Settings → Window detection** (**Draw area**). That section lists each area
 as **Automatic** or **Manual**, with the coordinates of a drawn one. **Automatic** next to
 an area, or **Auto Detection** for all of them, goes back to finding them by themselves.
+An area is drawn on what's being read (the game window, or the whole screen), and is only
+used while the same is read.
 
 ## Channel
 

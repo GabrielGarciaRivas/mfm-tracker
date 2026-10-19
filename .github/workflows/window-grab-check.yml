@@ -1,0 +1,39 @@
+name: Window capture check
+
+# Checks that the game window is read even when another window covers it
+# (tests/window_grab_check.py), on Windows, macOS and Linux (X11). Run it by hand
+# from the Actions tab; the results show as annotations on the run.
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb python3-tk >/dev/null; fi
+          pip install -q pillow mss pytesseract
+      - name: Check
+        shell: bash
+        run: |
+          set +e
+          if [ "$RUNNER_OS" = Linux ]; then
+            Xvfb :99 -screen 0 1280x800x24 +extension Composite >/dev/null 2>&1 &
+            sleep 1; export DISPLAY=:99
+          fi
+          out=$(python tests/window_grab_check.py 2>&1); code=$?
+          echo "$out"
+          last=$(echo "$out" | tail -1)
+          if [ $code = 0 ]; then echo "::notice::$last"; else echo "::warning::$last"; fi
+          echo "$out" >> "$GITHUB_STEP_SUMMARY"
+          exit $code
