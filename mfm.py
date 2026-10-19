@@ -712,6 +712,7 @@ class _WinWindowGrab:
         self.black = 0           # black copies in a row before that
         self.lock = threading.Lock()
         self.ready = False
+        self.busy = None         # the copy in progress (see grab)
 
     def _setup(self):
         import ctypes
@@ -795,19 +796,34 @@ class _WinWindowGrab:
                             ("biSizeImage", c.c_uint32), ("biXPelsPerMeter", c.c_int32),
                             ("biYPelsPerMeter", c.c_int32), ("biClrUsed", c.c_uint32), ("biClrImportant", c.c_uint32)]
             bmi = BITMAPINFOHEADER(c.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
-            wdc = u.GetDC(self.hwnd)
-            mdc = g.CreateCompatibleDC(wdc)
-            bits = c.c_void_p()
-            bmp = g.CreateDIBSection(wdc, c.byref(bmi), 0, c.byref(bits), None, 0)
-            old = g.SelectObject(mdc, bmp)
-            try:
-                ok = u.PrintWindow(self.hwnd, mdc, 3)        # PW_CLIENTONLY | PW_RENDERFULLCONTENT
-                raw = c.string_at(bits, w * h * 4) if ok and bits.value else None
-            finally:
-                g.SelectObject(mdc, old)
-                g.DeleteObject(bmp)
-                g.DeleteDC(mdc)
-                u.ReleaseDC(self.hwnd, wdc)
+            hwnd = self.hwnd
+            box = {}
+
+            def copy():
+                wdc = u.GetDC(hwnd)
+                mdc = g.CreateCompatibleDC(wdc)
+                bits = c.c_void_p()
+                bmp = g.CreateDIBSection(wdc, c.byref(bmi), 0, c.byref(bits), None, 0)
+                old = g.SelectObject(mdc, bmp)
+                try:
+                    ok = u.PrintWindow(hwnd, mdc, 3)         # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+                    box["raw"] = c.string_at(bits, w * h * 4) if ok and bits.value else None
+                finally:
+                    g.SelectObject(mdc, old)
+                    g.DeleteObject(bmp)
+                    g.DeleteDC(mdc)
+                    u.ReleaseDC(hwnd, wdc)
+            # PrintWindow waits for the game to draw: if the game is busy (loading, not
+            # responding), that copy is left to finish on its own and the screen is read
+            # instead, so the app never waits on the game
+            if self.busy is not None and self.busy.is_alive():
+                return None
+            self.busy = threading.Thread(target=copy, daemon=True, name="mfm-printwindow")
+            self.busy.start()
+            self.busy.join(0.5)
+            if self.busy.is_alive():
+                return None
+            raw = box.get("raw")
             if raw is None:
                 self.black += 1
                 return None

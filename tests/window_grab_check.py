@@ -57,6 +57,7 @@ def run():
 
 
 threading.Thread(target=run, daemon=True).start()
+root.after(60000, root.destroy)       # never hang the check
 root.mainloop()
 print(f"{sys.platform}: {result.get('text')}")
 sys.exit(result.get("code", 1))
