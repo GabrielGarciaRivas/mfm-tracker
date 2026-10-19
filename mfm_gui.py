@@ -5196,10 +5196,23 @@ class App:
                                     (g,)).fetchall()
             import io
             img = Image.open(io.BytesIO(rows[0][0]))
-            if img.width > 1100:
-                img = img.resize((1100, max(1, img.height * 1100 // img.width)), Image.LANCZOS)
+            # the whole line (without the blank chat box to its right), as big as the
+            # screen allows; the window grows to fit it
+            from PIL import ImageOps
+            box = ImageOps.invert(img.convert("L")).point(lambda v: 255 if v > 60 else 0).getbbox()
+            if box:
+                img = img.crop((0, 0, min(img.width, box[2] + 30), img.height))
+            fit = max(600, win.winfo_screenwidth() - 80)
+            if img.width > fit:
+                img = img.resize((fit, max(1, img.height * fit // img.width)), Image.LANCZOS)
             state["img"] = ImageTk.PhotoImage(img)
             pic.config(image=state["img"], text="")
+            want = img.width + 40
+            if win.winfo_width() < want:
+                win.geometry(f"{want}x{max(300, win.winfo_height())}")
+                win.update_idletasks()
+                x = max(0, min(win.winfo_x(), win.winfo_screenwidth() - want))
+                win.geometry(f"+{x}+{max(0, win.winfo_y())}")
             reads = sorted({r for _, r, _ in rows if r})
             read_lbl.config(text="Read as: " + "  |  ".join(reads[:3]) if len(reads) > 1 else "")
             text.set(rows[0][2] or rows[0][1] or "")
