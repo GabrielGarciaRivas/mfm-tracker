@@ -687,17 +687,29 @@ class _TessLib:
     """ctypes bindings for the handful of TessBaseAPI functions used."""
     lib = None
     path = None
-    tried = False
+    tried = None            # the Tesseract program the library was last looked for next to
     lock = threading.Lock()
 
     @classmethod
     def load(cls):
+        """The library, loaded on first use; looked for again whenever the Tesseract
+        program in use changes. A read before setup_tesseract() had run (the GUI's
+        channel-dialog check, before any shop is read) used to find no program, so
+        no library, and that stood for the rest of the session: every read ran the
+        program, and frames piled up behind the reading."""
+        import pytesseract
+
         with cls.lock:
-            if cls.tried:
+            if cls.lib is not None:
                 return cls.lib
-            cls.tried = True
+            exe = pytesseract.pytesseract.tesseract_cmd
+            if cls.tried == exe:
+                return None
+            cls.tried = exe
             path = _tesseract_library_path()
             if not path:
+                if Path(exe).is_absolute() or shutil.which(exe):
+                    app_log(f"tesseract library not found next to the program ({exe}): using the program")
                 return None
             try:
                 import ctypes
@@ -2616,6 +2628,8 @@ class ChannelWatch:
                 ch = self._read_memo[key]
             else:
                 try:
+                    if self.cfg:
+                        setup_tesseract(self.cfg)   # this may be the first read of the session
                     ch = read_dialog_channel(full, pair)
                 except Exception:
                     ch = None

@@ -15,7 +15,9 @@
   (one reader at a time each), not made per thread, and nothing is closed at exit: after
   a fault inside the library, closing hung the process for hours after its window was
   gone. A fault is logged with the thread, image size and settings, and the program
-  takes over.
+  takes over. The library is looked for again when the program's path is set: before,
+  the first read of a session could happen before the path was known (the change-channel
+  check), and the whole session then ran the program, ~200 ms slower a read.
 
 ### New
 - **Windows open on the screen the app is on.** An item's history, a shop photo,
