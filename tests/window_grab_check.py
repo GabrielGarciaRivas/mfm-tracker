@@ -33,13 +33,14 @@ def check():
         result["code"], result["text"] = 2, "the game window wasn't read (None)"
         return
     w, h = img.size
-    corner = img.getpixel((10, 10))
-    under = img.getpixel((200, 200))      # orange box, under the covering window
+    corner = img.getpixel((w - 10, h - 10))   # (bottom right: macOS includes the title bar)
+    top = h - 480 if h > 480 else 0           # the title bar's height, if it's included
+    under = img.getpixel((200, 200 + top))    # orange box, under the covering window
     t0 = time.perf_counter()
     for _ in range(10):
         mfm.game_window_grab({})
     ms = (time.perf_counter() - t0) * 100
-    ok = abs(w - 640) <= 80 and abs(h - 480) <= 80 and corner[2] > 150 and corner[0] < 100 \
+    ok = abs(w - 640) <= 80 and 0 <= h - 480 <= 80 and corner[2] > 150 and corner[0] < 100 \
         and under[0] > 200 and 90 < under[1] < 170 and under[2] < 60
     result["code"] = 0 if ok else 1
     result["text"] = (f"{'OK' if ok else 'WRONG'}: {w}x{h}, corner {corner} (want blue), under the cover "
