@@ -1354,7 +1354,13 @@ class App:
         self._build_inventory_tab()
 
         self.status = ttk.Label(self.root, style="Status.TLabel", padding=(10, 4))
-        self.status.pack(fill="x")
+        # packed ahead of the tabs, at the bottom: the tabs ask for more height than the
+        # window has, and whatever is packed after them is squeezed out of sight
+        self.status.pack(side="bottom", fill="x", before=self.nb)
+        # red, above the status bar: something to change in the game so it can be read
+        self.hints: dict[str, str] = {}
+        self.hint_bar = tk.Label(self.root, background="#c62828", foreground="white", anchor="w",
+                                 padx=10, pady=4, font="MfmBold", justify="left")
         self._set_status()
         self._update_stats(None, None)
 
@@ -1918,6 +1924,27 @@ class App:
     def _show_map(self):
         self.map_label.config(text=f"Map: {self.last_map or '—'}")
 
+    def _hint(self, key: str, text: str | None):
+        """Show (or, with None, take away) a red line in the bar above the status bar."""
+        if text:
+            self.hints[key] = text
+        else:
+            self.hints.pop(key, None)
+        if self.hints:
+            self.hint_bar.config(text="\n".join(self.hints.values()))
+            if not self.hint_bar.winfo_ismapped():
+                self.hint_bar.pack(side="bottom", fill="x", after=self.status)   # just above it
+        else:
+            self.hint_bar.pack_forget()
+
+    def on_chat_hint(self, no_time):
+        self._hint("chat_time", "Chat timestamps are off, so megaphones get the time they were read, not sent. "
+                                "Turn them on in the game's settings (each line then starts like [13:45])." if no_time else None)
+
+    def on_map_hint(self, no_name):
+        self._hint("map_name", "The map name can't be read: switch the game's minimap to the view that shows "
+                               "the map name (the street and map name above the map)." if no_name else None)
+
     def on_layout(self, layout):
         self.found_at = layout
         self._update_stats(None, None)
@@ -1941,6 +1968,8 @@ class App:
     def on_stopped(self, _p=None):
         """The monitor finished, including any frames still queued when Stop was pressed."""
         self.backlog = 0
+        self._hint("chat_time", None)          # (checked again on the next start)
+        self._hint("map_name", None)
         if self.stop_event is not None and self.stop_event.is_set():
             self._set_status("Stopped.")
 
@@ -5683,10 +5712,23 @@ class App:
                                     (g,)).fetchall()
             import io
             img = Image.open(io.BytesIO(rows[0][0]))
-            if img.width > 1100:
-                img = img.resize((1100, max(1, img.height * 1100 // img.width)), Image.LANCZOS)
+            # the whole line (without the blank chat box to its right), as big as the
+            # screen allows; the window grows to fit it
+            from PIL import ImageOps
+            box = ImageOps.invert(img.convert("L")).point(lambda v: 255 if v > 60 else 0).getbbox()
+            if box:
+                img = img.crop((0, 0, min(img.width, box[2] + 30), img.height))
+            fit = max(600, win.winfo_screenwidth() - 80)
+            if img.width > fit:
+                img = img.resize((fit, max(1, img.height * fit // img.width)), Image.LANCZOS)
             state["img"] = ImageTk.PhotoImage(img)
             pic.config(image=state["img"], text="")
+            want = img.width + 40
+            if win.winfo_width() < want:
+                win.geometry(f"{want}x{max(300, win.winfo_height())}")
+                win.update_idletasks()
+                x = max(0, min(win.winfo_x(), win.winfo_screenwidth() - want))
+                win.geometry(f"+{x}+{max(0, win.winfo_y())}")
             reads = sorted({r for _, r, _ in rows if r})
             read_lbl.config(text="Read as: " + "  |  ".join(reads[:3]) if len(reads) > 1 else "")
             text.set(rows[0][2] or rows[0][1] or "")

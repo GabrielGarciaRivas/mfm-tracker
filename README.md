@@ -33,7 +33,13 @@ needs to be installed.
   a second per screenshot: `spectacle` (KDE), `gnome-screenshot` (GNOME) or `grim`
   (Hyprland, Sway; grim doesn't work on KDE or GNOME).
 
-Play the game **windowed or borderless**, not exclusive fullscreen.
+Play the game **windowed or borderless**, not exclusive fullscreen. Two game settings
+matter, and the app says so in a red bar at the bottom of its window if one is off:
+
+- **Chat timestamps** on (in the game's settings), so each chat line starts with its time,
+  like `[13:45]`. Megaphones can't be read without it.
+- **The minimap showing the map name** (the street and map name above the map). The app
+  reads the map you're on from there.
 
 The app reads the game's window on its own, so it keeps reading while other windows cover
 the game (not while it's minimized), on Windows, macOS and Linux. The window is found by

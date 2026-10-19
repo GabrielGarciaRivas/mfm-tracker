@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.002"
+VERSION = "2610.19.004"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -2782,7 +2782,7 @@ def find_store_by_buttons(img: Image.Image, scale: int) -> list[list]:
     return stores
 
 
-def find_minimap(full: Image.Image, store=None) -> list | None:
+def find_minimap(full: Image.Image, store=None, info: dict | None = None) -> list | None:
     """The minimap's title strip + street/map name panel, found by its own look:
     the white "MINI MAP" strip with the orange WORLD button at its right end, and
     the steel-blue name panel underneath. Its size changes with the map, so it's
@@ -2841,6 +2841,11 @@ def find_minimap(full: Image.Image, store=None) -> list | None:
                 break
             y += 1
         if y - panel_top < bh * 2.5:
+            # the MINI MAP strip, but no name panel: the map is switched to the view
+            # without its name. (Only a WORLD-sized button in the top half: the Change
+            # Channel window's CANCEL also sits under a white strip, and is bigger.)
+            if info is not None and bh <= 20 and ys < H / 2:
+                info["no_name"] = True
             continue
         found.append([max(0, left - 3), max(0, ys - 2), x1 + 8 - max(0, left - 3), y - max(0, ys - 2)])
     if not found:
@@ -7055,8 +7060,12 @@ def _line_look(line: Image.Image) -> tuple[tuple, float]:
     return bg, near / max(1, len(pts))
 
 
+LINE_PAD_BELOW = 0.0   # a chat line is cut this much (of a line's height) below its own
+                       # band, so letters that hang below it (g, y, p, q) aren't cut off
+
+
 def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None, unit: float | None = None,
-                    channel: str | None = None, marks: list | None = None) -> list[dict]:
+                    channel: str | None = None, marks: list | None = None, stats: dict | None = None) -> list[dict]:
     """Megaphones in a crop of the chat messages: [{time, player, channel, message,
     color}]. `unit` is about one line's height (from find_chat); `channel` is used for
     megaphones without a channel badge (the ones in your own channel). The boxes of
@@ -7103,7 +7112,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     k = -1
     while True:
         y0 = int(round(phase + k * pitch))
-        y1 = y0 + int(round(pitch))
+        y1 = y0 + int(round(pitch)) + int(round(LINE_PAD_BELOW * pitch))
         k += 1
         if y0 >= H:
             break
@@ -7149,6 +7158,12 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
             memo[key] = _read_megaphone_line(row, b, lx0, lx1, u, [e for _, e in extra], chat, con)
         if memo[key]:
             m = dict(memo[key])
+            # megaphones without "[hh:mm]" at the start: the game's chat timestamps are off
+            if stats is not None:
+                k = "no_time" if m.pop("untimed", False) else "timed"
+                stats[k] = stats.get(k, 0) + 1
+            else:
+                m.pop("untimed", None)
             if not m["channel"]:
                 m["channel"] = channel
             m["color"] = "#%02x%02x%02x" % (MEGAPHONE_COLORS[ln["color"]] if ln["color"] else ln["bg"])
@@ -7189,8 +7204,11 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     if not parsed:
         return None
     hhmm, name, message = parsed
-    # the time: read again from the picture; a chat without times gets the time now
-    hhmm = _read_chat_time(left, u * 3) or hhmm or datetime.now(timezone.utc).strftime("%H:%M")
+    # the time: read again from the picture; a chat without times (the game's chat
+    # timestamps are off) gets the time now
+    hhmm = _read_chat_time(left, u * 3) or hhmm
+    untimed = not hhmm
+    hhmm = hhmm or datetime.now(timezone.utc).strftime("%H:%M")
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
     grp = f"{datetime.now():%Y%m%d}|{hhmm}|{fold(name)}"
@@ -7205,7 +7223,8 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     # how sure the OCR was of this read (0-100): the average of its words
     conf = round(sum(confs) / len(confs), 1) if confs else 0.0
     return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
-            "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf}
+            "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf,
+            "untimed": untimed}
 
 
 # --------------------------------------------------------------------------- OCR training lines
@@ -7908,6 +7927,8 @@ class MegaphoneWatch:
         self.busy = threading.Event()
         self.memo: dict = {}
         self.found = None
+        self.no_time = False      # megaphones are on screen without "[hh:mm]": timestamps are off
+        self._untimed = 0         # reads in a row that saw only megaphones without a time
 
     def due(self) -> bool:
         return not self.busy.is_set() and time.monotonic() - self.last >= self.every
@@ -7934,10 +7955,22 @@ class MegaphoneWatch:
                 return
             img = crop(full, region)
             marks: list = []
+            stats: dict = {}
             con = db()
             try:
                 got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=channel,
-                                      marks=marks)
+                                      marks=marks, stats=stats)
+                # megaphones without a time at the start, read after read (and none with
+                # one): the game's chat timestamps are off, so megaphones get the time
+                # they were read instead of the time they were sent
+                if stats.get("timed"):
+                    self._untimed = 0
+                elif stats.get("no_time", 0) >= 2:
+                    self._untimed += 1
+                no_time = self._untimed >= 3
+                if no_time != self.no_time:
+                    self.no_time = no_time
+                    self.on_event("chat_hint", no_time)
                 n = save_megaphones(con, got) if got else 0
                 purge_megaphones(con, self.cfg.get("megaphone_hours", 72))
                 if got:
@@ -8421,6 +8454,7 @@ class Monitor:
             """The map you're on, from the minimap, every few seconds (also with no
             shop open): sends a "map" event when it changes."""
             spot, last_sig, last_name = None, None, None
+            hinted = False
             con = None
             while not stop_event.wait(MAP_EVERY):
                 full = latest["full"]
@@ -8430,7 +8464,13 @@ class Monitor:
                     area = drawn_area(self.cfg, "map_region")
                     if is_auto(area, full.size):
                         # where the minimap is: looked for again when it can't be read there
-                        spot = spot or find_minimap(full, self.layout.store if self.layout else None)
+                        if spot is None:
+                            info: dict = {}
+                            spot = find_minimap(full, self.layout.store if self.layout else None, info)
+                            hint = bool(info.get("no_name")) and spot is None
+                            if hint != hinted:
+                                hinted = hint
+                                self.on_event("map_hint", hint)   # "switch the minimap to show its name"
                         area = spot
                     if not area:
                         continue
@@ -8452,7 +8492,8 @@ class Monitor:
         threading.Thread(target=map_watch, daemon=True, name="mfm-map").start()
 
         def capture() -> None:
-            last_h, last_imgs = None, None
+            last_h, last_imgs, same = None, None, 0
+            repeats = max(self.cfg["confirm_frames"], self.cfg["close_frames"]) + 2
             while not stop_event.is_set():
                 t0 = time.perf_counter()
                 try:
@@ -8475,26 +8516,33 @@ class Monitor:
                     else:
                         imgs = (crop(full, shop_r), crop(full, map_r))
                     h = frame_hash(imgs[0])
+                    skip = False
                     if last_h is not None and bin(h ^ last_h).count("1") <= 8 and last_imgs:
                         imgs = last_imgs   # nothing moved: requeue the same image object
+                        # ... but while frames are still waiting to be read, only enough
+                        # copies in a row to confirm rows / a close: more add nothing but
+                        # backlog (a shop left open piled up tens of thousands of them)
+                        skip = same >= repeats and frames.qsize() + len(pending) > 0
+                        same += not skip
                     else:
-                        last_h, last_imgs = h, imgs
+                        last_h, last_imgs, same = h, imgs, 1
                     # stamped with the channel now, so a frame still queued when you
                     # change channel is logged under the one it was captured on
-                    frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
+                    if not skip:
+                        frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
                 except Exception as e:
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
                 stop_event.wait(max(wait, 0.02))
 
-        grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
-        grabber.start()
         # frames behind the one being read are OCR'd ahead by a pool (see _prefetch)
         from collections import deque
         from concurrent.futures import ThreadPoolExecutor
+        pending: deque = deque()
+        grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
+        grabber.start()
         workers = int(self.cfg.get("ocr_workers", 3) or 0)
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mfm-ocr") if workers > 1 else None
-        pending: deque = deque()
         lookahead = workers * 2 if pool else 0
         last_backlog = 0
         try:

@@ -1,5 +1,40 @@
 # Changelog
 
+## 2610.19.004 — 2026-10-19
+
+### Fixed
+- **"Frames waiting" climbed into the tens of thousands with a shop left open.** The
+  screen is copied every Capture interval, and a copy that hadn't changed was still
+  queued for reading, even while the reader was behind. Now, while frames are waiting,
+  only a few copies of an unchanged screen are queued (enough to confirm rows and a
+  close), so a shop sitting open no longer builds a backlog.
+- **Reading was slow for a whole session.** The faster built-in Tesseract library was
+  looked for once, sometimes before the Tesseract path was known (the change-channel
+  check reads first), and the session then ran the slower program, about 200 ms more a
+  read. It's looked for again once the path is set. (Thanks, GabrielGarciaRivas.)
+- **No megaphone was saved when the chat shows no times.** A line without a time in
+  front is now read as "Player : message" and gets the time it was seen. The red bar
+  still suggests turning chat timestamps on, since megaphones then get the time they
+  were sent. (Thanks, GabrielGarciaRivas.)
+- The channel badge was missed on teal and yellow megaphones, so the badge's letters
+  ended up in the message and the current channel was used. "S>" / "B>" read as "5>" /
+  "8>" now count as selling / buying. (Thanks, GabrielGarciaRivas.)
+- **A shop photo open in the app was read as a shop open in the game** and its rows
+  logged again. When the whole screen is read (the game's window can't be copied on its
+  own), the app's own windows are now painted over first. (Thanks, GabrielGarciaRivas.)
+
+## 2610.19.003 — 2026-10-19
+
+### New
+- **A red bar at the bottom of the window** says what to change in the game when it
+  can't be read: turn on chat timestamps (megaphones are on screen but no line starts
+  with its time), or switch the minimap to the view with the map name (the minimap is
+  there but its name panel isn't). It goes away once that's fixed.
+
+### Fixed
+- The status bar at the bottom of the window was squeezed out of sight on some screen
+  sizes. It always shows now.
+
 ## 2610.19.002 — 2026-10-19
 
 ### Added
@@ -50,9 +85,7 @@
   (one reader at a time each), not made per thread, and nothing is closed at exit: after
   a fault inside the library, closing hung the process for hours after its window was
   gone. A fault is logged with the thread, image size and settings, and the program
-  takes over. The library is looked for again when the program's path is set: before,
-  the first read of a session could happen before the path was known (the change-channel
-  check), and the whole session then ran the program, ~200 ms slower a read.
+  takes over.
 
 ### New
 - **Settings in tabs:** General, Reading (Window detection and OCR training) and Game
@@ -77,19 +110,6 @@
   channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
 
 ### Fixed
-- **No megaphone was ever saved when the chat shows no times.** The game can show chat
-  lines with or without a time in front ("[04:01] Player : ..."); without one, every
-  line was thrown away while the Megaphones tab said "on screen: 4". A line without a
-  time is now read as "Player : message" and gets the time it was seen. The channel
-  badge was also missed on teal and yellow lines (its white box is translucent and takes
-  the line's tint), so those lines were read with the badge's letters in the message;
-  and "S>" / "B>" read as "5>" / "8>" now count as selling / buying.
-- **A shop photo open in the app was read as a shop open in the game.** The photo is
-  the store window at its real size, and the monitor looks for a store anywhere on the
-  screen, so opening one (right-click a listing → Show shop photo) started a visit and
-  logged its rows again. When the desktop is read (the game's window can't be copied on
-  its own), the app's own windows are now painted over in every screenshot before it's
-  looked at.
 - **Wayland:** "CalledProcessError: Command '['grim', ...]' returned non-zero exit status 1"
   when starting monitoring on KDE or GNOME with grim installed. grim only works on Sway,
   Hyprland and other wlroots desktops. The app now uses your desktop's own tool first
