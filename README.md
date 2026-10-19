@@ -99,11 +99,11 @@ channel stays set until you change it.
 
 The app also asks for your channel when it starts. When you change channel in the game,
 it reads the channel highlighted in the game's Change Channel window (the blue button,
-like CH.19) and sets it when the window closes; it only asks if it can't read it. It
-looks for the window as often as **Capture every (seconds)** in Settings (0.1 by default).
-If you close the window with **Esc** or **CANCEL**, the channel stays as it was. (CANCEL
-is told by the mouse pointer being over it when the window closes. On Wayland, Esc is
-only seen when the game runs through XWayland, which is the default for Wine and Lutris.) For 15 seconds after you pick
+like CH.19). It sets it only if the screen fades to black within 3 seconds of the window
+closing, which is what the game does when it changes channel; it only asks if it can't
+read it. Closing the window with **CANCEL** or **Esc**, or a change the game refuses (a
+restricted map, or in combat), has no fade, so the channel stays as it was. It looks for
+the window as often as **Capture every (seconds)** in Settings (0.1 by default). For 15 seconds after you pick
 your channel at start, channel changes aren't detected, in case you had the Change Channel
 window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.
@@ -168,7 +168,9 @@ megaphone's message as it was read (with no price), and the phrase goes to
 
 Megaphones are kept for 72 hours and then deleted; change this with the box at the top of
 the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
-item's history, copy its message or player name, or delete it. If the chat window isn't
+item's history, copy its message or player name, or delete it. **Filter** at the top shows
+only megaphones whose message has every word you type (any order, upper or lower case).
+If the chat window isn't
 found, draw it in **Settings → Window detection** (Chat).
 
 ### Nicknames

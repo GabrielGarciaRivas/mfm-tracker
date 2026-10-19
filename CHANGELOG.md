@@ -4,6 +4,12 @@
 
 ### Changed
 - **Shared Database:** the window also counts nicknames sent and received.
+- **Megaphones:** a **Filter** box shows only megaphones whose message has every word
+  typed in it.
+- **Channel:** the channel read from the Change Channel window is set only when the
+  screen fades to black within 3 seconds of the window closing (the game changing
+  channel). CANCEL, Esc, and changes the game refuses (restricted maps, in combat) leave
+  the channel as it was. This replaces watching for Esc and the mouse over CANCEL.
 - **Watched items:** a listing with a watched item is shown in bold red text (the whole
   row) instead of an outline around its icon. Megaphones with a watched item are shown
   the same way.

@@ -974,8 +974,10 @@ class App:
                 time.sleep(5)
 
     def on_channel_cancel(self, _=None):
-        """The game's Change Channel window was cancelled (Esc, or CANCEL): the channel stays."""
-        self._set_status(f"Change Channel window cancelled: still channel {self.channel() or '(not set)'}.")
+        """The game's Change Channel window closed but the game didn't change channel
+        (no fade to black: CANCEL, Esc, or a change the game refused): the channel stays."""
+        self._set_status(f"Change Channel window closed without changing channel: still channel "
+                         f"{self.channel() or '(not set)'}.")
 
     def on_channel_change(self, channel=None):
         """The game's Change Channel window was closed. The channel highlighted in it
@@ -2104,6 +2106,22 @@ class App:
         tip("Megaphones older than this are deleted.", sp)
         ttk.Label(top, text="hours. Newest first, read from the chat window while monitoring.").pack(side="left")
         self._nickname_buttons(top).pack(side="left", padx=(12, 0))
+        # filter: only megaphones whose message has every word typed here
+        ttk.Label(top, text="Filter:").pack(side="left", padx=(16, 4))
+        self.mega_filter = tk.StringVar()
+        fe = ttk.Entry(top, textvariable=self.mega_filter, width=26)
+        fe.pack(side="left")
+        tip("Shows only megaphones whose message has every word you type here "
+            "(any order, upper or lower case). Empty shows them all.", fe)
+        fe.bind("<Escape>", lambda e: self.mega_filter.set(""))
+        ttk.Button(top, text="Clear", width=6, command=lambda: self.mega_filter.set("")).pack(side="left", padx=(4, 0))
+        self._mega_filter_job = None
+
+        def filter_changed(*_):
+            if self._mega_filter_job:
+                self.root.after_cancel(self._mega_filter_job)
+            self._mega_filter_job = self.root.after(250, self._refilter_megaphones)
+        self.mega_filter.trace_add("write", filter_changed)
         self.mega_status = ttk.Label(top, foreground="#666")
         self.mega_status.pack(side="right")
         # right: what the OCR sees (the chat window, megaphones outlined)
@@ -2308,9 +2326,21 @@ class App:
                 mfm.UI_FREE.set()
         return cm()
 
+    def _refilter_megaphones(self):
+        self._mega_filter_job = None
+        last = getattr(self, "_mega_last", None)
+        if last:
+            with self._ui_busy():
+                self._fill_megaphones(*last)
+
     def _fill_megaphones(self, rows, markets):
         """One row per offer in a megaphone (an item it sells or buys), with the item's
-        icon, name and price once it's matched to an item."""
+        icon, name and price once it's matched to an item. With words in the Filter
+        box, only megaphones whose message has all of them."""
+        self._mega_last = (rows, markets)
+        words = [w.lower() for w in (self.mega_filter.get() if hasattr(self, "mega_filter") else "").split()]
+        if words:
+            rows = [r for r in rows if all(w in (r[4] or "").lower() for w in words)]
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())

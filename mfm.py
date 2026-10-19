@@ -2006,27 +2006,6 @@ def _join_row_blobs(boxes: list) -> list:
     return out
 
 
-def cursor_on_cancel(full: Image.Image, pair: list) -> bool:
-    """Is the game's mouse pointer (the white glove) over the CANCEL button of the
-    change-channel dialog? The glove is pale blue-white; nothing inside the orange
-    button is (its lettering is pure white)."""
-    x0, y0, w, h = pair
-    img = full.convert("RGB")
-    cl = int(x0 + w * 0.64)                       # CANCEL's left edge
-    box = (cl + 2, y0 + 2, x0 + w - 2, y0 + h - 2)
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return False
-    n = sum(1 for r, g, b in img.crop(box).getdata()
-            if min(r, g, b) >= 165 and b - r >= 10 and g - r >= 4)
-    if n < max(4, round(6 * (h / 27) ** 2)):
-        return False
-    # the glove's fingertip is its top left: if the glove also covers the right end of
-    # CHANGE CHANNEL (plain blue there, no lettering), the pointer is on that button
-    strip = (cl - int(0.8 * h), y0 + 3, cl - int(0.37 * h), y0 + h - 3)
-    pale = sum(1 for r, g, b in img.crop(strip).getdata() if min(r, g, b) >= 165)
-    return pale < 3
-
-
 def find_channel_dialog(full: Image.Image) -> list | None:
     """The game's change-channel dialog, found by its two buttons side by side:
     a blue CHANGE CHANNEL with an orange CANCEL just to its right, the same
@@ -2142,95 +2121,27 @@ def read_dialog_channel(full: Image.Image, pair: list | None = None) -> str | No
     return str(round((cy - y0_) / sy) * 8 + round((cx - x0_) / sx) + 1)
 
 
-_ESC_PROBE = None
-
-
-def esc_key_down() -> bool | None:
-    """Is Esc held down (or, on Windows, pressed since the last look)? Read straight
-    from the system, whatever window has focus. None where that can't be read
-    (e.g. Wayland)."""
-    global _ESC_PROBE
-    if _ESC_PROBE is None:
-        _ESC_PROBE = False
-        try:
-            import ctypes
-            import ctypes.util
-            kind = session_type()
-            if kind == "windows":
-                gaks = ctypes.windll.user32.GetAsyncKeyState
-                gaks.restype = ctypes.c_short
-                _ESC_PROBE = lambda: bool(gaks(0x1B) & 0x8001)
-            elif kind == "x11" or (kind == "wayland" and os.environ.get("DISPLAY")):
-                # on Wayland this goes through XWayland: it sees keys while an X11
-                # window (like the game under Wine) has focus
-                x = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
-                x.XOpenDisplay.restype = ctypes.c_void_p
-                x.XOpenDisplay.argtypes = [ctypes.c_char_p]
-                x.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-                x.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-                dpy = x.XOpenDisplay(None)
-                if dpy:
-                    code = x.XKeysymToKeycode(dpy, 0xFF1B)       # XK_Escape
-                    buf = ctypes.create_string_buffer(32)
-                    lock = threading.Lock()
-
-                    def probe():
-                        with lock:
-                            x.XQueryKeymap(dpy, buf)
-                            return bool(buf.raw[code // 8] & (1 << (code % 8)))
-                    _ESC_PROBE = probe
-            elif kind == "macos":
-                q = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
-                q.CGEventSourceKeyState.restype = ctypes.c_bool
-                q.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
-                _ESC_PROBE = lambda: bool(q.CGEventSourceKeyState(0, 53))   # combined state, kVK_Escape
-        except Exception:
-            _ESC_PROBE = False
-    if not _ESC_PROBE:
-        return None
-    try:
-        return _ESC_PROBE()
-    except Exception:
-        return None
-
-
-class _EscWatch:
-    """Looks at the Esc key every 15 ms on a small thread, from start() until
-    stop(), so a quick tap between screenshots isn't missed."""
-
-    def __init__(self):
-        self.pressed = False
-        self._stop = threading.Event()
-        self._thread = None
-
-    def start(self) -> None:
-        self.stop()
-        self.pressed = False
-        if esc_key_down() is None:
-            return
-        self._stop = threading.Event()
-        stop = self._stop
-
-        def run():
-            while not stop.is_set():
-                if esc_key_down():
-                    self.pressed = True
-                    return
-                stop.wait(0.015)
-        self._thread = threading.Thread(target=run, daemon=True, name="esc-watch")
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
+def faded_to_black(full: Image.Image, box) -> bool:
+    """Has the game faded to black here? (It does while it changes channel.)"""
+    l, t, r, b = (int(v) for v in box)
+    l, t = max(0, l), max(0, t)
+    r, b = min(full.width, r), min(full.height, b)
+    if r - l < 8 or b - t < 8:
+        return False
+    px = full.crop((l, t, r, b)).convert("RGB").resize((48, 24)).getdata()
+    dark = sum(1 for p in px if max(p) <= 30)
+    return dark >= 0.92 * len(px)
 
 
 class ChannelWatch:
     """Notices a channel change: the change-channel dialog (find_channel_dialog)
-    was on screen and has gone away, i.e. you changed channel (or cancelled).
-    It only counts as gone after `misses` checks in a row without it, so a
-    mouse over a button or one bad frame doesn't end it early. Pressing Esc while
-    the dialog is open, or closing it with the mouse over CANCEL, cancels it: no
-    change until the dialog shows up again."""
+    was on screen and went away, and the game then faded to black within
+    FADE_SECONDS (it does when it changes channel). Closing the dialog any other
+    way (CANCEL, Esc, or a change the game refuses: a restricted map, in combat)
+    has no fade, so it changes nothing. One frame without the dialog doesn't end
+    it: it counts as gone after `misses` checks in a row (about half a second)."""
+
+    FADE_SECONDS = 3.0
 
     def __init__(self, misses: int = 2, every: float | None = None, cfg: dict | None = None):
         # how often to look: `every` seconds, or the Capture every (seconds) setting
@@ -2238,23 +2149,21 @@ class ChannelWatch:
         self._read_memo: dict = {}
         self.seen = False
         self.gone = 0
+        self.gone_at = 0.0                  # when the dialog was last seen
+        self.waiting = False                # gone: waiting up to FADE_SECONDS for the fade
+        self.box = None                     # where the dialog was (checked for the fade)
         self.last = 0.0
         self.picked: str | None = None      # the channel highlighted while the dialog was open
         self.channel: str | None = None     # ... when it closed: the channel you changed to
-        self.esc = _EscWatch()
-        self.escaped = False                # Esc was pressed while the dialog was open
-        self.cancelled = False              # set when a dialog closed after Esc; see take_cancelled()
+        self.cancelled = False              # set when a dialog closed with no fade; see take_cancelled()
 
     def take_cancelled(self) -> bool:
-        """True once after a Change Channel window was closed with Esc."""
+        """True once after a Change Channel window closed without changing channel."""
         c, self.cancelled = self.cancelled, False
         return c
 
-    on_cancel = False                       # the mouse was over CANCEL when last seen
-
     def _reset(self) -> None:
-        self.seen, self.gone, self.escaped, self.on_cancel = False, 0, False, False
-        self.esc.stop()
+        self.seen, self.gone, self.waiting = False, 0, False
 
     paused = False
 
@@ -2290,9 +2199,15 @@ class ChannelWatch:
     def due(self) -> bool:
         return not self._off() and time.monotonic() - self.last >= self.every
 
+    def _changed(self) -> bool:
+        self._reset()
+        self.channel, self.picked = self.picked, None
+        return True
+
     def feed(self, full: Image.Image) -> bool:
-        """Check one screenshot; True once the dialog has come and gone."""
-        self.last = time.monotonic()
+        """Check one screenshot; True once the dialog has gone and the game faded
+        to black (self.channel: the channel highlighted in it, or None)."""
+        now = self.last = time.monotonic()
         if self._off():
             self._reset()
             return False
@@ -2305,17 +2220,11 @@ class ChannelWatch:
         pair = find_channel_dialog(full)
         if pair:
             if not self.seen:
-                self.picked, self.escaped = None, False
-                self.esc.start()
-            self.seen, self.gone = True, 0
-            try:
-                self.on_cancel = cursor_on_cancel(full, pair)
-            except Exception:
-                self.on_cancel = False
-            if self.escaped or self.esc.pressed:
-                self.escaped = True           # cancelled: stop reading until it closes
-                self.esc.stop()
-                return False
+                self.picked = None
+            self.seen, self.gone, self.waiting, self.gone_at = True, 0, False, now
+            x0, y0, w, h = pair
+            # the dialog: the buttons' row and the channel grid above it
+            self.box = (x0 + w - 3.2 * w, y0 - 8 * h, x0 + w, y0 + h)
             key = (tuple(pair), hashlib_md5(full.crop((max(0, pair[0] - 3 * pair[2]), max(0, pair[1] - pair[2]),
                                                        pair[0] + pair[2], pair[1])).resize((96, 32)).tobytes()))
             if key in self._read_memo:
@@ -2331,17 +2240,15 @@ class ChannelWatch:
             if ch:
                 self.picked = ch
             return False
-        if self.seen:
-            self.gone += 1
-            if self.gone >= max(self.misses, round(0.5 / self.every)):
-                escaped = self.escaped or self.esc.pressed or self.on_cancel
-                self._reset()
-                picked, self.picked = self.picked, None
-                if escaped:
-                    self.cancelled = True     # closed with Esc: keep the channel you had
-                    return False
-                self.channel = picked
-                return True
+        if not self.seen:
+            return False
+        if self.box and faded_to_black(full, self.box):
+            return self._changed()            # gone, and the game faded out: a new channel
+        self.gone += 1
+        if now - self.gone_at > self.FADE_SECONDS and self.gone >= self.misses:
+            self._reset()                     # gone with no fade: cancelled, or the game said no
+            self.picked = None
+            self.cancelled = True
         return False
 
 
