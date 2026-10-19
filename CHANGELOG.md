@@ -14,6 +14,10 @@
   settings file goes back to running the program.
 
 ### New
+- **Windows open on the screen the app is on.** An item's history, a shop photo,
+  Settings, the error window and the other windows now open over the main window,
+  centred on it. With two monitors they used to open on the main monitor even when
+  the app was on the other one.
 - **Shop photos:** the shop window as it was on screen when a row was logged is kept,
   so a shop, player or item name the OCR got wrong can be checked against the real
   thing. Right-click a sighting in an item's history (or a row in Live or Deals) →

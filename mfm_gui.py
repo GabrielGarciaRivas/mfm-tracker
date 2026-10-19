@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import sqlite3
+import sys
 import tkinter as tk
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
@@ -152,6 +153,30 @@ NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med"
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
            "mprice", "msell", "mbuy"}
 CENTER = {"channel", "best_channel"}
+
+
+def monitor_work_area(widget) -> tuple | None:
+    """(left, top, right, bottom) of the monitor the widget is on, without the
+    taskbar. Windows only; None elsewhere (one screen is assumed there)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+        u = ctypes.windll.user32
+        mon = u.MonitorFromWindow(widget.winfo_id(), 2)      # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not u.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return None
+        r = info.rcWork
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
 
 
 def shop_text(shop, seller) -> str:
@@ -1424,7 +1449,7 @@ class App:
         line = f"{datetime.now():%H:%M:%S}  {title}\n{msg}" + (f"\n→ {hint}" if hint else "")
         win = getattr(self, "_error_win", None)
         if win is None or not win.winfo_exists():
-            win = tk.Toplevel(self.root)
+            win = self.window()
             win.title("Free Market Tracker: error")
             win.transient(self.root)
             win.geometry("620x300")
@@ -3026,7 +3051,7 @@ class App:
                                    "Allow Free Market Tracker in System Settings > Privacy & Security > "
                                    "Screen Recording, then quit and reopen the app.")
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         self.inv_scan = win
         win.title("Auto Detect (beta)")
         win.geometry("920x660")
@@ -3179,7 +3204,7 @@ class App:
 
     def _choose_item(self, parent, title, cur=""):
         """A small dialog to pick an item by name (with suggestions). Returns the name or None."""
-        dlg = tk.Toplevel(parent)
+        dlg = self.window(parent)
         dlg.title(title)
         dlg.transient(parent)
         dlg.resizable(False, False)
@@ -3760,7 +3785,7 @@ class App:
         if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():
             self._nick_win.lift()
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         self._nick_win = win
         win.title("Nicknames")
         win.geometry("860x560")
@@ -4286,7 +4311,7 @@ class App:
             messagebox.showinfo("No item list", "Download the item list first "
                                 "(Settings → Game data → Update).")
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Match to database item")
         win.transient(self.root)
         win.geometry("540x520")
@@ -4879,7 +4904,7 @@ class App:
 
     def export_prices(self):
         """Save prices as CSV: one row per item (re-importable) or every sighting."""
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Export prices")
         win.transient(self.root)
         win.resizable(False, False)
@@ -4937,7 +4962,7 @@ class App:
         messagebox.showinfo("Pricing data cleared", f"Done. A backup was saved to:\n{backup}", parent=parent)
 
     def reset_personal(self, parent):
-        win = tk.Toplevel(parent)
+        win = self.window(parent)
         win.title("Reset personal settings")
         win.transient(parent)
         win.resizable(False, False)
@@ -5037,7 +5062,7 @@ class App:
         return box
 
     def settings(self):
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title("Settings")
         win.transient(self.root)
         win.resizable(False, False)
@@ -5255,7 +5280,7 @@ class App:
     def about(self, parent=None):
         import webbrowser
 
-        win = tk.Toplevel(parent or self.root)
+        win = self.window(parent)
         win.title("About Free Market Tracker")
         win.transient(parent or self.root)
         win.geometry("700x620")
@@ -5357,7 +5382,7 @@ class App:
 
     def _megaphone_history(self, item):
         """An item only seen in megaphones (no shop listings yet)."""
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title(item)
         win.geometry("1000x480")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
@@ -5368,6 +5393,33 @@ class App:
                   "(double-click one to copy it):").pack(anchor="w")
         frame, _ = self._megaphone_offers_table(win, item)
         frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+
+    def window(self, parent=None) -> tk.Toplevel:
+        """A new window over its parent, on the same screen: with two monitors the
+        system would open it on the main one, wherever the app is. It's placed
+        beside the parent's corner at once (so it never appears elsewhere) and
+        centred on the parent once its size is known, kept within that monitor."""
+        parent = parent or self.root
+        win = tk.Toplevel(parent)
+        win.geometry(f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 60}")
+
+        def centre():
+            try:
+                win.update_idletasks()
+                w, h = win.winfo_width(), win.winfo_height()
+                if w <= 1 or h <= 1:
+                    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+                x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
+                y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+                area = monitor_work_area(parent)
+                if area:
+                    x = max(area[0], min(x, area[2] - w))
+                    y = max(area[1], min(y, area[3] - h))
+                win.geometry(f"+{x}+{y}")
+            except tk.TclError:
+                pass                 # closed before it was placed
+        win.after_idle(centre)
+        return win
 
     def _listing_of(self, tree, iid) -> int | None:
         """The price-database row behind a Live or Deals table row, if it can be found."""
@@ -5410,7 +5462,7 @@ class App:
                                 parent=parent)
             return
         img = Image.open(io.BytesIO(data))
-        win = tk.Toplevel(parent)
+        win = self.window(parent)
         win.title(f"{item} — {shop or 'shop'} ({seller or 'player'})")
         win.transient(parent)
         ttk.Label(win, padding=(12, 10, 12, 4), style="Bold.TLabel", text=(
@@ -5449,7 +5501,7 @@ class App:
                 return self._megaphone_history(item)
             messagebox.showinfo(item, f"'{item}' hasn't been seen in any shop yet.", parent=self.root)
             return
-        win = tk.Toplevel(self.root)
+        win = self.window()
         win.title(item)
         win.geometry("1160x660")
         head = ttk.Frame(win, padding=(12, 10, 12, 0))
