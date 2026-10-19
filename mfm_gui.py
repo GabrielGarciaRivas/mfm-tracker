@@ -939,7 +939,13 @@ class App:
         self._build_inventory_tab()
 
         self.status = ttk.Label(self.root, style="Status.TLabel", padding=(10, 4))
-        self.status.pack(fill="x")
+        # packed ahead of the tabs, at the bottom: the tabs ask for more height than the
+        # window has, and whatever is packed after them is squeezed out of sight
+        self.status.pack(side="bottom", fill="x", before=self.nb)
+        # red, above the status bar: something to change in the game so it can be read
+        self.hints: dict[str, str] = {}
+        self.hint_bar = tk.Label(self.root, background="#c62828", foreground="white", anchor="w",
+                                 padx=10, pady=4, font="MfmBold", justify="left")
         self._set_status()
         self._update_stats(None, None)
 
@@ -1402,6 +1408,27 @@ class App:
     def _show_map(self):
         self.map_label.config(text=f"Map: {self.last_map or '—'}")
 
+    def _hint(self, key: str, text: str | None):
+        """Show (or, with None, take away) a red line in the bar above the status bar."""
+        if text:
+            self.hints[key] = text
+        else:
+            self.hints.pop(key, None)
+        if self.hints:
+            self.hint_bar.config(text="\n".join(self.hints.values()))
+            if not self.hint_bar.winfo_ismapped():
+                self.hint_bar.pack(side="bottom", fill="x", after=self.status)   # just above it
+        else:
+            self.hint_bar.pack_forget()
+
+    def on_chat_hint(self, no_time):
+        self._hint("chat_time", "Megaphones can't be read: turn on chat timestamps in the game's settings, "
+                                "so each chat line starts with its time, like [13:45]." if no_time else None)
+
+    def on_map_hint(self, no_name):
+        self._hint("map_name", "The map name can't be read: switch the game's minimap to the view that shows "
+                               "the map name (the street and map name above the map)." if no_name else None)
+
     def on_layout(self, layout):
         self.found_at = layout
         self._update_stats(None, None)
@@ -1425,6 +1452,8 @@ class App:
     def on_stopped(self, _p=None):
         """The monitor finished, including any frames still queued when Stop was pressed."""
         self.backlog = 0
+        self._hint("chat_time", None)          # (checked again on the next start)
+        self._hint("map_name", None)
         if self.stop_event is not None and self.stop_event.is_set():
             self._set_status("Stopped.")
 

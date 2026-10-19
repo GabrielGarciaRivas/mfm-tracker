@@ -1,5 +1,17 @@
 # Changelog
 
+## 2610.19.003 — 2026-10-19
+
+### New
+- **A red bar at the bottom of the window** says what to change in the game when it
+  can't be read: turn on chat timestamps (megaphones are on screen but no line starts
+  with its time), or switch the minimap to the view with the map name (the minimap is
+  there but its name panel isn't). It goes away once that's fixed.
+
+### Fixed
+- The status bar at the bottom of the window was squeezed out of sight on some screen
+  sizes. It always shows now.
+
 ## 2610.19.002 — 2026-10-19
 
 ### Fixed

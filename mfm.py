@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.002"
+VERSION = "2610.19.003"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -2763,7 +2763,7 @@ def find_store_by_buttons(img: Image.Image, scale: int) -> list[list]:
     return stores
 
 
-def find_minimap(full: Image.Image, store=None) -> list | None:
+def find_minimap(full: Image.Image, store=None, info: dict | None = None) -> list | None:
     """The minimap's title strip + street/map name panel, found by its own look:
     the white "MINI MAP" strip with the orange WORLD button at its right end, and
     the steel-blue name panel underneath. Its size changes with the map, so it's
@@ -2822,6 +2822,11 @@ def find_minimap(full: Image.Image, store=None) -> list | None:
                 break
             y += 1
         if y - panel_top < bh * 2.5:
+            # the MINI MAP strip, but no name panel: the map is switched to the view
+            # without its name. (Only a WORLD-sized button in the top half: the Change
+            # Channel window's CANCEL also sits under a white strip, and is bigger.)
+            if info is not None and bh <= 20 and ys < H / 2:
+                info["no_name"] = True
             continue
         found.append([max(0, left - 3), max(0, ys - 2), x1 + 8 - max(0, left - 3), y - max(0, ys - 2)])
     if not found:
@@ -7025,7 +7030,7 @@ def _line_look(line: Image.Image) -> tuple[tuple, float]:
 
 
 def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=None, unit: float | None = None,
-                    channel: str | None = None, marks: list | None = None) -> list[dict]:
+                    channel: str | None = None, marks: list | None = None, stats: dict | None = None) -> list[dict]:
     """Megaphones in a crop of the chat messages: [{time, player, channel, message,
     color}]. `unit` is about one line's height (from find_chat); `channel` is used for
     megaphones without a channel badge (the ones in your own channel). The boxes of
@@ -7116,7 +7121,13 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
                           + str((b[0] - lx0) if b else -1).encode())
         if key not in memo:
             memo[key] = _read_megaphone_line(row, b, lx0, lx1, u, [e for _, e in extra], chat, con)
+        if memo[key] and memo[key].get("no_time"):
+            if stats is not None:
+                stats["no_time"] = stats.get("no_time", 0) + 1
+            continue
         if memo[key]:
+            if stats is not None:
+                stats["timed"] = stats.get("timed", 0) + 1
             m = dict(memo[key])
             if not m["channel"]:
                 m["channel"] = channel
@@ -7156,7 +7167,9 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
         confs = [c for w, x, c in words if c >= 0]
         parsed = parse_chat_line(_drop_junk([(w, c) for w, x, c in words]))
     if not parsed:
-        return None
+        # no "[hh:mm]" at the start: the game's chat timestamps are probably off
+        head = " ".join(w for w, x, c in words)[:14]
+        return None if re.search(r"\d\s*[:;.]\s*\d", head) else {"no_time": True}
     hhmm, name, message = parsed
     hhmm = _read_chat_time(left, u * 3) or hhmm
     # names are letters and digits only; the font's g is often read as q
@@ -7876,6 +7889,8 @@ class MegaphoneWatch:
         self.busy = threading.Event()
         self.memo: dict = {}
         self.found = None
+        self.no_time = False      # megaphones are on screen without "[hh:mm]": timestamps are off
+        self._untimed = 0         # reads in a row that saw only megaphones without a time
 
     def due(self) -> bool:
         return not self.busy.is_set() and time.monotonic() - self.last >= self.every
@@ -7902,10 +7917,21 @@ class MegaphoneWatch:
                 return
             img = crop(full, region)
             marks: list = []
+            stats: dict = {}
             con = db()
             try:
                 got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=channel,
-                                      marks=marks)
+                                      marks=marks, stats=stats)
+                # megaphones without a time at the start, read after read (and none with
+                # one): the game's chat timestamps are off, and megaphones can't be read
+                if stats.get("timed"):
+                    self._untimed = 0
+                elif stats.get("no_time", 0) >= 2:
+                    self._untimed += 1
+                no_time = self._untimed >= 3
+                if no_time != self.no_time:
+                    self.no_time = no_time
+                    self.on_event("chat_hint", no_time)
                 n = save_megaphones(con, got) if got else 0
                 purge_megaphones(con, self.cfg.get("megaphone_hours", 72))
                 if got:
@@ -8372,6 +8398,7 @@ class Monitor:
             """The map you're on, from the minimap, every few seconds (also with no
             shop open): sends a "map" event when it changes."""
             spot, last_sig, last_name = None, None, None
+            hinted = False
             con = None
             while not stop_event.wait(MAP_EVERY):
                 full = latest["full"]
@@ -8381,7 +8408,13 @@ class Monitor:
                     area = drawn_area(self.cfg, "map_region")
                     if is_auto(area, full.size):
                         # where the minimap is: looked for again when it can't be read there
-                        spot = spot or find_minimap(full, self.layout.store if self.layout else None)
+                        if spot is None:
+                            info: dict = {}
+                            spot = find_minimap(full, self.layout.store if self.layout else None, info)
+                            hint = bool(info.get("no_name")) and spot is None
+                            if hint != hinted:
+                                hinted = hint
+                                self.on_event("map_hint", hint)   # "switch the minimap to show its name"
                         area = spot
                     if not area:
                         continue
