@@ -5137,11 +5137,24 @@ class App:
         the Shared Database server, and check the ones the reads didn't agree on."""
         box = ttk.LabelFrame(win, text=" OCR training ", padding=(10, 2, 10, 4))
         collect = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect", False)))
+        stores = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect_stores", False)))
+        players = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect_players", False)))
         share = tk.BooleanVar(value=bool(self.cfg.get("ocr_share", True)))
-        c1 = ttk.Checkbutton(box, text="Collect chat lines for training the OCR", variable=collect)
-        c1.pack(anchor="w")
+        ttk.Label(box, text="Collect for training the OCR:").pack(anchor="w")
+        kinds = ttk.Frame(box)
+        kinds.pack(anchor="w", padx=(12, 0))
+        c1 = ttk.Checkbutton(kinds, text="Chat lines", variable=collect)
+        c1.pack(side="left")
         tip("Keeps each megaphone line the OCR reads, as a picture with what was read. When several "
             "reads agree, that's its text; the rest wait for you in Check lines.", c1)
+        c3 = ttk.Checkbutton(kinds, text="Store names", variable=stores)
+        c3.pack(side="left", padx=(12, 0))
+        tip("Keeps each shop's title (the white bar at the top of the shop window) as a picture with "
+            "what was read, once per shop.", c3)
+        c4 = ttk.Checkbutton(kinds, text="Player names", variable=players)
+        c4.pack(side="left", padx=(12, 0))
+        tip("Keeps each shop owner's name (the dark box under the title) as a picture with what was "
+            "read, once per shop. A name also seen in a megaphone counts as agreed.", c4)
         c2 = ttk.Checkbutton(box, text="Send them to the Shared Database server", variable=share)
         c2.pack(anchor="w")
         tip("Lines with agreed or checked text go to your Shared Database server; the server's admin "
@@ -5162,7 +5175,7 @@ class App:
         show()
         box.refresh_counts = show
         self._ocr_counts_label = show
-        return box, (collect, share)
+        return box, (collect, share, stores, players)
 
     def ocr_lines_dialog(self):
         """One line at a time: its picture, and its text to fix. Enter saves it as
@@ -5185,6 +5198,12 @@ class App:
                                                                                               padx=(0, 10))
         where = ttk.Label(top, foreground="#555")
         where.pack(side="right")
+        kind_names = {"all": "All", "chat": "Chat lines", "store": "Store names", "player": "Player names"}
+        kind = tk.StringVar(value=kind_names["all"])
+        kc = ttk.Combobox(top, textvariable=kind, values=list(kind_names.values()), state="readonly", width=13)
+        kc.pack(side="right", padx=(0, 12))
+        kc.bind("<<ComboboxSelected>>", lambda e: load())
+        ttk.Label(top, text="Show:").pack(side="right", padx=(0, 4))
         ttk.Label(win, foreground="#555", wraplength=900, justify="left", padding=(12, 0, 12, 4), text=(
             "Type exactly what the picture says (keep spaces, brackets and capitals as shown), then press "
             "Enter. Skip leaves a line out of training: use it when you can't tell what it says.")).pack(anchor="w")
@@ -5200,8 +5219,10 @@ class App:
         state = {"grps": [], "i": 0, "img": None}
 
         def load(keep: int = 0):
+            k = next((key for key, name in kind_names.items() if name == kind.get()), "all")
             state["grps"] = [g for (g,) in self.con.execute(
-                "SELECT grp FROM ocr_lines WHERE status = ? GROUP BY grp ORDER BY MIN(id)", (which.get(),))]
+                "SELECT grp FROM ocr_lines WHERE status = ? AND (? = 'all' OR kind = ?) GROUP BY grp "
+                "ORDER BY MIN(id)", (which.get(), k, k))]
             state["i"] = min(keep, max(0, len(state["grps"]) - 1))
             show()
 
@@ -5215,7 +5236,7 @@ class App:
                 read_lbl.config(text="")
                 return
             g = grps[state["i"]]
-            rows = self.con.execute("SELECT png, read, text FROM ocr_lines WHERE grp = ? ORDER BY id",
+            rows = self.con.execute("SELECT png, read, text, kind FROM ocr_lines WHERE grp = ? ORDER BY id",
                                     (g,)).fetchall()
             import io
             img = Image.open(io.BytesIO(rows[0][0]))
@@ -5230,16 +5251,16 @@ class App:
                 img = img.resize((fit, max(1, img.height * fit // img.width)), Image.LANCZOS)
             state["img"] = ImageTk.PhotoImage(img)
             pic.config(image=state["img"], text="")
-            want = img.width + 40
+            want = max(img.width + 40, 980)
             if win.winfo_width() < want:
                 win.geometry(f"{want}x{max(300, win.winfo_height())}")
                 win.update_idletasks()
                 x = max(0, min(win.winfo_x(), win.winfo_screenwidth() - want))
                 win.geometry(f"+{x}+{max(0, win.winfo_y())}")
-            reads = sorted({r for _, r, _ in rows if r})
+            reads = sorted({r for _, r, _, _ in rows if r})
             read_lbl.config(text="Read as: " + "  |  ".join(reads[:3]) if len(reads) > 1 else "")
             text.set(rows[0][2] or rows[0][1] or "")
-            where.config(text=f"{state['i'] + 1} of {len(grps)}")
+            where.config(text=f"{kind_names.get(rows[0][3], 'Chat lines')[:-1]}  ·  {state['i'] + 1} of {len(grps)}")
             entry.focus_set()
             entry.icursor("end")
 
@@ -5590,6 +5611,8 @@ class App:
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
             self.cfg["ocr_collect"], self.cfg["ocr_share"] = ocr_vars[0].get(), ocr_vars[1].get()
+            self.cfg["ocr_collect_stores"], self.cfg["ocr_collect_players"] = ocr_vars[2].get(), ocr_vars[3].get()
+            mfm.OCR_COLLECT.set_from(self.cfg)
             self.cfg["channel_prompt"] = chan_prompt.get()
             try:
                 self.cfg["channel_count"] = max(1, min(100, int(float(chan_count.get()))))

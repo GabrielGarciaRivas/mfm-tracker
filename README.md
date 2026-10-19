@@ -391,19 +391,27 @@ it got about 0.8% of characters wrong instead of 5.6%. To use only the standard
 model, put `"trained_ocr": false` in `settings/config.json`.
 
 **OCR training** helps make that model better from what your app reads.
-- **Collecting:** with **Collect chat lines for training the OCR** on, the app keeps a
-  picture of each megaphone line it reads, with what it read (up to 2,500 pictures, about
-  45 MB). The pictures include player names from public chat.
+- **Collecting:** under **Collect for training the OCR**, tick what to keep:
+  - **Chat lines:** a picture of each megaphone line the app reads, with what it read.
+  - **Store names:** each shop's title (the white bar at the top of the shop window), once
+    per shop.
+  - **Player names:** each shop owner's name (the dark box under the title), once per shop.
+
+  Up to 2,500 pictures are kept in all (about 45 MB). They include player names from
+  public chat and shops.
 - **Automatic text:** a couple of minutes after a line was last read, the app works out
   its text. If the line was read the same way several times, or the standard English
   model read it exactly like the app's own model, that's its text ("agreed"). Reads with
   the OCR's usual slips (g read as q, a stray `|` or `?`, an item name that isn't on the
-  item list) are never agreed.
-- **Check lines:** the other lines wait in **Check lines**. Each shows the picture and its
-  likeliest text. Fix the text so it matches the picture exactly and press **Enter**, or
+  item list) are never agreed. A store or player name is the same picture every time, so
+  it's agreed when the standard model reads it exactly like the app's own model; a player
+  name is also agreed when the same name was read in a megaphone.
+- **Check lines:** the other lines wait in **Check lines** (**Show** picks chat lines,
+  store names or player names). Each shows the picture and its likeliest text. Fix the text so it matches the picture exactly and press **Enter**, or
   **Skip** a line you can't read. You can also look through the agreed ones and fix them.
 - **Sending:** with **Send them to the Shared Database server** on (and connected to a
-  server 2.5.0 or newer), agreed and checked lines go to your server. Its admin exports
+  server 2.5.0 or newer; 2.7.0 or newer for store and player names), agreed and checked
+  lines go to your server. Its admin exports
   them with `mfm-server export-ocr` for the next training run. Lines still to check
   aren't sent.
 

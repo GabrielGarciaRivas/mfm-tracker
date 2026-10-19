@@ -25,10 +25,12 @@ records which account sent it and from which IP address.
                                       Times: 30m, 1h, 12h, 1d, 2w. --dry-run only counts.
                                       Connected apps delete the same from their own data.
                                       (ocr: the OCR line images; only on the server.)
-  mfm-server export-ocr FILE.zip [--fixed | --auto] [--last 7d]
+  mfm-server export-ocr FILE.zip [--fixed | --auto] [--last 7d] [--chat | --stores | --players]
                                       the OCR line images the apps sent, with their text,
                                       for training the app's OCR (fixed: checked by hand;
-                                      auto: the app's reads agreed)
+                                      auto: the app's reads agreed). In the zip: lines/
+                                      (chat lines), stores/ (store names), players/
+                                      (player names); --chat etc. export only those.
 
 Settings (environment variables):
   MFM_PORT        port to listen on (default 8765)
@@ -91,7 +93,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -200,7 +202,8 @@ def db() -> sqlite3.Connection:
             text TEXT NOT NULL,                     -- what the line says
             status TEXT,                            -- auto (the app's reads agreed) or fixed (checked by hand)
             read TEXT,                              -- what the OCR read
-            added_by TEXT, added_by_id TEXT, added_ip TEXT
+            added_by TEXT, added_by_id TEXT, added_ip TEXT,
+            kind TEXT NOT NULL DEFAULT 'chat'       -- chat (megaphone line), store (shop title), player (shop owner)
         );
         CREATE TABLE IF NOT EXISTS purges (         -- `mfm-server purge` runs; the apps apply them too
             id INTEGER PRIMARY KEY,
@@ -218,6 +221,8 @@ def db() -> sqlite3.Connection:
         for c in cols:
             if c not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
+    if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(ocr_lines)")}:
+        con.execute("ALTER TABLE ocr_lines ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
     con.commit()
     return con
 
@@ -617,6 +622,8 @@ def store_aliases(con, aliases: list[dict], by: dict) -> tuple[int, dict]:
 
 
 OCR_MAX = int(os.environ.get("MFM_OCR_LINES", "20000"))
+# what an OCR line image shows, and its folder in `export-ocr`
+OCR_KINDS = {"chat": "lines", "store": "stores", "player": "players"}
 
 
 def store_ocr_lines(con, lines: list[dict], by: dict) -> tuple[int, dict]:
@@ -645,10 +652,12 @@ def store_ocr_lines(con, lines: list[dict], by: dict) -> tuple[int, dict]:
                 continue
             if not text or not png.startswith(b"\x89PNG") or len(png) > 200_000:
                 continue
+            kind = str(raw.get("kind") or "chat")
             con.execute("INSERT OR REPLACE INTO ocr_lines (uid, ts, png, text, status, read, added_by, "
-                        "added_by_id, added_ip) VALUES (?,?,?,?,?,?,?,?,?)",
+                        "added_by_id, added_ip, kind) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (uid, now, png, text, status if status in ("auto", "fixed") else "auto",
-                         str(raw.get("read") or "")[:400], by["name"], by["id"], by["ip"]))
+                         str(raw.get("read") or "")[:400], by["name"], by["id"], by["ip"],
+                         kind if kind in OCR_KINDS else "chat"))
             n += 1
         total = con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0]
         if total > OCR_MAX:     # the oldest agreed-on ones go first; checked ones last
@@ -658,22 +667,27 @@ def store_ocr_lines(con, lines: list[dict], by: dict) -> tuple[int, dict]:
     return n, {}
 
 
-def export_ocr(con, path: str, status: str = "all", since: timedelta | None = None) -> int:
-    """The stored line images as a zip: lines/<uid>.png and lines/<uid>.gt.txt (the
-    text). Hand it to whoever trains the app's OCR model."""
+def export_ocr(con, path: str, status: str = "all", since: timedelta | None = None,
+               kind: str = "all") -> int:
+    """The stored line images as a zip: <folder>/<status>_<uid>.png and .gt.txt (the
+    text), in lines/ (chat lines), stores/ (store names) and players/ (player names).
+    Hand it to whoever trains the app's OCR model."""
     import zipfile
 
     where, args = "1", []
     if status in ("auto", "fixed"):
         where, args = "status = ?", [status]
+    if kind in OCR_KINDS:
+        where += " AND kind = ?"
+        args.append(kind)
     if since is not None:
         where += " AND ts >= ?"
         args.append((datetime.now(timezone.utc) - since).strftime(UTC_FMT))
     n = 0
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        for uid, png, text, st in con.execute(f"SELECT uid, png, text, status FROM ocr_lines WHERE {where} "
-                                              "ORDER BY ts", args):
-            name = f"lines/{st or 'auto'}_{uid}"
+        for uid, png, text, st, k in con.execute(f"SELECT uid, png, text, status, kind FROM ocr_lines "
+                                                 f"WHERE {where} ORDER BY ts", args):
+            name = f"{OCR_KINDS.get(k, 'lines')}/{st or 'auto'}_{uid}"
             z.writestr(name + ".png", png)
             z.writestr(name + ".gt.txt", text + "\n")
             n += 1
@@ -1156,7 +1170,8 @@ def main(argv: list[str]) -> int:
     if cmd == "export-ocr":
         args = argv[2:]
         if not args or args[0].startswith("-"):
-            print("Usage: mfm-server export-ocr FILE.zip [--fixed | --auto] [--last TIME]")
+            print("Usage: mfm-server export-ocr FILE.zip [--fixed | --auto] [--last TIME] "
+                  "[--chat | --stores | --players]")
             return 2
         status = "fixed" if "--fixed" in args else "auto" if "--auto" in args else "all"
         since = None
@@ -1166,7 +1181,9 @@ def main(argv: list[str]) -> int:
             except (IndexError, ValueError) as e:
                 print(e if isinstance(e, ValueError) else "--last needs a time, e.g. 7d.")
                 return 2
-        n = export_ocr(con, args[0], status, since)
+        kind = "chat" if "--chat" in args else "store" if "--stores" in args else \
+            "player" if "--players" in args else "all"
+        n = export_ocr(con, args[0], status, since, kind)
         print(f"Wrote {n} line images with their text to {args[0]}.")
         return 0
     if cmd == "stats":
@@ -1175,7 +1192,10 @@ def main(argv: list[str]) -> int:
         m = con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
         k = con.execute("SELECT COUNT(*) FROM aliases WHERE deleted = 0").fetchone()[0]
         o = con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0]
-        print(f"{n} sightings of {items} items, {m} megaphones, {k} aliases, {o} OCR line images; "
+        by = dict(con.execute("SELECT kind, COUNT(*) FROM ocr_lines GROUP BY kind").fetchall())
+        o = (f"{o} OCR line images ({by.get('chat', 0)} chat, {by.get('store', 0)} store names, "
+             f"{by.get('player', 0)} player names)")
+        print(f"{n} sightings of {items} items, {m} megaphones, {k} aliases, {o}; "
               f"{DB_PATH.stat().st_size / 1e6:.1f} MB")
         _table(con.execute("SELECT added_by, added_by_id, COUNT(*) FROM sightings GROUP BY added_by_id "
                            "ORDER BY 3 DESC").fetchall(), ("user", "id", "sightings"))

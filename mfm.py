@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.005"
+VERSION = "2610.19.006"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -171,6 +171,8 @@ DEFAULT_CONFIG = {
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "ocr_collect": False,      # keep chat line images (and what was read) for OCR training
+    "ocr_collect_stores": False,   # ... and shop titles (store names)
+    "ocr_collect_players": False,  # ... and shop owners' names (player names)
     "ocr_share": True,         # ... and send the checked ones to the Shared Database server
     "ocr_workers": 3,          # frames read ahead at once while scrolling (1 = one at a time)
     "tesseract_library": True, # read through Tesseract's library (models loaded once) when it's there
@@ -365,7 +367,8 @@ def db() -> sqlite3.Connection:
             status TEXT NOT NULL DEFAULT 'new',     -- new, auto (reads agreed), unsure, fixed, skip
             sent INTEGER NOT NULL DEFAULT 0,
             uid TEXT,
-            alts TEXT                               -- the same image read by the other models (JSON)
+            alts TEXT,                              -- the same image read by the other models (JSON)
+            kind TEXT NOT NULL DEFAULT 'chat'       -- chat (megaphone line), store (shop title), player (shop owner)
         );
         CREATE INDEX IF NOT EXISTS idx_ocr_grp ON ocr_lines(grp);
         CREATE INDEX IF NOT EXISTS idx_ocr_status ON ocr_lines(status);
@@ -377,6 +380,8 @@ def db() -> sqlite3.Connection:
         );
         """
     )
+    if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(ocr_lines)")}:
+        con.execute("ALTER TABLE ocr_lines ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
     mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
     for col, typ in (("color", "TEXT"), ("votes", "TEXT"), ("conf", "REAL"), ("offers_sig", "TEXT"),
                      # Shared Database: id on the server, synced values
@@ -2010,10 +2015,20 @@ def read_seller(img: Image.Image, cfg: dict) -> str:
     crop_ = img.crop(box)
     g = ImageOps.invert(ImageOps.grayscale(crop_)).resize((crop_.width * 3, crop_.height * 3),
                                                           Image.LANCZOS)
-    g = ImageOps.expand(ImageOps.autocontrast(g), border=15, fill=255)
+    g = ImageOps.autocontrast(g)
     setup_tesseract(cfg)
-    text = ocr_text(g, "--psm 7").strip()
+    text = ocr_text(ImageOps.expand(g, border=15, fill=255), "--psm 7").strip()
+    _collect_name(cfg, "player", g, text)
     return re.sub(r"^[\W_]+|[\W_]+$", "", text.split()[0]) if text.split() else ""
+
+
+def _collect_name(cfg: dict, kind: str, img: Image.Image, text: str) -> None:
+    """With Settings → Reading → OCR training → Collect store / player names on: keep
+    the picture the OCR just read, with what it read. The same shop gives the same
+    picture, so it's kept once (grouped by the picture itself)."""
+    OCR_COLLECT.set_from(cfg)
+    if OCR_COLLECT.wants(kind):
+        OCR_COLLECT.add(f"{kind}|{hashlib_md5(img.tobytes())}|0", img, text, kind)
 
 
 def header_signature(img: Image.Image) -> bytes:
@@ -2136,11 +2151,18 @@ def read_title(img: Image.Image, cfg: dict, below_y: int | None = None) -> str:
         return ""
     y0, y1 = best
     bar = img.crop((int(w * 0.06), y0 + 1, w - 2, y1 - 1))  # skip the grip icon on the left
+    # ... and the thin line after it, when it's in there: it reads as "~" or "|"
+    bp = ImageOps.grayscale(bar).load()
+    for x in range(min(bar.width // 8, 40)):
+        if sum(1 for y in range(bar.height) if bp[x, y] < 215) >= 0.7 * bar.height:
+            bar = bar.crop((x + 2, 0, bar.width, bar.height))
+            break
     up = 3
     g = ImageOps.autocontrast(ImageOps.grayscale(bar).resize((bar.width * up, bar.height * up),
                                                              Image.LANCZOS))
     setup_tesseract(cfg)
     text = ocr_text(g, "--psm 7").strip()
+    _collect_name(cfg, "store", g, text)
     toks = [t for t in text.split() if not is_junk(t)]
     return correct_title(re.sub(r"^[^\w<>]+", "", " ".join(toks)).strip())
 
@@ -7300,7 +7322,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     slack = int(0.15 * pitch)
     memo = memo if memo is not None else {}
     setup_tesseract(cfg)
-    OCR_COLLECT.on = bool(cfg.get("ocr_collect"))
+    OCR_COLLECT.set_from(cfg)
 
     # the lines on screen, top to bottom
     lines = []
@@ -7424,7 +7446,8 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
 
 # --------------------------------------------------------------------------- OCR training lines
 # With "Collect chat lines for OCR training" on, every megaphone line image the OCR reads
-# is kept with what was read (table ocr_lines). The same line is read again on every
+# is kept with what was read (table ocr_lines); "Collect store names" and "Collect player
+# names" do the same for shop titles and shop owners' names (kind store / player). The same line is read again on every
 # frame it's on screen (and the chat is see-through, so each image differs a little):
 # when those reads agree, that's the line's text ("auto"); when they don't, it waits in
 # Settings → Reading → OCR training → Check lines for you to fix ("unsure"). Checked lines go to
@@ -7441,11 +7464,21 @@ class _OcrCollector:
     """Takes line images from the OCR thread and saves them (its own connection)."""
 
     def __init__(self):
-        self.on = False
+        self.on = False           # chat lines (megaphones)
+        self.stores = False       # shop titles
+        self.players = False      # shop owners' names
         self._local = threading.local()
 
-    def add(self, grp: str, img: Image.Image, read: str) -> None:
-        if not self.on or img is None or img.width < 20 or not read.strip():
+    def wants(self, kind: str) -> bool:
+        return {"chat": self.on, "store": self.stores, "player": self.players}.get(kind, False)
+
+    def set_from(self, cfg: dict) -> None:
+        self.on = bool(cfg.get("ocr_collect"))
+        self.stores = bool(cfg.get("ocr_collect_stores"))
+        self.players = bool(cfg.get("ocr_collect_players"))
+
+    def add(self, grp: str, img: Image.Image, read: str, kind: str = "chat") -> None:
+        if not self.wants(kind) or img is None or img.width < 20 or not read.strip():
             return
         try:
             con = getattr(self._local, "con", None)
@@ -7453,13 +7486,16 @@ class _OcrCollector:
                 con = self._local.con = db()
             n = con.execute("SELECT COUNT(*) FROM ocr_lines WHERE grp = ?", (grp,)).fetchone()[0]
             status = con.execute("SELECT status FROM ocr_lines WHERE grp = ? LIMIT 1", (grp,)).fetchone()
-            if n >= OCR_PER_LINE or (status and status[0] != "new"):
+            # a store or player name is the same picture every time (the shop window isn't
+            # see-through, unlike the chat): one image of it is enough
+            if n >= (OCR_PER_LINE if kind == "chat" else 1) or (status and status[0] != "new"):
                 return
             import io
             buf = io.BytesIO()
             img.convert("L").save(buf, "PNG", optimize=True)
-            con.execute("INSERT INTO ocr_lines (grp, ts, png, read, alts) VALUES (?,?,?,?,?)",
-                        (grp, utc_now(), buf.getvalue(), " ".join(read.split()), json.dumps(self._alts(img))))
+            con.execute("INSERT INTO ocr_lines (grp, ts, png, read, alts, kind) VALUES (?,?,?,?,?,?)",
+                        (grp, utc_now(), buf.getvalue(), " ".join(read.split()), json.dumps(self._alts(img)),
+                         kind))
             con.commit()
         except Exception:
             pass
@@ -7534,6 +7570,9 @@ def settle_ocr_lines(con, now_iso: str | None = None) -> dict:
                 if standard and standard in (r, trained_alone) and (g.endswith("|0") or len(standard) >= 12):
                     top, status = standard, "auto"
                     break
+        if status == "unsure" and g.startswith("player|") and re.fullmatch(r"[A-Za-z0-9]{3,13}", top) \
+                and con.execute("SELECT 1 FROM megaphones WHERE player = ? LIMIT 1", (top,)).fetchone():
+            status = "auto"     # the same name was read in a megaphone (another picture, another font size)
         if status == "auto" and not plausible_ocr_text(top):
             status = "unsure"
         rows = [(i, r) for i, r, _ in rows]

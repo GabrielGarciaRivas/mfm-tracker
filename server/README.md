@@ -236,8 +236,9 @@ docker compose exec mfm-server mfm-server purge all --all
 
 ## OCR training lines
 
-Apps with **Settings → Reading → OCR training** turned on send pictures of megaphone lines with
-their text: agreed by the app's own reads, or checked by hand. They're kept for training
+Apps with **Settings → Reading → OCR training** turned on send pictures of megaphone lines,
+store names and player names with their text: agreed by the app's own reads, or checked
+by hand. They're kept for training
 the app's OCR model (up to 20,000 pictures; set `MFM_OCR_LINES` to change that). The
 pictures include player names from public chat, so keep the export private.
 
@@ -247,9 +248,10 @@ docker compose cp mfm-server:/data/ocr.zip ./ocr.zip
 ```
 
 - **Which lines:** `--fixed` exports only the lines checked by hand, and `--auto` only
-  the agreed ones. `--last 7d` exports only lines from the past week.
-- **What's inside:** the zip has `lines/NAME.png` and `lines/NAME.gt.txt` (the text) for
-  each line. Hand it over for the next training run.
+  the agreed ones. `--last 7d` exports only lines from the past week. `--chat`,
+  `--stores` or `--players` exports only that kind.
+- **What's inside:** each picture as `NAME.png` with its text in `NAME.gt.txt`: chat lines
+  in `lines/`, store names in `stores/` and player names in `players/`. Hand it over for the next training run.
 - **Deleting them:** `purge ocr --all` deletes them.
 - **The log:** each purge is written to the server's event log (`mfm-server log`).
 
@@ -308,7 +310,7 @@ JSON over HTTP. Sign in with `POST /api/v1/login`; every other `/api` request ne
 | `GET /api/v1/sightings?since=SEQ&limit=N` | `{"sightings": [...], "seq", "more"}` |
 | `POST /api/v1/megaphones` with `{"megaphones": [...]}` (up to 500) | `{"seq", "same": {sent uid: stored uid}}` |
 | `GET /api/v1/megaphones?since=SEQ&hours=H` | `{"megaphones": [...], "seq", "more"}` (only the last H hours) |
-| `POST /api/v1/ocr` with `{"lines": [{uid, png (base64), text, status, read}]}` (up to 100) | `{"stored"}`; chat line pictures for OCR training (status `auto`, `fixed`, or `skip` to remove one) |
+| `POST /api/v1/ocr` with `{"lines": [{uid, png (base64), text, status, read, kind}]}` (up to 100) | `{"stored"}`; pictures for OCR training (status `auto`, `fixed`, or `skip` to remove one; kind `chat`, `store` or `player`, 2.7.0+) |
 | `POST /api/v1/aliases` with `{"aliases": [{key, item, deleted, updated}]}` (up to 500) | `{"seq", "same": {}}`; the newest change of each alias wins; item `""` = "not an item", an item starting with `=` = words (e.g. `"=Intermediate"`) |
 | `GET /api/v1/aliases?since=SEQ` | `{"aliases": [{key, item, deleted, updated, seq, by}], "seq", "more"}` |
 | `GET /api/v1/purges?since=ID` | `{"purges": [{id, ts, what, field, start, end}], "last"}`: what `purge` deleted, as time ranges (`field` "seen" = last seen or changed, "first" = first stored; `start` ≤ time < `end`), for the apps to delete too |

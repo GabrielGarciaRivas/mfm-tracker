@@ -1,5 +1,24 @@
 # Changelog
 
+## 2610.19.006 — 2026-10-19
+
+### New
+- **OCR training for store names and player names.** Settings → Reading → OCR training
+  now has three boxes under "Collect for training the OCR": **Chat lines** (as before),
+  **Store names** (shop titles) and **Player names** (shop owners). A store or player
+  name is kept once per shop. It's agreed when the standard and the app's own model read
+  it the same, or (player names) when the same name was read in a megaphone; the rest wait
+  in **Check lines**, which can now **Show** one kind at a time.
+- **Shared Database server 2.7.0** keeps which kind each picture is, and
+  `mfm-server export-ocr` puts them in `lines/`, `stores/` and `players/` (or exports one
+  kind with `--chat`, `--stores` or `--players`). Older servers still get chat lines;
+  store and player names wait until the server is updated.
+
+### Fixed
+- The thin line at the left of a shop's title bar was sometimes read as "~" in front of
+  the title. It's left out of what's read now.
+- Check lines opened very narrow for a short picture.
+
 ## 2610.19.005 — 2026-10-19
 
 ### New

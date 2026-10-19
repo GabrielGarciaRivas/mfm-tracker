@@ -488,24 +488,28 @@ class SharedSync:
 
     # -- OCR training lines (Settings → OCR training): checked ones go to the server
     def _send_ocr(self, con) -> int:
-        if "ocr_lines" not in self.info or not self.cfg.get("ocr_collect") or not self.cfg.get("ocr_share", True):
+        if "ocr_lines" not in self.info or not self.cfg.get("ocr_share", True) or not any(
+                self.cfg.get(k) for k in ("ocr_collect", "ocr_collect_stores", "ocr_collect_players")):
             return 0
         if time.monotonic() - self._ocr_settled >= 60:
             self._ocr_settled = time.monotonic()
             mfm.settle_ocr_lines(con)
-        rows = con.execute("SELECT id, uid, png, text, status, read FROM ocr_lines WHERE sent = 0 AND "
-                           "status IN ('auto', 'fixed', 'skip') ORDER BY id LIMIT 50").fetchall()
+        # servers before 2.7.0 don't know store and player names: those wait for a newer one
+        kinds_ok = mfm.version_tuple(self.info.get("version", "")) >= (2, 7)
+        rows = con.execute("SELECT id, uid, png, text, status, read, kind FROM ocr_lines WHERE sent = 0 AND "
+                           "status IN ('auto', 'fixed', 'skip') AND (kind = 'chat' OR ?) ORDER BY id LIMIT 50",
+                           (int(kinds_ok),)).fetchall()
         if not rows:
             return 0
         import base64
         out, mark = [], []
-        for rid, uid, png, text, status, read in rows:
+        for rid, uid, png, text, status, read, kind in rows:
             if status == "skip" and not uid:
                 mark.append((None, rid))      # never sent: nothing to take back
                 continue
             uid = uid or uuid.uuid4().hex
             out.append({"uid": uid, "png": base64.b64encode(png).decode(), "text": text or "",
-                        "status": status, "read": read or ""})
+                        "status": status, "read": read or "", "kind": kind or "chat"})
             mark.append((uid, rid))
         if out:
             self.server.send_ocr(out)
