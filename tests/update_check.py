@@ -42,7 +42,8 @@ def main() -> int:
     else:
         exe = home / "Free Market Tracker"
     exe.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(stand_in, exe)
+    shutil.copyfile(stand_in, exe)      # (not copy2: macOS won't copy a system file's flags)
+    exe.chmod(0o755)
     args = ["-n", "300", "127.0.0.1"] if sys.platform == "win32" else ["300"]
     old_proc = subprocess.Popen([str(exe)] + args, stdout=subprocess.DEVNULL)
     time.sleep(1)
@@ -95,4 +96,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BaseException as e:
+        import traceback
+        traceback.print_exc()
+        tb = traceback.extract_tb(e.__traceback__)[-1]
+        print(f"FAILED at line {tb.lineno} ({tb.line}): {type(e).__name__}: {e}")
+        sys.exit(1)
