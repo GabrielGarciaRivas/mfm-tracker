@@ -17,7 +17,7 @@ on:
         default: "10000"
       data:
         description: "Encrypted training lines"
-        default: "ocr/lines-v4.zip.enc"
+        default: "ocr/lines-v3.zip.enc"
 
 permissions:
   contents: write
