@@ -19,6 +19,12 @@
   channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
 
 ### Fixed
+- **Free Market room read as "Free Market Entrance":** the room number on the minimap
+  was sometimes read as a look-alike ("<7>" as "</>"), and a name without a number was
+  then matched to the Entrance, so a whole visit to room 7 was logged there. Look-alikes
+  inside the brackets are now read as the digits they are ("/" → 7, "l" → 1, "O" → 0), a
+  name whose number still can't be read isn't trusted, and the map is read again on the
+  visit's next frames.
 - **No captured frame is thrown away any more.** The capture queue used to hold at most
   150 frames and, when the reading fell that far behind, the oldest was dropped for
   each new one — so *Frames waiting* sat at 150 and rows seen only in the dropped frames

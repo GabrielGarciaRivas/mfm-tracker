@@ -3261,7 +3261,26 @@ def _clean_map_line(ln: str) -> str:
         ln = " ".join(toks)
     ln = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", ln)       # "FreeMarket" -> "Free Market"
     ln = re.sub(r"(?<=\S)<", " <", ln)                 # "Market<4>" -> "Market <4>"
-    return ln
+    return re.sub(r"<([^<>]{1,3})>", _fix_map_number, ln)
+
+
+_DIGIT_LOOKALIKES = str.maketrans({"/": "7", "\\": "7", "?": "7", "|": "1", "l": "1", "I": "1", "!": "1",
+                                   "O": "0", "o": "0", "S": "5", "B": "8", "Z": "2", "z": "2", "g": "9"})
+
+
+def _fix_map_number(m: re.Match) -> str:
+    """The room number in "<7>" as the OCR gets it: "</>" (the 7's bar), "<l>", "<O>".
+    Only when every character is a digit or a look-alike, so "<Area 1>" is left alone."""
+    inner = re.sub(r"\s+", "", m.group(1))      # "<l O>": the camel-case split above added the space
+    fixed = inner.translate(_DIGIT_LOOKALIKES)
+    return f"<{fixed}>" if fixed.isdigit() else m.group(0)
+
+
+def map_number_unread(name: str) -> bool:
+    """True when the name has a <...> part without a number: the room or area number
+    wasn't read, so the name isn't trusted (it would snap to a different map)."""
+    m = re.search(r"<([^<>]*)>", name or "")
+    return bool(m) and not re.search(r"\d", m.group(1))
 
 
 def read_map(img: Image.Image, cfg: dict, known_maps: list[str] = ()) -> str:
@@ -3289,6 +3308,8 @@ def read_map(img: Image.Image, cfg: dict, known_maps: list[str] = ()) -> str:
     zone = good[-1]
     street = good[-2] if len(good) >= 2 else ""
     name = full_map_name(street, zone)
+    if map_number_unread(name):
+        return ""        # "Free Market <?>": better no map this frame than the wrong room
     if _map_names():
         return snap_map(name)                            # validated against the map lists
     return normalize_name(name, list(known_maps)) if known_maps else name
@@ -7083,7 +7104,8 @@ class Monitor:
         self._read_header(img)
         self.on_event("session", {"id": self.session_id, "shop": self.shop_name(),
                                   "title": self.title or "", "seller": self.seller or "",
-                                  "map": self.map, "started": datetime.now()})
+                                  "map": self.map, "channel": self.frame_channel,
+                                  "started": datetime.now()})
 
     def _read_header(self, img: Image.Image):
         """Title and seller, read on the first few frames of a visit and voted on."""
@@ -7302,6 +7324,11 @@ class Monitor:
             self._start_session(img)
         elif self.header_reads < 8:
             self._read_header(img)   # keep voting so a passing cursor gets outvoted
+            if not self.map and self.map_img is not None:
+                try:                 # the map's number may read on a later frame
+                    self.map = read_map(self.map_img, self.cfg, known_maps(self.con))
+                except Exception:
+                    pass
         self.last_listings = frame.listings
         # identical listings (two Cherub's Bows at the same price) are separate rows:
         # number them by how many times they appear in this frame

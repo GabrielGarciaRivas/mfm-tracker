@@ -1253,8 +1253,11 @@ class App:
         shop = (" · ".join(x for x in (p.get("title") and f"Shop: {p['title']}",
                                         p.get("seller") and f"Player: {p['seller']}") if x)
                 or p["shop"])
+        channel = p.get("channel") or self.channel()
         self.shop_title.config(text="  ·  ".join(x for x in (
-            shop, p["map"], f"opened {p['started']:%H:%M:%S}") if x))
+            shop, p["map"] and f"Map: {p['map']}",
+            channel and f"Channel: {mfm.channel_label(channel)}",
+            f"opened {p['started']:%H:%M:%S}") if x))
         self.last_map = p["map"] or self.last_map
         self._show_map()
         self._update_stats(None, None)
@@ -5408,10 +5411,14 @@ class App:
         win.transient(parent)
         ttk.Label(win, padding=(12, 10, 12, 4), style="Bold.TLabel", text=(
             f"{item}   ·   {mfm.fmt(price)}" + (f" × {qty}" if qty and qty > 1 else ""))).pack(anchor="w")
-        ttk.Label(win, padding=(12, 0, 12, 6), foreground="#555", text=(
-            f"Shop {shop or '—'}   ·   player {seller or '—'}   ·   {mp or 'map —'}"
-            + (f"   ·   {mfm.channel_label(channel)}" if channel else "")
-            + f"   ·   {mfm.local_time(ts)}")).pack(anchor="w")
+        # what the OCR read, as "Label: value" pairs with the labels in bold
+        row = ttk.Frame(win, padding=(12, 0, 12, 6))
+        row.pack(anchor="w")
+        for label, value in (("Shop:", shop or "—"), ("Player:", seller or "—"), ("Map:", mp or "—"),
+                             ("Channel:", mfm.channel_label(channel) if channel else "—"),
+                             ("Time:", mfm.local_time(ts))):
+            ttk.Label(row, text=label, style="Bold.TLabel").pack(side="left", padx=(0, 4))
+            ttk.Label(row, text=value, foreground="#555").pack(side="left", padx=(0, 14))
         ttk.Label(win, padding=(12, 0, 12, 6), foreground="#777", text=(
             "What the OCR read is above; the screen it read from is below. Click the picture to zoom.")
             ).pack(anchor="w")
