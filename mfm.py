@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.18.005"
+VERSION = "2610.18.006"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -107,6 +107,7 @@ for _d in (PRICES_DIR, SETTINGS_DIR, CACHE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 DB_PATH = PRICES_DIR / "prices.db"
 ICONS_DB_PATH = CACHE_DIR / "icons.db"
+SHOTS_DB_PATH = CACHE_DIR / "shots.db"   # shop photos: the screen when a listing was logged
 CONFIG_PATH = SETTINGS_DIR / "config.json"
 SETTINGS_FILES = {   # what "reset personal settings" can clear
     "settings": ("Settings and capture areas", ["config.json"]),
@@ -164,6 +165,8 @@ DEFAULT_CONFIG = {
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
+    "shot_days": 7,            # shop photos (the shop window as a row was logged) are kept
+                               # this long, to check a misread name; 0 = take none
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
     "alert_raise": True,       # bring the window to the front on an alert
@@ -175,8 +178,9 @@ DEFAULT_CONFIG = {
     "icon_rate": 10,             # icon downloads per second (slows down by itself if meowdb asks)
 }
 
-FRAME_QUEUE_MAX = 150   # captured frames waiting for OCR (~15-45 s of scrolling); above
-                        # this the oldest give way, so memory stays modest
+# Captured frames waiting for OCR are never thrown away: a frame may hold a row
+# that appears in no other, so the queue is unbounded. Frames where nothing moved
+# share one image, so a backlog only costs memory while you're actually scrolling.
 
 
 def load_config() -> dict:
@@ -211,6 +215,15 @@ UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime(UTC_FMT)
+
+
+def utc_at(monotonic_ts: float) -> str:
+    """UTC timestamp of a moment given as time.monotonic() (e.g. when a frame was captured)."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=max(0.0, time.monotonic() - monotonic_ts))
+            ).strftime(UTC_FMT)
+
+
+_NOW = object()   # step(): "use the monitor's current channel" (the default for direct callers)
 
 
 def utc_ago(**delta) -> str:
@@ -5576,6 +5589,87 @@ def location(shop, mp, channel) -> str:
     return " · ".join(parts)
 
 
+# --------------------------------------------------------------------------- shop photos
+# The shop window as it was on screen when a listing was logged, so a misread shop,
+# player or item name can be checked against the real thing later. A visit keeps its
+# first frame plus the ones where further rows appeared (scrolling), a few per visit.
+# They're a cache (cache/shots.db): lossy WebP, ~20 KB each, purged after `shot_days`.
+SHOT_QUALITY = 60
+SHOTS_PER_VISIT = 4
+
+
+def shots_db():
+    SHOTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(SHOTS_DB_PATH, timeout=10)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("CREATE TABLE IF NOT EXISTS shots (session TEXT NOT NULL, ts TEXT NOT NULL, "
+                "webp BLOB NOT NULL, PRIMARY KEY (session, ts))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_shots_ts ON shots(ts)")
+    return con
+
+
+def save_shot(con, session: str, ts: str, img: Image.Image) -> bool:
+    """Keep the frame `img` of visit `session`, captured at `ts` (a listing's ts)."""
+    import io
+
+    n = con.execute("SELECT COUNT(*) FROM shots WHERE session = ?", (session,)).fetchone()[0]
+    if n >= SHOTS_PER_VISIT:
+        return False
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "WEBP", quality=SHOT_QUALITY, method=4)
+    con.execute("INSERT OR IGNORE INTO shots (session, ts, webp) VALUES (?,?,?)", (session, ts, buf.getvalue()))
+    con.commit()
+    return True
+
+
+def load_shot(session: str | None, *stamps: str | None) -> bytes | None:
+    """The photo for a listing: the frame it was logged (or last seen / sold) on, by
+    timestamp; otherwise the nearest earlier frame of its visit, or the visit's first."""
+    if not SHOTS_DB_PATH.exists():
+        return None
+    con = sqlite3.connect(f"file:{SHOTS_DB_PATH}?mode=ro", uri=True, timeout=10)
+    try:
+        for ts in stamps:
+            if ts:
+                r = con.execute("SELECT webp FROM shots WHERE ts = ? ORDER BY session = ? DESC LIMIT 1",
+                                (ts, session or "")).fetchone()
+                if r:
+                    return r[0]
+        if not session:
+            return None
+        ts = next((t for t in stamps if t), None) or "9"
+        r = con.execute("SELECT webp FROM shots WHERE session = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
+                        (session, ts)).fetchone() \
+            or con.execute("SELECT webp FROM shots WHERE session = ? ORDER BY ts LIMIT 1", (session,)).fetchone()
+        return r[0] if r else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+
+
+def purge_shots(days: float) -> int:
+    """Delete shop photos older than `days` (all of them when days <= 0)."""
+    if not SHOTS_DB_PATH.exists():
+        return 0
+    con = shots_db()
+    try:
+        cur = (con.execute("DELETE FROM shots WHERE ts < ?", (utc_ago(days=days),)) if days > 0
+               else con.execute("DELETE FROM shots"))
+        con.commit()
+        if cur.rowcount:
+            con.execute("VACUUM")     # give the space back to the disk
+        return cur.rowcount
+    finally:
+        con.close()
+
+
+def shots_size() -> int:
+    """Bytes used by the shop photos (with their write-ahead log, if any)."""
+    return sum(p.stat().st_size for p in (SHOTS_DB_PATH, SHOTS_DB_PATH.with_name(SHOTS_DB_PATH.name + "-wal"))
+               if p.exists())
+
+
 def save_icon(con, item: str, icon: Image.Image | None, faded: bool) -> None:
     """Keep one thumbnail per item. A faded (sold-row) icon is replaced as soon
     as the item is seen in a normal row."""
@@ -6858,9 +6952,9 @@ class MegaphoneWatch:
 
         self.last = time.monotonic()
         self.busy.set()
-        threading.Thread(target=self._work, args=(full,), daemon=True).start()
+        threading.Thread(target=self._work, args=(full, self.channel()), daemon=True).start()
 
-    def _work(self, full):
+    def _work(self, full, channel):
         ui_pause()
         try:
             region, unit = self.cfg.get("chat_region"), None
@@ -6877,7 +6971,7 @@ class MegaphoneWatch:
             marks: list = []
             con = db()
             try:
-                got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=self.channel(),
+                got = read_megaphones(img, self.cfg, self.memo, con, unit=unit, channel=channel,
                                       marks=marks)
                 n = save_megaphones(con, got) if got else 0
                 purge_megaphones(con, self.cfg.get("megaphone_hours", 72))
@@ -6927,7 +7021,12 @@ class Monitor:
     def __init__(self, cfg: dict, on_event=None, channel: str | None = None):
         self.cfg = cfg
         self.on_event = on_event or (lambda kind, payload: None)
-        self.channel = channel
+        self.channel = channel          # the channel now (the GUI's Channel box)
+        self.frame_channel = channel    # the channel the frame being read was captured on
+        self._frame = None              # the frame being read, for the shop photo
+        self.shots_con = None           # cache/shots.db, opened on the first photo
+        self._shots_left = 0            # photos this visit may still take
+        self._shot_hashes: set = set()  # frames of this visit already photographed
         self.session_id: str | None = None
         self.title = self.seller = self.map = ""
         self.header_sig: bytes | None = None
@@ -6967,6 +7066,7 @@ class Monitor:
 
     def _start_session(self, img: Image.Image):
         self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self._shots_left, self._shot_hashes = SHOTS_PER_VISIT, set()
         self.seen.clear()
         self.pending.clear()
         self.pending_unmatched.clear()
@@ -7055,6 +7155,9 @@ class Monitor:
 
     def _sighting(self, key: tuple, listing: Listing):
         if key in self.seen or self._duplicate_of_seen(listing):
+            # logged, or an OCR variant of a logged row: no more re-reads for it,
+            # or every unchanged frame of the visit would go through the full OCR
+            self.pending_unmatched.pop(key, None)
             return
         self.pending[key] = self.pending.get(key, 0) + 1
         need = self.cfg["confirm_frames"]
@@ -7066,19 +7169,36 @@ class Monitor:
         self.pending_unmatched.pop(key, None)
         self._log(key, listing)
 
+    def _shoot(self, ts: str) -> None:
+        """Keep the frame a listing was just logged from, once per distinct frame and
+        a few times per visit (see SHOTS_PER_VISIT)."""
+        if not self.cfg.get("shot_days", 7) or self._frame is None or self._shots_left <= 0 \
+                or self.last_hash in self._shot_hashes or not self.session_id:
+            return
+        try:
+            if self.shots_con is None:
+                self.shots_con = shots_db()
+            if save_shot(self.shots_con, self.session_id, ts, self._frame):
+                self._shots_left -= 1
+                self._shot_hashes.add(self.last_hash)
+        except Exception as e:
+            self._shots_left = 0      # don't keep failing for the rest of the visit
+            self.on_event("error", f"shop photo not saved: {type(e).__name__}: {e}")
+
     def _log(self, key: tuple, listing: Listing):
         each = listing.price
         mkt, _ = market_rate(self.con, listing.item, self.cfg)
         v, pct = verdict(each, mkt, self.cfg["deal_threshold_pct"],
                          outlier_bounds(self.con, listing.item, self.cfg))
-        ts = utc_now()
+        ts = utc_at(self._now)          # when the frame was captured, not when it was read
         info: dict = {}
-        status = log_listing(self.con, listing, self.title, self.seller, self.map, self.channel,
+        status = log_listing(self.con, listing, self.title, self.seller, self.map, self.frame_channel,
                              self.session_id, ts, info)
         save_icon(self.con, listing.item, listing.icon, listing.sold)
+        self._shoot(ts)
         s = SeenListing(listing.item, listing.price, listing.qty, each, mkt,
                         "SOLD" if listing.sold else v, pct, ts, self.shop_name(), self.map,
-                        listing.sold, status, self.channel, self.title or "", self.seller or "",
+                        listing.sold, status, self.frame_channel, self.title or "", self.seller or "",
                         info.get("id"), info.get("notes") or "")
         self.seen[key] = s
         self.on_event("new", s)
@@ -7111,10 +7231,13 @@ class Monitor:
         return not (title_ok and seller_ok)
 
     def step(self, img: Image.Image, map_img: Image.Image | None = None,
-             ts: float | None = None) -> None:
+             ts: float | None = None, channel=_NOW) -> None:
         if self.con is None:
             self.con = db()
         self._now = time.monotonic() if ts is None else ts
+        # the channel (and clock) the frame was captured on: with a queue of frames
+        # behind the screen, "now" may be a channel change and many seconds later
+        self.frame_channel = self.channel if channel is _NOW else channel
         if map_img is not None:
             self.map_img = map_img
         if self._split:
@@ -7126,6 +7249,7 @@ class Monitor:
             self.end_session()
             self.last_hash = None  # read this frame in full as the start of the new shop
         h = frame_hash(img)
+        self._frame = img
         unchanged = self.last_hash is not None and bin(h ^ self.last_hash).count("1") <= 8 \
             and not self.last_hidden   # the cursor moving off a row barely changes the hash
         if unchanged and any(k in self.pending_unmatched for k in self.last_keys):
@@ -7246,8 +7370,10 @@ class Monitor:
         calm again. Frames where nothing moved are queued as the same image, so
         repeats cost no memory and skip the OCR.
 
-        On stop the queued frames are still read, so a sweep made just before
-        pressing Stop isn't lost; setting `abort` as well throws them away.
+        No frame is ever dropped, however far behind the OCR falls: a frame may
+        be the only one showing a row. On stop the queued frames are still read,
+        so a sweep made just before pressing Stop isn't lost; setting `abort` as
+        well throws them away.
         """
         import queue as _queue
         import threading
@@ -7258,8 +7384,7 @@ class Monitor:
             self.on_event("error", f"can't open the price database: {type(e).__name__}: {e}")
             return
         blank = Image.new("RGB", (8, 8), (0, 0, 0))
-        frames: _queue.Queue = _queue.Queue(maxsize=FRAME_QUEUE_MAX)
-        dropped = [0]
+        frames: _queue.Queue = _queue.Queue()   # unbounded: no frame is ever dropped
         latest = {"full": None}     # the newest screenshot, for the map watcher
 
         def map_watch() -> None:
@@ -7323,17 +7448,9 @@ class Monitor:
                         imgs = last_imgs   # nothing moved: requeue the same image object
                     else:
                         last_h, last_imgs = h, imgs
-                    item = (imgs[0], imgs[1], time.monotonic())
-                    while True:
-                        try:
-                            frames.put_nowait(item)
-                            break
-                        except _queue.Full:   # OCR far behind: the oldest frame gives way
-                            try:
-                                frames.get_nowait()
-                                dropped[0] += 1
-                            except _queue.Empty:
-                                pass
+                    # stamped with the channel now, so a frame still queued when you
+                    # change channel is logged under the one it was captured on
+                    frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
                 except Exception as e:
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
@@ -7345,7 +7462,7 @@ class Monitor:
         try:
             while True:
                 try:
-                    img, map_img, ts = frames.get(timeout=0.2)
+                    img, map_img, ts, chan = frames.get(timeout=0.2)
                 except _queue.Empty:
                     if stop_event.is_set():
                         break    # every captured frame was read: done
@@ -7353,16 +7470,19 @@ class Monitor:
                 if stop_event.is_set() and self.abort:
                     break        # don't read what's left in the queue
                 try:
-                    self.step(img, map_img, ts)
+                    self.step(img, map_img, ts, chan)
                 except Exception as e:  # keep monitoring through transient failures
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 n = frames.qsize()
                 if (n == 0) != (last_backlog == 0) or abs(n - last_backlog) >= 5:
                     last_backlog = n   # how far the OCR is behind the screen, for the GUI
-                    self.on_event("backlog", {"frames": n, "dropped": dropped[0]})
+                    self.on_event("backlog", {"frames": n})
         finally:
             self.end_session()
-            self.on_event("stopped", {"dropped": dropped[0]})
+            if self.shots_con is not None:
+                self.shots_con.close()
+                self.shots_con = None
+            self.on_event("stopped", {})
 
 
 def watch(channel, cfg) -> None:

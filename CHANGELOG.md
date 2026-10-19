@@ -1,5 +1,33 @@
 # Changelog
 
+## 2610.18.006 — 2026-10-18
+
+### New
+- **Shop photos:** the shop window as it was on screen when a row was logged is kept,
+  so a shop, player or item name the OCR got wrong can be checked against the real
+  thing. Right-click a sighting in an item's history (or a row in Live or Deals) →
+  **Show shop photo**; click the picture to zoom. A visit keeps its first frame and
+  the ones where more rows appeared while scrolling, up to 4, about 20 KB each, in
+  `cache/shots.db`. They're deleted after 7 days (**Keep shop photos** in Settings;
+  0 turns them off). Settings shows how much space they take.
+- **Channel chevrons:** two small up / down arrows beside the Channel box step to the
+  next or previous channel (wrapping round at the ends). The mouse wheel over the box
+  and the Up key do the same. Stepping doesn't trigger the "which channel are you on?"
+  prompt when the game's Change Channel window then closes.
+- Each captured frame remembers the channel it was captured on, and listings are logged
+  with that channel and that moment: frames still waiting to be read when you change
+  channel no longer get the new channel (or a timestamp seconds late). Megaphones too.
+
+### Fixed
+- **No captured frame is thrown away any more.** The capture queue used to hold at most
+  150 frames and, when the reading fell that far behind, the oldest was dropped for
+  each new one — so *Frames waiting* sat at 150 and rows seen only in the dropped frames
+  were lost. The queue now grows as needed; frames where nothing moved share one image,
+  so it only takes memory while you scroll. Press Stop twice to discard what's queued.
+- A row whose name isn't in the item list, once logged or found to be a misread of a
+  logged row, no longer forces the full OCR on every frame of the visit while the screen
+  stands still. That was the usual reason the reading fell behind without any scrolling.
+
 ## 2610.18.005 — 2026-10-18
 
 ### Changed
