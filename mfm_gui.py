@@ -4963,6 +4963,138 @@ class App:
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
         ttk.Button(btns, text="Reset", command=go).pack(side="right", padx=6)
 
+    # ------------------------------------------------------------------ OCR training lines
+    def _ocr_training_frame(self, win):
+        """Settings → OCR training: collect chat line images, send the checked ones to
+        the Shared Database server, and check the ones the reads didn't agree on."""
+        box = ttk.LabelFrame(win, text=" OCR training ", padding=(10, 2, 10, 4))
+        collect = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect", False)))
+        share = tk.BooleanVar(value=bool(self.cfg.get("ocr_share", True)))
+        c1 = ttk.Checkbutton(box, text="Collect chat lines for training the OCR", variable=collect)
+        c1.pack(anchor="w")
+        tip("Keeps each megaphone line the OCR reads, as a picture with what was read. When several "
+            "reads agree, that's its text; the rest wait for you in Check lines.", c1)
+        c2 = ttk.Checkbutton(box, text="Send them to the Shared Database server", variable=share)
+        c2.pack(anchor="w")
+        tip("Lines with agreed or checked text go to your Shared Database server; the server's admin "
+            "exports them (mfm-server export-ocr) for training.", c2)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=(2, 0))
+        counts = ttk.Label(row, foreground="#555")
+        counts.pack(side="left")
+        ttk.Button(row, text="Check lines", command=self.ocr_lines_dialog).pack(side="right")
+
+        def show():
+            try:
+                n = mfm.settle_ocr_lines(self.con)
+            except Exception:
+                n = {}
+            counts.config(text=f"{n.get('unsure', 0):,} to check · {n.get('auto', 0):,} agreed · "
+                               f"{n.get('fixed', 0):,} checked")
+        show()
+        box.refresh_counts = show
+        self._ocr_counts_label = show
+        return box, (collect, share)
+
+    def ocr_lines_dialog(self):
+        """One line at a time: its picture, and its text to fix. Enter saves it as
+        checked and goes to the next; Skip leaves it out of training."""
+        old = getattr(self, "ocr_win", None)
+        if old is not None and old.winfo_exists():
+            old.deiconify()
+            old.lift()
+            return
+        mfm.settle_ocr_lines(self.con)
+        win = tk.Toplevel(self.root)
+        self.ocr_win = win
+        win.title("OCR lines")
+        win.transient(self.root)
+        top = ttk.Frame(win, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        which = tk.StringVar(value="unsure")
+        for val, text in (("unsure", "To check"), ("auto", "Agreed"), ("fixed", "Checked"), ("skip", "Skipped")):
+            ttk.Radiobutton(top, text=text, value=val, variable=which, command=lambda: load()).pack(side="left",
+                                                                                              padx=(0, 10))
+        where = ttk.Label(top, foreground="#555")
+        where.pack(side="right")
+        ttk.Label(win, foreground="#555", wraplength=900, justify="left", padding=(12, 0, 12, 4), text=(
+            "Type exactly what the picture says (keep spaces, brackets and capitals as shown), then press "
+            "Enter. Skip leaves a line out of training: use it when you can't tell what it says.")).pack(anchor="w")
+        pic = ttk.Label(win, relief="solid", anchor="w", padding=4)
+        pic.pack(fill="x", padx=12, pady=(4, 6))
+        read_lbl = ttk.Label(win, foreground="#777", padding=(12, 0))
+        read_lbl.pack(anchor="w")
+        text = tk.StringVar()
+        entry = ttk.Entry(win, textvariable=text, font=("TkFixedFont", 14))
+        entry.pack(fill="x", padx=12, pady=(2, 8))
+        bottom = ttk.Frame(win, padding=(12, 0, 12, 12))
+        bottom.pack(fill="x")
+        state = {"grps": [], "i": 0, "img": None}
+
+        def load(keep: int = 0):
+            state["grps"] = [g for (g,) in self.con.execute(
+                "SELECT grp FROM ocr_lines WHERE status = ? GROUP BY grp ORDER BY MIN(id)", (which.get(),))]
+            state["i"] = min(keep, max(0, len(state["grps"]) - 1))
+            show()
+
+        def show():
+            grps = state["grps"]
+            if not grps:
+                where.config(text="none")
+                pic.config(image="", text="Nothing here." if which.get() != "unsure" else
+                           "Nothing to check. Lines show up here a couple of minutes after they're read.")
+                text.set("")
+                read_lbl.config(text="")
+                return
+            g = grps[state["i"]]
+            rows = self.con.execute("SELECT png, read, text FROM ocr_lines WHERE grp = ? ORDER BY id",
+                                    (g,)).fetchall()
+            import io
+            img = Image.open(io.BytesIO(rows[0][0]))
+            if img.width > 1100:
+                img = img.resize((1100, max(1, img.height * 1100 // img.width)), Image.LANCZOS)
+            state["img"] = ImageTk.PhotoImage(img)
+            pic.config(image=state["img"], text="")
+            reads = sorted({r for _, r, _ in rows if r})
+            read_lbl.config(text="Read as: " + "  |  ".join(reads[:3]) if len(reads) > 1 else "")
+            text.set(rows[0][2] or rows[0][1] or "")
+            where.config(text=f"{state['i'] + 1} of {len(grps)}")
+            entry.focus_set()
+            entry.icursor("end")
+
+        def step(d):
+            if state["grps"]:
+                state["i"] = max(0, min(len(state["grps"]) - 1, state["i"] + d))
+                show()
+
+        def mark(status):
+            if not state["grps"]:
+                return
+            g = state["grps"][state["i"]]
+            t = text.get().strip()
+            if status == "fixed" and not t:
+                return
+            mfm.set_ocr_line(self.con, g, t if status == "fixed" else None, status)
+            if status == which.get():
+                step(1)                       # (re-saved in its own list: just move on)
+            else:
+                load(keep=state["i"])
+            if callable(getattr(self, "_ocr_counts_label", None)):
+                try:
+                    self._ocr_counts_label()
+                except tk.TclError:
+                    pass
+
+        ttk.Button(bottom, text="◀ Previous", command=lambda: step(-1)).pack(side="left")
+        ttk.Button(bottom, text="Next ▶", command=lambda: step(1)).pack(side="left", padx=(6, 0))
+        ttk.Button(bottom, text="Skip", command=lambda: mark("skip")).pack(side="right")
+        ttk.Button(bottom, text="Save (Enter)", command=lambda: mark("fixed")).pack(side="right", padx=(0, 6))
+        entry.bind("<Return>", lambda e: mark("fixed"))
+        entry.bind("<Prior>", lambda e: step(-1))
+        entry.bind("<Next>", lambda e: step(1))
+        win.geometry("980x300")
+        load()
+
     def _window_detection_frame(self, win):
         """Settings → Window detection: each capture area, found automatically or drawn
         by hand (with its coordinates), a button to draw it and one to go back to automatic."""
@@ -5141,6 +5273,8 @@ class App:
         cb = ttk.Checkbutton(win, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
         cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
         tip("Saves a picture of every screen read, for troubleshooting. Leave off normally.", cb)
+        ocr_box, ocr_vars = self._ocr_training_frame(win)
+        ocr_box.grid(row=len(fields) - 2, column=2, rowspan=3, sticky="nwe", padx=(0, 12), pady=(4, 0))
         # ---- channel picker (under data retention)
         chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", True))
         cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
@@ -5159,11 +5293,8 @@ class App:
         cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
                              variable=outliers_on)
         cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
-        tip("Leaves troll prices and misreads out of the market price.", cb)
-        ttk.Label(win, foreground="#777", justify="left", text=(
-            "200% ceiling = more than 3x the usual price.\n"
-            "75% floor = less than 1/4 of it.")).grid(row=len(fields) - 2, column=2, rowspan=2,
-                                                       sticky="nw", padx=(0, 12))
+        tip("Leaves troll prices and misreads out of the market price. "
+            "200% ceiling = more than 3x the usual price; 75% floor = less than 1/4 of it.", cb)
 
         def save():
             try:
@@ -5181,6 +5312,7 @@ class App:
                     return
             self.cfg.update(c)
             self.cfg["save_captures"] = save_caps.get()
+            self.cfg["ocr_collect"], self.cfg["ocr_share"] = ocr_vars[0].get(), ocr_vars[1].get()
             self.cfg["channel_prompt"] = chan_prompt.get()
             try:
                 self.cfg["channel_count"] = max(1, min(100, int(float(chan_count.get()))))

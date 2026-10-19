@@ -156,6 +156,9 @@ class Server:
     def nickname_changes(self, since: int) -> dict:
         return self.call("GET", "/api/v1/nicknames", query={"since": since, "limit": 5000})
 
+    def send_ocr(self, lines: list[dict]) -> dict:
+        return self.call("POST", "/api/v1/ocr", {"lines": lines})
+
     def purges(self, since: int) -> dict:
         return self.call("GET", "/api/v1/purges", query={"since": since})
 
@@ -226,6 +229,8 @@ class SharedSync:
         self.sent = self.received = 0
         self.mega_sent = self.mega_received = 0
         self.nick_sent = self.nick_received = 0
+        self.ocr_sent = 0
+        self._ocr_settled = 0.0
         self.purged = {"prices": 0, "megaphones": 0, "nicknames": 0}   # deleted here by server purges
         self.ok = False
         self.info: dict = {}
@@ -246,6 +251,7 @@ class SharedSync:
         self.on_status({"ok": ok, "text": text, "sent": self.sent, "received": self.received,
                         "mega_sent": self.mega_sent, "mega_received": self.mega_received,
                         "nick_sent": self.nick_sent, "nick_received": self.nick_received,
+                        "ocr_sent": self.ocr_sent, "ocr_server": "ocr_lines" in self.info,
                         "purged": dict(self.purged),
                         "server": self.info.get("name", ""), "version": self.info.get("version", ""),
                         "you": you.get("name", "") if isinstance(you, dict) else you, **more})
@@ -272,6 +278,7 @@ class SharedSync:
                 self._receive_megaphones(con)
                 self._send_nicknames(con)
                 self._receive_nicknames(con)
+                self._send_ocr(con)
                 self._status(True, "Connected")
             except SignedOut as e:
                 forget_login()                # the token is no good any more
@@ -470,6 +477,34 @@ class SharedSync:
         self.mega_received += new
         if mfm.update_offers(con) or new:
             self.on_megaphones(new)
+
+    # -- OCR training lines (Settings → OCR training): checked ones go to the server
+    def _send_ocr(self, con) -> int:
+        if "ocr_lines" not in self.info or not self.cfg.get("ocr_collect") or not self.cfg.get("ocr_share", True):
+            return 0
+        if time.monotonic() - self._ocr_settled >= 60:
+            self._ocr_settled = time.monotonic()
+            mfm.settle_ocr_lines(con)
+        rows = con.execute("SELECT id, uid, png, text, status, read FROM ocr_lines WHERE sent = 0 AND "
+                           "status IN ('auto', 'fixed', 'skip') ORDER BY id LIMIT 50").fetchall()
+        if not rows:
+            return 0
+        import base64
+        out, mark = [], []
+        for rid, uid, png, text, status, read in rows:
+            if status == "skip" and not uid:
+                mark.append((None, rid))      # never sent: nothing to take back
+                continue
+            uid = uid or uuid.uuid4().hex
+            out.append({"uid": uid, "png": base64.b64encode(png).decode(), "text": text or "",
+                        "status": status, "read": read or ""})
+            mark.append((uid, rid))
+        if out:
+            self.server.send_ocr(out)
+        con.executemany("UPDATE ocr_lines SET sent = 1, uid = COALESCE(?, uid) WHERE id = ?", mark)
+        con.commit()
+        self.ocr_sent += sum(1 for o in out if o["status"] != "skip")
+        return len(rows)
 
     # -- purges: what the server's admin deleted (mfm-server purge) is deleted here too
     def _apply_purges(self, con) -> None:

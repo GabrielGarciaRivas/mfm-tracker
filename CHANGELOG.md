@@ -6,6 +6,15 @@
 - **Shared Database:** the window also counts nicknames sent and received.
 - **Megaphones:** a **Filter** box shows only megaphones whose message has every word
   typed in it.
+- **OCR training (Settings):** the app can keep pictures of the megaphone lines it reads.
+  Lines read the same way several times, or the same by the standard and the app's own
+  model, get their text automatically. The rest wait in **Check lines** for you to fix
+  or skip. Agreed and checked lines go to the Shared Database server, for training the
+  OCR model.
+
+### Server 2.5.0
+- Keeps the OCR training lines the apps send. `mfm-server export-ocr FILE.zip` exports
+  them, and `mfm-server purge ocr` deletes them.
 - **Channel:** the channel read from the Change Channel window is set only when the
   screen fades to black within 3 seconds of the window closing (the game changing
   channel). CANCEL, Esc, and changes the game refuses (restricted maps, in combat) leave

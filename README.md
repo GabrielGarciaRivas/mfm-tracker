@@ -357,6 +357,23 @@ chat and shops) together with Tesseract's standard English one. On lines it hadn
 it got about 0.8% of characters wrong instead of 5.6%. To use only the standard
 model, put `"trained_ocr": false` in `settings/config.json`.
 
+**OCR training** helps make that model better from what your app reads.
+- **Collecting:** with **Collect chat lines for training the OCR** on, the app keeps a
+  picture of each megaphone line it reads, with what it read (up to 2,500 pictures, about
+  45 MB). The pictures include player names from public chat.
+- **Automatic text:** a couple of minutes after a line was last read, the app works out
+  its text. If the line was read the same way several times, or the standard English
+  model read it exactly like the app's own model, that's its text ("agreed"). Reads with
+  the OCR's usual slips (g read as q, a stray `|` or `?`, an item name that isn't on the
+  item list) are never agreed.
+- **Check lines:** the other lines wait in **Check lines**. Each shows the picture and its
+  likeliest text. Fix the text so it matches the picture exactly and press **Enter**, or
+  **Skip** a line you can't read. You can also look through the agreed ones and fix them.
+- **Sending:** with **Send them to the Shared Database server** on (and connected to a
+  server 2.5.0 or newer), agreed and checked lines go to your server. Its admin exports
+  them with `mfm-server export-ocr` for the next training run. Lines still to check
+  aren't sent.
+
 **Data retention:** listings not seen for 30 days are copied to an archive file and then
 removed (or just deleted, or kept forever). This runs at start, every 6 hours, and when you
 click **Clean up now**. A red warning appears if the price database grows past 100 MB.

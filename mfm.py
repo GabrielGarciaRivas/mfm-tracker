@@ -164,6 +164,8 @@ DEFAULT_CONFIG = {
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
+    "ocr_collect": False,      # keep chat line images (and what was read) for OCR training
+    "ocr_share": True,         # ... and send the checked ones to the Shared Database server
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
     "alert_sound_on": True,
     "alert_raise": True,       # bring the window to the front on an alert
@@ -328,6 +330,20 @@ def db() -> sqlite3.Connection:
             added TEXT, by TEXT, updated TEXT,
             shared_sig TEXT
         );
+        CREATE TABLE IF NOT EXISTS ocr_lines (      -- chat line images for OCR training
+            id INTEGER PRIMARY KEY,
+            grp TEXT NOT NULL,                      -- the same line of the same megaphone
+            ts TEXT NOT NULL,
+            png BLOB NOT NULL,
+            read TEXT,                              -- what the OCR read in this image
+            text TEXT,                              -- what the line says (agreed, or fixed by you)
+            status TEXT NOT NULL DEFAULT 'new',     -- new, auto (reads agreed), unsure, fixed, skip
+            sent INTEGER NOT NULL DEFAULT 0,
+            uid TEXT,
+            alts TEXT                               -- the same image read by the other models (JSON)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ocr_grp ON ocr_lines(grp);
+        CREATE INDEX IF NOT EXISTS idx_ocr_status ON ocr_lines(status);
         CREATE TABLE IF NOT EXISTS reference (
             item TEXT PRIMARY KEY,
             price INTEGER NOT NULL,
@@ -6096,6 +6112,7 @@ def read_megaphones(chat: Image.Image, cfg: dict, memo: dict | None = None, con=
     slack = int(0.15 * pitch)
     memo = memo if memo is not None else {}
     setup_tesseract(cfg)
+    OCR_COLLECT.on = bool(cfg.get("ocr_collect"))
 
     # the lines on screen, top to bottom
     lines = []
@@ -6191,8 +6208,12 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     hhmm = _read_chat_time(left, u * 3) or hhmm
     # names are letters and digits only; the font's g is often read as q
     name = re.sub(r"q(?!u)", "g", re.sub(r"[^A-Za-z0-9]", "", name))
-    for im in extra:
-        ws = _ocr_words(_chat_text(im))
+    grp = f"{datetime.now():%Y%m%d}|{hhmm}|{fold(name)}"
+    OCR_COLLECT.add(grp + "|0", line if b else left, " ".join(w for w, x, c in words))
+    for n, im in enumerate(extra, 1):
+        txt_img = _chat_text(im)
+        ws = _ocr_words(txt_img)
+        OCR_COLLECT.add(f"{grp}|{n}", txt_img, " ".join(w for w, x, c in ws))
         confs += [c for w, x, c in ws if c >= 0]
         t = _drop_junk([(w, c) for w, x, c in ws])
         message = _join_wrapped(message, t)
@@ -6200,6 +6221,152 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
     conf = round(sum(confs) / len(confs), 1) if confs else 0.0
     return {"time": hhmm, "player": name, "channel": badge_channel(chat, b) if b else None,
             "message": fix_megaphone_words(clean_megaphone(message), con), "conf": conf}
+
+
+# --------------------------------------------------------------------------- OCR training lines
+# With "Collect chat lines for OCR training" on, every megaphone line image the OCR reads
+# is kept with what was read (table ocr_lines). The same line is read again on every
+# frame it's on screen (and the chat is see-through, so each image differs a little):
+# when those reads agree, that's the line's text ("auto"); when they don't, it waits in
+# Settings → OCR training → Check lines for you to fix ("unsure"). Checked lines go to
+# the Shared Database server (mfm-server export-ocr), for training the app's OCR model.
+
+OCR_PER_LINE = 8          # images kept per line while it's being read
+OCR_KEEP_PER_LINE = 3     # ... and once settled (the misread ones first: they teach the most)
+OCR_LINES_MAX = 2500      # images kept here in all (about 45 MB)
+OCR_SETTLE_SECONDS = 120  # a line is settled this long after it was last read
+OCR_AGREE = 3             # reads that must agree (and 3 in 4 of all reads)
+
+
+class _OcrCollector:
+    """Takes line images from the OCR thread and saves them (its own connection)."""
+
+    def __init__(self):
+        self.on = False
+        self._local = threading.local()
+
+    def add(self, grp: str, img: Image.Image, read: str) -> None:
+        if not self.on or img is None or img.width < 20 or not read.strip():
+            return
+        try:
+            con = getattr(self._local, "con", None)
+            if con is None:
+                con = self._local.con = db()
+            n = con.execute("SELECT COUNT(*) FROM ocr_lines WHERE grp = ?", (grp,)).fetchone()[0]
+            status = con.execute("SELECT status FROM ocr_lines WHERE grp = ? LIMIT 1", (grp,)).fetchone()
+            if n >= OCR_PER_LINE or (status and status[0] != "new"):
+                return
+            import io
+            buf = io.BytesIO()
+            img.convert("L").save(buf, "PNG", optimize=True)
+            con.execute("INSERT INTO ocr_lines (grp, ts, png, read, alts) VALUES (?,?,?,?,?)",
+                        (grp, utc_now(), buf.getvalue(), " ".join(read.split()), json.dumps(self._alts(img))))
+            con.commit()
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _alts(img: Image.Image) -> list[str]:
+        """The same image read by the trained model alone and by the standard English
+        one: reads that don't share all their mistakes, so when the standard one
+        agrees with a trained one, that's very likely the line's text."""
+        import pytesseract
+
+        arg = ocr_lang_arg()
+        if f"-l {OCR_MODEL}+eng" not in arg:
+            return []
+        out = []
+        for lang in (OCR_MODEL, "eng"):
+            try:
+                t = pytesseract.image_to_string(ImageOps.expand(img, border=12, fill=255),
+                                                config="--psm 7" + arg.replace(f"{OCR_MODEL}+eng", lang))
+            except Exception:
+                t = ""
+            out.append(" ".join(t.split()))
+        return out
+
+
+OCR_COLLECT = _OcrCollector()
+
+
+def plausible_ocr_text(text: str) -> bool:
+    """False for a read with the OCR's usual slips in it, even when the models agree
+    on it (they share some): g read as q ("smeqa"), a stray "|" or "?", "=" for ">"
+    ("B= ..."), or an item in [brackets] that isn't on the item list."""
+    if re.search(r"q(?!u)", text, re.I) or "|" in text:
+        return False
+    if re.search(r"(^|\s)[?!.,:;]+(\s|$)", text.replace(" : ", " ")):
+        return False
+    if re.search(r"(^|[\s:])[SBTsbt]\s?=", text):
+        return False
+    if has_item_list():
+        for name in re.findall(r"\[([^\]]+)\]", text):
+            if not is_known_item(name):
+                return False
+    return True
+
+
+def settle_ocr_lines(con, now_iso: str | None = None) -> dict:
+    """Lines no longer being read get their text: the read most images agree on
+    ("auto"), or the likeliest one, to be checked ("unsure"). Extra images are
+    dropped, and the oldest beyond OCR_LINES_MAX. Returns counts by status."""
+    from collections import Counter
+
+    cutoff = utc_ago(seconds=OCR_SETTLE_SECONDS) if now_iso is None else now_iso
+    grps = [g for (g,) in con.execute("SELECT grp FROM ocr_lines WHERE status = 'new' GROUP BY grp "
+                                      "HAVING MAX(ts) < ?", (cutoff,))]
+    for g in grps:
+        rows = con.execute("SELECT id, read, alts FROM ocr_lines WHERE grp = ? ORDER BY id", (g,)).fetchall()
+        votes = Counter(r for _, r, _ in rows if r)
+        if not votes:
+            con.execute("DELETE FROM ocr_lines WHERE grp = ?", (g,))
+            continue
+        top, n = votes.most_common(1)[0]
+        status = "auto" if n >= OCR_AGREE and n >= 0.75 * len(rows) else "unsure"
+        if status == "unsure":
+            # or: the standard model read an image exactly as a trained one did (not for
+            # a short wrapped piece of a megaphone, like "olls dm": too little to tell)
+            for _, r, alts in rows:
+                try:
+                    trained_alone, standard = (json.loads(alts or "[]") + ["", ""])[:2]
+                except ValueError:
+                    continue
+                if standard and standard in (r, trained_alone) and (g.endswith("|0") or len(standard) >= 12):
+                    top, status = standard, "auto"
+                    break
+        if status == "auto" and not plausible_ocr_text(top):
+            status = "unsure"
+        rows = [(i, r) for i, r, _ in rows]
+        keep = sorted(rows, key=lambda r: (r[1] == top, r[0]))[:OCR_KEEP_PER_LINE]
+        ids = {i for i, _ in keep}
+        con.executemany("DELETE FROM ocr_lines WHERE id = ?", [(i,) for i, _ in rows if i not in ids])
+        con.execute("UPDATE ocr_lines SET text = ?, status = ? WHERE grp = ?", (top, status, g))
+    total = con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0]
+    if total > OCR_LINES_MAX:
+        # the oldest go first: skipped, then sent, then the rest
+        con.execute("DELETE FROM ocr_lines WHERE id IN (SELECT id FROM ocr_lines ORDER BY "
+                    "CASE WHEN status = 'skip' THEN 0 WHEN sent = 1 THEN 1 ELSE 2 END, id LIMIT ?)",
+                    (total - OCR_LINES_MAX,))
+    con.commit()
+    return ocr_line_counts(con)
+
+
+def ocr_line_counts(con) -> dict:
+    """Lines (not images) by status, and how many images were sent."""
+    out = {s: n for s, n in con.execute("SELECT status, COUNT(DISTINCT grp) FROM ocr_lines GROUP BY status")}
+    out["sent"] = con.execute("SELECT COUNT(*) FROM ocr_lines WHERE sent = 1").fetchone()[0]
+    return out
+
+
+def set_ocr_line(con, grp: str, text: str | None, status: str) -> None:
+    """You checked a line: its text (status "fixed"), or "skip" to leave it out."""
+    if text is not None:
+        con.execute("UPDATE ocr_lines SET text = ?, status = ?, sent = 0 WHERE grp = ?",
+                    (" ".join(text.split()), status, grp))
+    else:
+        con.execute("UPDATE ocr_lines SET status = ?, sent = 0 WHERE grp = ?", (status, grp))
+    con.commit()
 
 
 def _player_names(con) -> dict[str, str]:
