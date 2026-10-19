@@ -205,7 +205,7 @@ def num(s: str) -> float:
 
 WATCH_FG = "#d50000"       # rows with a watched item for sale (shops and megaphones): bold red
 
-# the capture areas you can draw (Settings → Window detection): config key, name, what
+# the capture areas you can draw (Settings → Reading → Window detection): config key, name, what
 # it's for
 AREAS = [("region", "Shop", "the store window"),
          ("map_region", "Map name", "the minimap's street and map name"),
@@ -2253,7 +2253,7 @@ class App:
             "Start monitoring to read megaphones." if not running else
             "Reading the chat area you drew." if manual and found else
             "Reading the chat window." if found else
-            "Chat window not found: open it in the game (or draw it in Settings → Window detection)." if found is False else
+            "Chat window not found: open it in the game (or draw it in Settings → Reading → Window detection)." if found is False else
             "Looking for the chat window…"))
 
     def on_chat(self, p):
@@ -3099,7 +3099,7 @@ class App:
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
                   "ones you want and click Add.",
                   wraplength=560, justify="left").pack(side="left")
-        ttk.Label(top, text="Not found? Settings → Window detection.", foreground="#666").pack(side="right")
+        ttk.Label(top, text="Not found? Settings → Reading → Window detection.", foreground="#666").pack(side="right")
         body = ttk.Frame(win, padding=(12, 4, 12, 4))
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
@@ -3299,7 +3299,7 @@ class App:
                     how = f"auto, found at {region[0]},{region[1]}" if region else ""
                 if not region:
                     self.events.put(("inv_scan", {"status": "Item Inventory not found. Open it in the game "
-                                                            "(or draw it in Settings → Window detection)."}))
+                                                            "(or draw it in Settings → Reading → Window detection)."}))
                 else:
                     win = mfm.crop(full, region)
                     tab = mfm.inventory_tab(win)
@@ -5081,7 +5081,7 @@ class App:
 
     # ------------------------------------------------------------------ OCR training lines
     def _ocr_training_frame(self, win):
-        """Settings → OCR training: collect chat line images, send the checked ones to
+        """Settings → Reading → OCR training: collect chat line images, send the checked ones to
         the Shared Database server, and check the ones the reads didn't agree on."""
         box = ttk.LabelFrame(win, text=" OCR training ", padding=(10, 2, 10, 4))
         collect = tk.BooleanVar(value=bool(self.cfg.get("ocr_collect", False)))
@@ -5212,7 +5212,7 @@ class App:
         load()
 
     def _window_detection_frame(self, win):
-        """Settings → Window detection: each capture area, found automatically or drawn
+        """Settings → Reading → Window detection: each capture area, found automatically or drawn
         by hand (with its coordinates), a button to draw it and one to go back to automatic."""
         box = ttk.LabelFrame(win, text=" Window detection ", padding=(10, 4, 10, 6))
         ttk.Label(box, foreground="#666", wraplength=700, justify="left", text=(
@@ -5289,7 +5289,8 @@ class App:
             lab.grid(row=i, column=1, sticky="w", padx=(10, 6))
             labels[key] = lab
             d = ttk.Button(box, text="Draw area",
-                           command=lambda k=key: self.calibrate(key=k, hide=(win,), on_set=refresh))
+                           command=lambda k=key: self.calibrate(key=k, hide=(win.winfo_toplevel(),),
+                                                                on_set=refresh))
             d.grid(row=i, column=2, padx=(0, 6), pady=2)
             a = ttk.Button(box, text="Automatic", command=lambda k=key: auto(k))
             a.grid(row=i, column=3, pady=2)
@@ -5309,6 +5310,21 @@ class App:
         win.title("Settings")
         win.transient(self.root)
         win.resizable(False, False)
+        # in tabs, so the window fits on smaller screens
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        gen = ttk.Frame(nb, padding=(0, 8, 0, 4))
+        rd = ttk.Frame(nb, padding=(12, 10, 12, 8))
+        gd = ttk.Frame(nb, padding=(12, 10, 12, 8))
+        nb.add(gen, text="  General  ")
+        nb.add(rd, text="  Reading  ")
+        nb.add(gd, text="  Game data  ")
+        try:
+            nb.select(int(self.cfg.get("settings_tab", 0)))
+        except (tk.TclError, ValueError, TypeError):
+            pass
+        nb.bind("<<NotebookTabChanged>>",
+                lambda e: self.cfg.__setitem__("settings_tab", nb.index(nb.select())), add="+")
         fields = [
             ("interval_seconds", "Capture every (seconds)", 0.05, 10, 0.05),
             ("ocr_workers", "Frames read at once", 1, 8, 1),
@@ -5348,15 +5364,15 @@ class App:
         }
         vars_ = {}
         for i, (key, label, lo, hi, step) in enumerate(fields):
-            lbl = ttk.Label(win, text=label)
+            lbl = ttk.Label(gen, text=label)
             lbl.grid(row=i, column=0, sticky="w", padx=12, pady=4)
             v = tk.StringVar(value=str(self.cfg.get(key, mfm.DEFAULT_CONFIG[key])))
-            spin = ttk.Spinbox(win, from_=lo, to=hi, increment=step, width=8, textvariable=v)
+            spin = ttk.Spinbox(gen, from_=lo, to=hi, increment=step, width=8, textvariable=v)
             spin.grid(row=i, column=1, padx=12, pady=4)
             tip(tips[key], lbl, spin)
             vars_[key] = (v, type(mfm.DEFAULT_CONFIG[key]))
         # ---- data retention (top right)
-        ret = ttk.LabelFrame(win, text=" Data retention ", padding=(10, 2, 10, 4))
+        ret = ttk.LabelFrame(gen, text=" Data retention ", padding=(10, 2, 10, 4))
         ret.grid(row=0, column=2, rowspan=5, sticky="nwe", padx=(0, 12), pady=(4, 0))
         r1 = ttk.Frame(ret)
         r1.pack(anchor="w", pady=(0, 2))
@@ -5450,18 +5466,20 @@ class App:
         show_size()
 
         save_caps = tk.BooleanVar(value=self.cfg.get("save_captures", False))
-        cb = ttk.Checkbutton(win, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
-        cb.grid(row=len(fields), column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self._window_detection_frame(rd).pack(fill="x")
+        ocr_box, ocr_vars = self._ocr_training_frame(rd)
+        ocr_box.pack(fill="x", pady=(10, 0))
+        cb = ttk.Checkbutton(rd, text="Save every capture as PNG (for debugging OCR)", variable=save_caps)
+        cb.pack(anchor="w", pady=(10, 0))
         tip("Saves a picture of every screen read, for troubleshooting. Leave off normally.", cb)
-        ocr_box, ocr_vars = self._ocr_training_frame(win)
-        ocr_box.grid(row=len(fields) - 2, column=2, rowspan=3, sticky="nwe", padx=(0, 12), pady=(4, 0))
+        self._game_data_frame(gd).pack(fill="x")
         # ---- channel picker (under data retention)
         chan_prompt = tk.BooleanVar(value=self.cfg.get("channel_prompt", True))
-        cb = ttk.Checkbutton(win, text="Ask for the channel at launch and after a channel change",
+        cb = ttk.Checkbutton(gen, text="Ask for the channel at launch and after a channel change",
                              variable=chan_prompt)
         cb.grid(row=5, column=2, sticky="w", padx=(0, 12), pady=4)
         tip("Asks for your channel when the app opens and after you change channel in the game.", cb)
-        rc = ttk.Frame(win)
+        rc = ttk.Frame(gen)
         rc.grid(row=6, column=2, sticky="w", padx=(0, 12), pady=4)
         chan_count = tk.StringVar(value=str(self.cfg.get("channel_count", 20)))
         lc = ttk.Label(rc, text="Channels in the channel picker")
@@ -5470,7 +5488,7 @@ class App:
         sc.pack(side="left", padx=8)
         tip("How many channel buttons the picker shows.", lc, sc)
         outliers_on = tk.BooleanVar(value=self.cfg.get("outliers_on", True))
-        cb = ttk.Checkbutton(win, text="Ignore outliers in market rates",
+        cb = ttk.Checkbutton(gen, text="Ignore outliers in market rates",
                              variable=outliers_on)
         cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
         tip("Leaves troll prices and misreads out of the market price. "
@@ -5505,12 +5523,8 @@ class App:
             self.refresh_tables()
             win.destroy()
 
-        self._window_detection_frame(win).grid(row=len(fields) + 1, column=0, columnspan=3, sticky="we",
-                                               padx=12, pady=(10, 0))
-        self._game_data_frame(win).grid(row=len(fields) + 2, column=0, columnspan=3, sticky="we",
-                                        padx=12, pady=(12, 0))
         bottom = ttk.Frame(win)
-        bottom.grid(row=len(fields) + 3, column=0, columnspan=3, sticky="we", padx=12, pady=(12, 12))
+        bottom.pack(fill="x", padx=12, pady=(10, 12))
         danger = ttk.LabelFrame(bottom, text=" Your data (prices and personal settings) ", padding=(10, 6))
         danger.pack(side="left")
         b1 = ttk.Button(danger, text="Clear pricing data", command=lambda: self.clear_prices(win))

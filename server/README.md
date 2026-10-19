@@ -236,7 +236,7 @@ docker compose exec mfm-server mfm-server purge all --all
 
 ## OCR training lines
 
-Apps with **Settings → OCR training** turned on send pictures of megaphone lines with
+Apps with **Settings → Reading → OCR training** turned on send pictures of megaphone lines with
 their text: agreed by the app's own reads, or checked by hand. They're kept for training
 the app's OCR model (up to 20,000 pictures; set `MFM_OCR_LINES` to change that). The
 pictures include player names from public chat, so keep the export private.

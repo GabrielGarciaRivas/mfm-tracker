@@ -32,6 +32,8 @@
   takes over.
 
 ### New
+- **Settings in tabs:** General, Reading (Window detection and OCR training) and Game
+  data, so the window fits on smaller screens.
 - **Windows open on the screen the app is on.** An item's history, a shop photo,
   Settings, the error window and the other windows now open over the main window,
   centred on it. With two monitors they used to open on the main monitor even when

@@ -38,7 +38,7 @@ Play the game **windowed or borderless**, not exclusive fullscreen.
 The app reads the game's window on its own, so it keeps reading while other windows cover
 the game (not while it's minimized), on Windows, macOS and Linux. The window is found by
 "MapleStory" in its title; change that, or turn this off to read the whole screen
-instead, in **Settings → Window detection**. If the game window can't be read on its
+instead, in **Settings → Reading → Window detection**. If the game window can't be read on its
 own, the whole screen is read, and then the game has to be visible.
 
 ### Run from source (optional)
@@ -97,7 +97,7 @@ saved with its item, price, shop, player, map, channel and time. The panel on th
 shows what's being read.
 
 If the shop, map, chat, inventory or Change Channel window is ever not found, draw a box
-around it in **Settings → Window detection** (**Draw area**). That section lists each area
+around it in **Settings → Reading → Window detection** (**Draw area**). That section lists each area
 as **Automatic** or **Manual**, with the coordinates of a drawn one. **Automatic** next to
 an area, or **Auto Detection** for all of them, goes back to finding them by themselves.
 An area is drawn on what's being read (the game window, or the whole screen), and is only
@@ -183,7 +183,7 @@ the tab. Right-click a megaphone to match it to an item, mark it as "not an item
 item's history, copy its message or player name, or delete it. **Filter** at the top shows
 only megaphones whose message has every word you type (any order, upper or lower case).
 If the chat window isn't
-found, draw it in **Settings → Window detection** (Chat).
+found, draw it in **Settings → Reading → Window detection** (Chat).
 
 ### Aliases
 
@@ -350,11 +350,14 @@ Exported files get the date and time in their name, e.g.
 
 ## Settings
 
-Rest the mouse on any setting for a short explanation.
+Settings has three tabs: **General** (capturing, market prices, data retention and the
+channel), **Reading** (Window detection and OCR training) and **Game data** (the item and
+map lists). Rest the mouse on any setting for a short explanation.
 
 | Setting | Default | What it does |
 |---|---|---|
 | Capture every (seconds) | 0.1 | how often the screen is captured while monitoring (the reading catches up at its own pace) |
+| Frames read at once | 3 | while you scroll, this many captured frames are read at the same time |
 | Frames to confirm a row | 2 | identical reads needed before a listing is saved |
 | Extra reads for names not in database | 2 | extra reads before an unknown name is saved |
 | Empty frames = shop closed | 3 | reads without a shop before it counts as closed |

@@ -457,7 +457,7 @@ GRAB_MODE = ["screen"]             # what the latest capture was: "window" (the 
 
 
 def drawn_area(cfg: dict, key: str):
-    """An area drawn in Settings → Window detection, if it was drawn on the same kind
+    """An area drawn in Settings → Reading → Window detection, if it was drawn on the same kind
     of capture as now (the game's window, or the whole screen): an area drawn on one
     is in the wrong place on the other, so it's left out (found automatically)."""
     r = (cfg or {}).get(key)
@@ -7168,7 +7168,7 @@ def _read_megaphone_line(row, b, lx0, lx1, u, extra, chat, con) -> dict | None:
 # is kept with what was read (table ocr_lines). The same line is read again on every
 # frame it's on screen (and the chat is see-through, so each image differs a little):
 # when those reads agree, that's the line's text ("auto"); when they don't, it waits in
-# Settings → OCR training → Check lines for you to fix ("unsure"). Checked lines go to
+# Settings → Reading → OCR training → Check lines for you to fix ("unsure"). Checked lines go to
 # the Shared Database server (mfm-server export-ocr), for training the app's OCR model.
 
 OCR_PER_LINE = 8          # images kept per line while it's being read
