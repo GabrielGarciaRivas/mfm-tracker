@@ -2,6 +2,17 @@
 
 ## 2610.18.006 — 2026-10-18
 
+### Changed
+- **Reading is about twice as fast, and keeps up with scrolling better.** Tesseract is
+  now used through its library when it's next to the program (it is in the packaged
+  app on Windows): the models are loaded once instead of on every read, which took
+  ~200 ms a time with the app's own model. A shop frame reads in ~360 ms instead of
+  ~770, a one-row re-read in ~60 instead of ~230, with the same words. And while you
+  scroll, the frames waiting behind the one being read are read ahead at the same time
+  (**Frames read at once** in Settings, 3 by default): a recorded sweep of 180 frames
+  took 27 s instead of 44, with the same rows. `"tesseract_library": false` in the
+  settings file goes back to running the program.
+
 ### New
 - **Shop photos:** the shop window as it was on screen when a row was logged is kept,
   so a shop, player or item name the OCR got wrong can be checked against the real

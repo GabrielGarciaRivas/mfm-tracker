@@ -5043,6 +5043,7 @@ class App:
         win.resizable(False, False)
         fields = [
             ("interval_seconds", "Capture every (seconds)", 0.05, 10, 0.05),
+            ("ocr_workers", "Frames read at once", 1, 8, 1),
             ("confirm_frames", "Frames to confirm a row", 1, 5, 1),
             ("unmatched_extra_frames", "Extra reads for names not in database", 0, 5, 1),
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
@@ -5060,6 +5061,9 @@ class App:
             "interval_seconds": "How often the screen is captured. The OCR reads the captures "
                                 "at its own pace, so nothing is lost when you scroll fast. "
                                 "Higher uses less CPU.",
+            "ocr_workers": "While you scroll, this many captured frames are read at the same time, "
+                           "so the reading keeps up. Each one uses a processor core. 1 reads them one "
+                           "by one.",
             "confirm_frames": "How many matching reads a listing needs before it's saved.",
             "unmatched_extra_frames": "Extra reads for names not in the item list, before they're "
                                       "saved.",

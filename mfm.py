@@ -165,6 +165,8 @@ DEFAULT_CONFIG = {
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
+    "ocr_workers": 3,          # frames read ahead at once while scrolling (1 = one at a time)
+    "tesseract_library": True, # read through Tesseract's library (models loaded once) when it's there
     "shot_days": 7,            # shop photos (the shop window as a row was logged) are kept
                                # this long, to check a misread name; 0 = take none
     "alert_sound": None,       # custom .wav for alerts (None = built-in ping)
@@ -608,7 +610,13 @@ def bundled_tesseract() -> Path | None:
 def setup_tesseract(cfg: dict) -> None:
     import pytesseract
 
+    global OCR_IN_PROCESS
     ocr_lang_arg.cfg = cfg
+    # one thread per read: Tesseract's own threads gain little on these images and
+    # get in the way of reading several frames at once
+    os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+    if not cfg.get("tesseract_library", True):
+        OCR_IN_PROCESS = False
 
     if cfg.get("tesseract_cmd"):
         pytesseract.pytesseract.tesseract_cmd = cfg["tesseract_cmd"]
@@ -628,6 +636,260 @@ def setup_tesseract(cfg: dict) -> None:
     elif not shutil.which("tesseract") and shutil.which("tesseract-ocr"):
         # Void Linux names the program tesseract-ocr
         pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract-ocr")
+
+
+# --------------------------------------------------------------------------- OCR engine
+# Tesseract is used through its library when it can be found next to the program
+# (libtesseract-5.dll, libtesseract.so, libtesseract.dylib): the models are loaded
+# once per thread and each read is a function call. Through the program instead,
+# every read starts a new process that loads the models again, ~200 ms with the
+# app's own model (a third of a shop read, nearly all of a one-row re-read). The
+# library does the same reading and gives the same words. "tesseract_library":
+# false in settings goes back to the program; so does a library that can't load.
+OCR_IN_PROCESS = True
+
+
+def app_log(line: str) -> None:
+    """A line in the data folder's app.log (problems worth knowing about later)."""
+    try:
+        with open(DATA / "app.log", "a", encoding="utf-8") as fh:
+            fh.write(f"{utc_now()} {line}\n")
+    except OSError:
+        pass
+
+
+def _tesseract_library_path() -> str | None:
+    """The Tesseract shared library: next to the Tesseract program in use, or the
+    system's. None when there isn't one (e.g. the static Linux build)."""
+    import ctypes.util
+    import pytesseract
+
+    exe = Path(pytesseract.pytesseract.tesseract_cmd)
+    exe = exe if exe.is_absolute() else Path(shutil.which(str(exe)) or exe)
+    dirs = [exe.parent, exe.parent / "lib", exe.parent.parent / "lib"]
+    if sys.platform == "win32":
+        pats = ("libtesseract*.dll", "tesseract*.dll")
+    elif sys.platform == "darwin":
+        pats = ("libtesseract*.dylib",)
+        dirs += [Path("/opt/homebrew/lib"), Path("/usr/local/lib")]
+    else:
+        pats = ("libtesseract.so*",)
+    for d in dirs:
+        for pat in pats:
+            hits = sorted(d.glob(pat)) if d.is_dir() else []
+            if hits:
+                return str(hits[0])
+    found = ctypes.util.find_library("tesseract")
+    return found or None
+
+
+class _TessLib:
+    """ctypes bindings for the handful of TessBaseAPI functions used."""
+    lib = None
+    path = None
+    tried = False
+    lock = threading.Lock()
+
+    @classmethod
+    def load(cls):
+        with cls.lock:
+            if cls.tried:
+                return cls.lib
+            cls.tried = True
+            path = _tesseract_library_path()
+            if not path:
+                return None
+            try:
+                import ctypes
+
+                if sys.platform == "win32":
+                    os.add_dll_directory(str(Path(path).parent))
+                lib = ctypes.CDLL(path)
+                vp, cp, ci = ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int
+                lib.TessVersion.restype = cp
+                lib.TessBaseAPICreate.restype = vp
+                lib.TessBaseAPIDelete.argtypes = [vp]
+                lib.TessBaseAPIEnd.argtypes = [vp]
+                lib.TessBaseAPIInit4.restype = ci
+                lib.TessBaseAPIInit4.argtypes = [vp, cp, cp, ci, ctypes.POINTER(cp), ci, ctypes.POINTER(cp),
+                                                 ctypes.POINTER(cp), ctypes.c_size_t, ctypes.c_bool]
+                lib.TessBaseAPISetVariable.restype = ctypes.c_bool
+                lib.TessBaseAPISetVariable.argtypes = [vp, cp, cp]
+                lib.TessBaseAPISetPageSegMode.argtypes = [vp, ci]
+                lib.TessBaseAPISetImage.argtypes = [vp, vp, ci, ci, ci, ci]
+                lib.TessBaseAPIGetTsvText.restype = vp
+                lib.TessBaseAPIGetTsvText.argtypes = [vp, ci]
+                lib.TessBaseAPIGetUTF8Text.restype = vp
+                lib.TessBaseAPIGetUTF8Text.argtypes = [vp]
+                lib.TessBaseAPIClear.argtypes = [vp]
+                lib.TessDeleteText.argtypes = [vp]
+                lib.TessVersion()          # a call that fails here fails loudly, not mid-read
+                cls.lib, cls.path = lib, path
+            except (OSError, AttributeError) as e:
+                app_log(f"tesseract library not used ({path}): {type(e).__name__}: {e}")
+                cls.lib = None
+            return cls.lib
+
+
+class _TessEngine:
+    """One initialised Tesseract (one model set) for one thread."""
+    _local = threading.local()
+    _all: list = []
+    _all_lock = threading.Lock()
+
+    def __init__(self, lib, datapath: str | None, lang: str, words_file: str | None):
+        import ctypes
+
+        self.lib, self.vars = lib, {}
+        self.handle = lib.TessBaseAPICreate()
+        keys, vals = [], []
+        if words_file:
+            keys.append(b"user_words_file")
+            vals.append(words_file.encode())
+        karr = (ctypes.c_char_p * max(1, len(keys)))(*keys) if keys else None
+        varr = (ctypes.c_char_p * max(1, len(vals)))(*vals) if vals else None
+        rc = lib.TessBaseAPIInit4(self.handle, datapath.encode() if datapath else None, lang.encode(), 3,
+                                  None, 0, karr, varr, len(keys), False)
+        if rc == 0:
+            lib.TessBaseAPISetVariable(self.handle, b"debug_file", os.devnull.encode())   # its warnings: not on the console
+        if rc != 0:
+            lib.TessBaseAPIDelete(self.handle)
+            self.handle = None
+            raise OSError(f"Tesseract couldn't load '{lang}'" + (f" from {datapath}" if datapath else ""))
+        with _TessEngine._all_lock:
+            _TessEngine._all.append(self)
+
+    @classmethod
+    def get(cls, datapath, lang, words_file):
+        """This thread's engine for these models, made on first use."""
+        engines = getattr(cls._local, "engines", None)
+        if engines is None:
+            engines = cls._local.engines = {}
+        key = (datapath, lang, words_file)
+        if key not in engines:
+            engines[key] = cls(_TessLib.load(), datapath, lang, words_file)
+        return engines[key]
+
+    def set_vars(self, wanted: dict):
+        """Runtime variables (a character whitelist): set, and cleared again when a
+        later read on this engine doesn't want them."""
+        for k in set(self.vars) | set(wanted):
+            v = wanted.get(k, "")
+            if self.vars.get(k, "") != v:
+                self.lib.TessBaseAPISetVariable(self.handle, k.encode(), v.encode())
+        self.vars = dict(wanted)
+
+    def read(self, img: Image.Image, psm: int, tsv: bool) -> str:
+        import ctypes
+
+        if img.mode not in ("L", "RGB"):
+            img = img.convert("L")
+        bpp = 1 if img.mode == "L" else 3
+        data = img.tobytes()
+        lib, h = self.lib, self.handle
+        lib.TessBaseAPISetPageSegMode(h, psm)
+        lib.TessBaseAPISetImage(h, data, img.width, img.height, bpp, img.width * bpp)
+        p = lib.TessBaseAPIGetTsvText(h, 0) if tsv else lib.TessBaseAPIGetUTF8Text(h)
+        try:
+            return ctypes.string_at(p).decode("utf-8", "replace") if p else ""
+        finally:
+            if p:
+                lib.TessDeleteText(p)
+            lib.TessBaseAPIClear(h)
+
+    def close(self):
+        if self.handle:
+            self.lib.TessBaseAPIEnd(self.handle)
+            self.lib.TessBaseAPIDelete(self.handle)
+            self.handle = None
+
+    @classmethod
+    def close_all(cls):
+        with cls._all_lock:
+            for e in cls._all:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+            cls._all.clear()
+
+
+import atexit as _atexit
+_atexit.register(_TessEngine.close_all)
+
+
+def _parse_ocr_config(config: str) -> tuple[int, str | None, str, str | None, dict]:
+    """The pieces of a Tesseract command line: psm, tessdata dir, languages,
+    user-words file and -c variables."""
+    psm = int(m.group(1)) if (m := re.search(r"--psm\s+(\d+)", config)) else 3
+    datapath = m.group(1) if (m := re.search(r"--tessdata-dir\s+(\S+)", config)) else None
+    lang = m.group(1) if (m := re.search(r"(?:^|\s)-l\s+(\S+)", config)) else "eng"
+    words = m.group(1) if (m := re.search(r"--user-words\s+(\S+)", config)) else None
+    cvars = dict(re.findall(r"-c\s+(\w+)=(\S*)", config))
+    if datapath is None:
+        import pytesseract
+
+        d = Path(pytesseract.pytesseract.tesseract_cmd).parent / "tessdata"
+        datapath = os.environ.get("TESSDATA_PREFIX") or (str(d) if (d / "eng.traineddata").exists() else None)
+    return psm, datapath, lang, words, cvars
+
+
+def _ocr_in_process(img: Image.Image, config: str, tsv: bool) -> str | None:
+    """Read through the library; None when it isn't available (the caller then
+    runs the program, as before)."""
+    global OCR_IN_PROCESS
+    if not OCR_IN_PROCESS or _TessLib.load() is None:
+        return None
+    psm, datapath, lang, words, cvars = _parse_ocr_config(config)
+    try:
+        eng = _TessEngine.get(datapath, lang, words)
+        eng.set_vars(cvars)
+        return eng.read(img, psm, tsv)
+    except OSError as e:
+        OCR_IN_PROCESS = False
+        app_log(f"tesseract library gave up, using the program: {e}")
+        return None
+
+
+def ocr_data(img: Image.Image, config: str) -> dict:
+    """Words with positions and confidences, like pytesseract.image_to_data(...,
+    output_type=DICT): lists under "text", "conf", "left", "top", "width",
+    "height", "block_num", "par_num", "line_num" (and the rest of the TSV)."""
+    text = _ocr_in_process(img, config, tsv=True)
+    if text is None:
+        import pytesseract
+
+        return pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
+    # the library's TSV has no header line (the program's does)
+    header = ["level", "page_num", "block_num", "par_num", "line_num", "word_num",
+              "left", "top", "width", "height", "conf", "text"]
+    rows = [r.split("\t") for r in text.splitlines()]
+    if rows and rows[0][:1] == ["level"]:
+        rows = rows[1:]
+    out: dict = {k: [] for k in header}
+    for r in rows:
+        if not any(x.strip() for x in r):
+            continue
+        if len(r) < len(header):
+            r += [""] * (len(header) - len(r))
+        for k, v in zip(header, r):
+            if k == "text":
+                out[k].append(v)
+            elif k == "conf":
+                out[k].append((float(v) if "." in v else int(v)) if v.strip() else -1)
+            else:
+                out[k].append(int(v) if v.strip() else 0)
+    return out
+
+
+def ocr_text(img: Image.Image, config: str) -> str:
+    """The text read, like pytesseract.image_to_string."""
+    text = _ocr_in_process(img, config, tsv=False)
+    if text is None:
+        import pytesseract
+
+        return pytesseract.image_to_string(img, config=config)
+    return text
 
 
 def preprocess(img: Image.Image, upscale: int, mode: str = "gray") -> Image.Image:
@@ -789,8 +1051,7 @@ def ocr_words(img: Image.Image, cfg: dict, mode: str = "gray") -> list[list[Word
 
     setup_tesseract(cfg)
     up = cfg.get("upscale", 3)
-    d = pytesseract.image_to_data(preprocess(img, up, mode), config="--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg(),
-                                  output_type=pytesseract.Output.DICT)
+    d = ocr_data(preprocess(img, up, mode), "--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg())
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
         if not text.strip():
@@ -1086,8 +1347,7 @@ def _ocr_box(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
         cut = 120 if mode == "graybin120" else 150
         g = ImageOps.autocontrast(g, cutoff=1).point(lambda p, c=cut: 0 if p < c else 255)
     setup_tesseract(cfg)
-    d = pytesseract.image_to_data(g, config="--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg(),
-                                  output_type=pytesseract.Output.DICT)
+    d = ocr_data(g, "--psm 6" + ocr_lang_arg(cfg) + ocr_words_arg())
     lines: dict[tuple, list[Word]] = {}
     for i, text in enumerate(d["text"]):
         if text.strip():
@@ -1151,7 +1411,7 @@ def read_seller(img: Image.Image, cfg: dict) -> str:
                                                           Image.LANCZOS)
     g = ImageOps.expand(ImageOps.autocontrast(g), border=15, fill=255)
     setup_tesseract(cfg)
-    text = pytesseract.image_to_string(g, config="--psm 7").strip()
+    text = ocr_text(g, "--psm 7").strip()
     return re.sub(r"^[\W_]+|[\W_]+$", "", text.split()[0]) if text.split() else ""
 
 
@@ -1279,7 +1539,7 @@ def read_title(img: Image.Image, cfg: dict, below_y: int | None = None) -> str:
     g = ImageOps.autocontrast(ImageOps.grayscale(bar).resize((bar.width * up, bar.height * up),
                                                              Image.LANCZOS))
     setup_tesseract(cfg)
-    text = pytesseract.image_to_string(g, config="--psm 7").strip()
+    text = ocr_text(g, "--psm 7").strip()
     toks = [t for t in text.split() if not is_junk(t)]
     return correct_title(re.sub(r"^[^\w<>]+", "", " ".join(toks)).strip())
 
@@ -2125,8 +2385,8 @@ def read_dialog_channel(full: Image.Image, pair: list | None = None) -> str | No
         white = white.crop(box)
     up = white.resize((white.width * 4, white.height * 4), Image.LANCZOS)
     try:
-        text = pytesseract.image_to_string(ImageOps.expand(up, border=10, fill=255),
-                                           config="--psm 7 -c tessedit_char_whitelist=CHch.0123456789").strip()
+        text = ocr_text(ImageOps.expand(up, border=10, fill=255),
+                        "--psm 7 -c tessedit_char_whitelist=CHch.0123456789").strip()
     except Exception:
         text = ""
     m = re.search(r"(\d{1,3})\s*$", text.replace(" ", ""))
@@ -2901,8 +3161,7 @@ def read_slot_count(slot: Image.Image, cfg: dict) -> int:
     part = slot.crop((0, int(H * 0.5), int(W * 0.6), H))
     setup_tesseract(cfg)
     try:
-        text = pytesseract.image_to_string(white_text_mask(part, up=4, thr=215),
-                                           config="--psm 7 -c tessedit_char_whitelist=0123456789")
+        text = ocr_text(white_text_mask(part, up=4, thr=215), "--psm 7 -c tessedit_char_whitelist=0123456789")
     except Exception:
         return 1
     digits = re.sub(r"\D", "", text)
@@ -3295,7 +3554,7 @@ def read_map(img: Image.Image, cfg: dict, known_maps: list[str] = ()) -> str:
         img = img.crop((0, 0, img.width, int(img.width * 0.42)))
     img = _trim_to_panel(img)
     img = _blank_minimap_icon(img)
-    text = pytesseract.image_to_string(white_text_mask(img), config="--psm 6")
+    text = ocr_text(white_text_mask(img), "--psm 6")
     good = []
     for ln in text.splitlines():
         if re.search(r"(?i)mini\s*ma[pr]", ln):        # the window's title strip
@@ -6180,9 +6439,7 @@ def _ocr_words(img: Image.Image) -> list[tuple[str, int, float]]:
     import pytesseract
 
     border = 12
-    d = pytesseract.image_to_data(ImageOps.expand(img, border=border, fill=255),
-                                  config="--psm 7" + ocr_lang_arg() + ocr_words_arg(),
-                                  output_type=pytesseract.Output.DICT)
+    d = ocr_data(ImageOps.expand(img, border=border, fill=255), "--psm 7" + ocr_lang_arg() + ocr_words_arg())
     return [(t.strip(), d["left"][i] - border, float(d["conf"][i])) for i, t in enumerate(d["text"])
             if t.strip()]
 
@@ -6210,8 +6467,8 @@ def _read_chat_time(left: Image.Image, unit: float) -> str | None:
             break
     if end is None:
         return None
-    text = pytesseract.image_to_string(ImageOps.expand(left.crop((0, 0, end, H)), border=12, fill=255),
-                                       config="--psm 7 -c tessedit_char_whitelist=0123456789:[]").strip()
+    text = ocr_text(ImageOps.expand(left.crop((0, 0, end, H)), border=12, fill=255),
+                    "--psm 7 -c tessedit_char_whitelist=0123456789:[]").strip()
     m = re.search(r"(\d{2}):?(\d{2})", text)
     if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
         return f"{m.group(1)}:{m.group(2)}"
@@ -7045,6 +7302,9 @@ class Monitor:
         self.channel = channel          # the channel now (the GUI's Channel box)
         self.frame_channel = channel    # the channel the frame being read was captured on
         self._frame = None              # the frame being read, for the shop photo
+        self._prefetched: dict = {}     # id(frame) -> (frame, future or None, hash, geom used)
+        self._pf = None                 # the entry for the frame in step()
+        self._ocr_warm = False          # one read done on this thread: caches are filled
         self.shots_con = None           # cache/shots.db, opened on the first photo
         self._shots_left = 0            # photos this visit may still take
         self._shot_hashes: set = set()  # frames of this visit already photographed
@@ -7191,6 +7451,36 @@ class Monitor:
         self.pending_unmatched.pop(key, None)
         self._log(key, listing)
 
+    def _prefetch(self, pool, pending) -> None:
+        """Frames waiting behind the one being read are OCR'd ahead by the pool,
+        several at once, so the reading keeps up with a scroll. A frame is read
+        ahead when it looks like a shop and differs from the frame before it (the
+        same checks step() makes), with the geometry and names known now; step()
+        takes the result if its geometry is still the one in use."""
+        if not self._ocr_warm:
+            return                   # the first read fills caches: on this thread, alone
+        in_flight = sum(1 for _, f, _, _ in self._prefetched.values() if f is not None and not f.done())
+        limit = pool._max_workers * 2
+        prev_h, names = self.last_hash, None
+        for img, _map, _ts, _chan in pending:
+            key = id(img)
+            if key in self._prefetched:
+                prev_h = self._prefetched[key][2]
+                continue
+            h = frame_hash(img)
+            changed = prev_h is None or bin(h ^ prev_h).count("1") > 8
+            prev_h = h
+            if not changed or not looks_like_shop(img):
+                self._prefetched[key] = (img, None, h, None)
+                continue
+            if in_flight >= limit:
+                break
+            if names is None:
+                names = known_items(self.con) + [s.item for s in self.seen.values()]
+            fut = pool.submit(read_shop, img, self.cfg, names, False, self.geom)
+            self._prefetched[key] = (img, fut, h, self.geom)
+            in_flight += 1
+
     def _shoot(self, ts: str) -> None:
         """Keep the frame a listing was just logged from, once per distinct frame and
         a few times per visit (see SHOTS_PER_VISIT)."""
@@ -7260,6 +7550,7 @@ class Monitor:
         # the channel (and clock) the frame was captured on: with a queue of frames
         # behind the screen, "now" may be a channel change and many seconds later
         self.frame_channel = self.channel if channel is _NOW else channel
+        self._pf = self._prefetched.pop(id(img), None)
         if map_img is not None:
             self.map_img = map_img
         if self._split:
@@ -7294,8 +7585,16 @@ class Monitor:
             return
 
         t0 = time.perf_counter()
-        names = known_items(self.con) + [s.item for s in self.seen.values()]
-        frame = read_shop(img, self.cfg, names, with_title=False, geom=self.geom)
+        frame = None
+        if self._pf and self._pf[1] is not None and self._pf[3] == self.geom:
+            try:
+                frame = self._pf[1].result()   # read ahead by a worker while earlier frames were read
+            except Exception as e:
+                self.on_event("error", f"read-ahead failed, reading again: {type(e).__name__}: {e}")
+        if frame is None:
+            names = known_items(self.con) + [s.item for s in self.seen.values()]
+            frame = read_shop(img, self.cfg, names, with_title=False, geom=self.geom)
+            self._ocr_warm = True
         ocr_ms = int((time.perf_counter() - t0) * 1000)
         self.last_hidden = frame.hidden
         if not frame.listings and frame.hidden:
@@ -7485,26 +7784,48 @@ class Monitor:
 
         grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
         grabber.start()
+        # frames behind the one being read are OCR'd ahead by a pool (see _prefetch)
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        workers = int(self.cfg.get("ocr_workers", 3) or 0)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mfm-ocr") if workers > 1 else None
+        pending: deque = deque()
+        lookahead = workers * 2 if pool else 0
         last_backlog = 0
         try:
             while True:
-                try:
-                    img, map_img, ts, chan = frames.get(timeout=0.2)
-                except _queue.Empty:
-                    if stop_event.is_set():
-                        break    # every captured frame was read: done
-                    continue
+                while pool and len(pending) < lookahead:
+                    try:
+                        pending.append(frames.get_nowait())
+                    except _queue.Empty:
+                        break
+                if not pending:
+                    try:
+                        pending.append(frames.get(timeout=0.2))
+                    except _queue.Empty:
+                        if stop_event.is_set():
+                            break    # every captured frame was read: done
+                        continue
                 if stop_event.is_set() and self.abort:
                     break        # don't read what's left in the queue
+                if pool:
+                    try:
+                        self._prefetch(pool, pending)
+                    except Exception as e:
+                        self.on_event("error", f"read-ahead: {type(e).__name__}: {e}")
+                img, map_img, ts, chan = pending.popleft()
                 try:
                     self.step(img, map_img, ts, chan)
                 except Exception as e:  # keep monitoring through transient failures
                     self.on_event("error", f"{type(e).__name__}: {e}")
-                n = frames.qsize()
+                n = frames.qsize() + len(pending)
                 if (n == 0) != (last_backlog == 0) or abs(n - last_backlog) >= 5:
                     last_backlog = n   # how far the OCR is behind the screen, for the GUI
                     self.on_event("backlog", {"frames": n})
         finally:
+            if pool:
+                pool.shutdown(wait=False, cancel_futures=True)
+            self._prefetched.clear()
             self.end_session()
             if self.shots_con is not None:
                 self.shots_con.close()
@@ -7894,8 +8215,8 @@ def selftest(cfg: dict) -> int:
         ImageDraw.Draw(img).text((8, 4), text, fill="black", font=ImageFont.load_default_imagefont()
                                  if hasattr(ImageFont, "load_default_imagefont") else ImageFont.load_default())
         img = img.resize((img.width * 4, img.height * 4), Image.NEAREST)
-    got = pytesseract.image_to_string(img, config="--psm 7").strip()
-    print(f"read:      {got!r}")
+    got = ocr_text(img, "--psm 7").strip()
+    print(f"read:      {got!r}  ({'library ' + str(_TessLib.path) if _TessLib.load() else 'program'})")
     ok = "12,345" in got or "Market" in got
     print("OCR OK" if ok else "OCR FAILED")
     return 0 if ok else 1
