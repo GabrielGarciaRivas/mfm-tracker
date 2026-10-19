@@ -78,6 +78,9 @@ jobs:
           python3 .github/scripts/ocr_eval.py /tmp/lines/eval /tmp/td > /tmp/eval.md
           cat /tmp/eval.md >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/eval.md
+          # the results table, one notice per model (readable from the run's annotations)
+          grep '^| [a-z]' /tmp/eval.md | grep -v '^| Model' | while read -r row; do echo "::notice title=OCR test::$row"; done
+          grep '^BEST' /tmp/eval.md | sed 's/^/::notice title=OCR test::/' || true
 
       - uses: actions/upload-artifact@v4
         with:
