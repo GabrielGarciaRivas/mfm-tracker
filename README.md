@@ -138,7 +138,7 @@ channels the picker shows, in **Settings**.
   - **Megaphones:** what megaphones sell or buy that isn't matched to an item yet, with a
     **Buying / Selling** column. **Enter** accepts the suggested item, **M** picks one,
     **Delete** marks it as "not an item". **Delete megaphone** deletes the megaphones a
-    row came from (a misread line, spam) without adding a nickname. See [Nicknames](#nicknames).
+    row came from (a misread line, spam) without adding an alias. See [Aliases](#aliases).
 - **Watched**, **Ignored** and **My Inventory:** see below.
 
 Double-click any item for its **price history**: a chart and every sighting, plus a
@@ -170,7 +170,7 @@ its other items. For example, "S> Black cat beanie 520k, B> Fondue Scepter" show
 520,000 under Selling and the scepter under Buying. The app finds the item from:
 
 - an item link in brackets, like `[Korean Fan]`;
-- a nickname it has learned, like "kumbis";
+- an alias it has learned, like "kumbis";
 - the item's name, even with a plural "s".
 
 Prices like 90k, 1.5m, 3,2 mil and 250,000 are read. "c/o" (current offer), "each" and
@@ -185,18 +185,21 @@ only megaphones whose message has every word you type (any order, upper or lower
 If the chat window isn't
 found, draw it in **Settings → Window detection** (Chat).
 
-### Nicknames
+### Aliases
 
 Players call items many things ("kumbis" for Kumbi Throwing-Stars). When you match a
 megaphone phrase to an item (in **Review → Megaphones**, or by right-clicking it), the app
-learns it as a nickname and uses it for every megaphone from then on, including older ones.
+learns it as an alias and uses it for every megaphone from then on, including older ones.
 "Not an item" teaches it to ignore a phrase. A phrase also matches an item when it has
 every word of the item's name, in any order ("gloves attack scroll intermediate").
+In Review → Megaphones, **Type: Item / Words** at the bottom sets what **Accept
+suggestion** and **Match manually** teach: an item, or words (see **Words** below; Match
+manually then asks for the words).
 
 Two buttons at the top of the Megaphones tab and of Review → Megaphones:
 
-- **Edit nicknames** opens a sheet of every nickname: **Megaphone term** (what
-  players write), **Nickname** (what it means) and **Type**. Click a cell to type in it; the last
+- **Edit aliases** opens a sheet of every alias: **Megaphone term** (what
+  players write), **Alias** (what it means) and **Type**. Click a cell to type in it; the last
   row adds a new one, and **Delete** removes the selected ones. Click the Type cell to
   switch between:
   - **Item:** the phrase is that item ("kumbis" = Kumbi Throwing-Stars). If the name you
@@ -204,12 +207,12 @@ Two buttons at the top of the Megaphones tab and of Review → Megaphones:
   - **Words:** the phrase stands for other words, for any item. For example "60%" =
     Intermediate, "10%" = Greater, "100%" = Lesser and "att" = Attack: then "60% gloves att"
     matches Gloves Attack Scroll: Intermediate, and "10% claw att" matches Claw Attack
-    Scroll: Greater, without a nickname for each scroll. Common shorthand comes already
-    filled in as word nicknames ("att"/"atk" = attack, "matk" = magic attack, "acc",
+    Scroll: Greater, without an alias for each scroll. Common shorthand comes already
+    filled in as word aliases ("att"/"atk" = attack, "matk" = magic attack, "acc",
     "avoid", "ohs", "2h", "bw", "xbow", "overall", "top", "pants", "helm" and more); change
     or remove them like any other. The scroll grades ("60%" = Intermediate and so on) are
     yours to fill in.
-- **Refresh** matches every megaphone again with the current nicknames. Phrases that now
+- **Refresh** matches every megaphone again with the current aliases. Phrases that now
   match an item leave Review → Megaphones.
 
 ## Notes
@@ -320,15 +323,15 @@ While connected, your new sightings are saved both here and on the server, sold 
 seen-again updates go to it too, and everyone else's sightings are copied into your
 prices every few seconds. Only items from the item list are shared: a name in Review is
 shared once you match it to an item. Megaphones are shared too: when several players
-read the same one, the clearest read is kept. Nicknames are shared as well, so a new player
+read the same one, the clearest read is kept. Aliases are shared as well, so a new player
 starts with everything the group has taught, including phrases marked "Not an item". The
 Review list itself isn't shared: it's worked out in each app from its megaphones. If the
 server's admin deletes data on the server (`mfm-server purge`), your app deletes the same
 from its own data the next time it syncs. The Shared Database window counts the prices,
-megaphones and nicknames sent, received, and removed this way ("purged"). When your app and the
+megaphones and aliases sent, received, and removed this way ("purged"). When your app and the
 server disagree, the server's copy wins. The server keeps megaphones for 72 hours;
 you see the hours set in your Megaphones tab. Each time it connects, it catches up:
-prices, megaphones and nicknames logged while you weren't connected are sent, and anything you
+prices, megaphones and aliases logged while you weren't connected are sent, and anything you
 missed is read from the server. It stays connected when you restart the app;
 **Stop sharing** disconnects. Everything you send is marked with your account, so use
 your own.

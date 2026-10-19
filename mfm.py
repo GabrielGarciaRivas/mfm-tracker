@@ -294,6 +294,11 @@ def db() -> sqlite3.Connection:
                     f"SELECT item, png, faded, updated, {src} FROM main.icons")
         con.execute("DROP TABLE main.icons")
         con.commit()
+    # 2610.19: "nicknames" are called aliases now
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nicknames'").fetchone() and \
+            not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'aliases'").fetchone():
+        con.execute("ALTER TABLE nicknames RENAME TO aliases")
+        con.commit()
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS listings (
@@ -326,7 +331,7 @@ def db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_offers_item ON megaphone_offers(item);
         CREATE TABLE IF NOT EXISTS megaphones_deleted (uid TEXT PRIMARY KEY, ts TEXT);
-        CREATE TABLE IF NOT EXISTS nicknames (
+        CREATE TABLE IF NOT EXISTS aliases (
             key TEXT PRIMARY KEY,
             item TEXT,
             deleted INTEGER NOT NULL DEFAULT 0,
@@ -6977,27 +6982,27 @@ def delete_megaphones(con, ids) -> int:
 
 def apply_purge(con, what: str, field: str, start: str | None, end: str, when: str | None = None) -> int:
     """Delete what the Shared Database's server purged (mfm-server purge) from this
-    app's own data too: `what` (prices, megaphones or nicknames) whose time `field`
+    app's own data too: `what` (prices, megaphones or aliases) whose time `field`
     (seen: last seen / changed, first: first stored) is >= start (if given) and < end.
-    Nicknames are marked deleted, like on the server. Returns how many."""
+    Aliases are marked deleted, like on the server. Returns how many."""
     if what == "prices":
         col = "COALESCE(last_seen, ts)" if field == "seen" else "ts"
         table = "listings"
     elif what == "megaphones":
         col, table = "ts", "megaphones"
-    elif what == "nicknames":
+    elif what in ("aliases", "nicknames"):       # (servers before 2.6.0 say nicknames)
         col = "COALESCE(updated, added)" if field == "seen" else "COALESCE(added, updated)"
-        table = "nicknames"
+        table = "aliases"
     else:
         return 0
     where, args = f"{col} < ?", [end]
     if start:
         where, args = where + f" AND {col} >= ?", args + [start]
-    if what == "nicknames":
-        rows = con.execute(f"SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 AND {where}",
+    if what in ("aliases", "nicknames"):
+        rows = con.execute(f"SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0 AND {where}",
                            args).fetchall()
         for key, item in rows:
-            con.execute("UPDATE nicknames SET deleted = 1, updated = ?, by = 'server admin', shared_sig = ? "
+            con.execute("UPDATE aliases SET deleted = 1, updated = ?, by = 'server admin', shared_sig = ? "
                         "WHERE key = ?", (when or utc_now(), json.dumps([item or "", 1]), key))
         n = len(rows)
     else:
@@ -7020,39 +7025,39 @@ def purge_megaphones(con, hours: float) -> int:
 # --------------------------------------------------------------------------- megaphone offers
 # What a megaphone sells or buys: "S> Black cat beanie 520k, B> Fondue Scepter" is two
 # offers, each with an item (when it can be told) and a price (when one is given).
-# Players' shorthand ("kumbis") is learned in Review as nicknames, which the Shared
+# Players' shorthand ("kumbis") is learned in Review as aliases, which the Shared
 # Database shares, so the whole group only teaches each one once.
 
-def nick_key(phrase: str) -> str:
+def alias_key(phrase: str) -> str:
     """How a phrase is compared: lower case, letters and digits only."""
     return " ".join(re.sub(r"[^a-z0-9%]+", " ", (phrase or "").lower()).split())
 
 
-def nickname_version(con) -> str:
-    """Changes whenever any nickname does (so megaphones get read again)."""
-    rows = con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0 ORDER BY key").fetchall()
+def alias_version(con) -> str:
+    """Changes whenever any alias does (so megaphones get read again)."""
+    rows = con.execute("SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0 ORDER BY key").fetchall()
     return hashlib_md5("\n".join(f"{k}={i or ''}" for k, i in rows).encode())[:12]
 
 
-def load_nicknames(con) -> dict[str, str]:
+def load_aliases(con) -> dict[str, str]:
     """{phrase key: item} (item "" = not an item)."""
-    return {k: (i or "") for k, i in con.execute("SELECT key, item FROM nicknames WHERE COALESCE(deleted, 0) = 0")}
+    return {k: (i or "") for k, i in con.execute("SELECT key, item FROM aliases WHERE COALESCE(deleted, 0) = 0")}
 
 
-def set_nickname(con, phrase: str, item: str | None, by: str | None = None) -> str:
-    """Teach a nickname: `item` None or "" = the phrase isn't an item. Returns its key."""
-    key = nick_key(phrase)
+def set_alias(con, phrase: str, item: str | None, by: str | None = None) -> str:
+    """Teach an alias: `item` None or "" = the phrase isn't an item. Returns its key."""
+    key = alias_key(phrase)
     if not key:
         return key
-    con.execute("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?) "
+    con.execute("INSERT INTO aliases (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?) "
                 "ON CONFLICT (key) DO UPDATE SET item = excluded.item, deleted = 0, updated = excluded.updated",
                 (key, item or "", utc_now(), by, utc_now()))
     con.commit()
     return key
 
 
-def delete_nickname(con, key: str) -> None:
-    con.execute("UPDATE nicknames SET deleted = 1, updated = ? WHERE key = ?", (utc_now(), key))
+def delete_alias(con, key: str) -> None:
+    con.execute("UPDATE aliases SET deleted = 1, updated = ? WHERE key = ?", (utc_now(), key))
     con.commit()
 
 
@@ -7065,7 +7070,7 @@ def _item_index() -> dict[str, str]:
     if idx is None:
         idx = {}
         for n in d.names:
-            idx.setdefault(nick_key(n), n)
+            idx.setdefault(alias_key(n), n)
         d.offer_index = idx
     return idx
 
@@ -7106,7 +7111,7 @@ def _price_of(text: str) -> tuple[int | None, str]:
     return price, ", ".join(note)
 
 
-WORDS_PREFIX = "="          # a nickname whose value starts with this stands for words, not an item
+WORDS_PREFIX = "="          # an alias whose value starts with this stands for words, not an item
 _OPTIONAL_WORDS = {"scroll", "for", "of", "the", "a", "an"}
 
 
@@ -7123,7 +7128,7 @@ def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
     if idx is None:
         idx = {}
         for n in d.names:
-            words = frozenset(_plain(w) for w in nick_key(n).split()) - _OPTIONAL_WORDS
+            words = frozenset(_plain(w) for w in alias_key(n).split()) - _OPTIONAL_WORDS
             if len(words) >= 2:
                 for w in words:
                     idx.setdefault(w, []).append((n, words))
@@ -7131,8 +7136,8 @@ def _token_index() -> dict[str, list[tuple[str, frozenset]]]:
     return idx
 
 
-# Common shorthand in megaphones, put in once as word nicknames (they can be changed or
-# removed in Edit nicknames like any other; see seed_default_words).
+# Common shorthand in megaphones, put in once as word aliases (they can be changed or
+# removed in Edit aliases like any other; see seed_default_words).
 DEFAULT_WORDS = {
     "att": "attack", "atk": "attack", "attk": "attack",
     "matk": "magic attack", "matt": "magic attack", "m att": "magic attack", "m atk": "magic attack",
@@ -7149,28 +7154,28 @@ _SEED_TIME = "2000-01-01T00:00:00Z"     # older than any real change, so those a
 
 def seed_default_words(con) -> int:
     """Put in DEFAULT_WORDS that aren't there (or weren't removed) yet."""
-    have = {r[0] for r in con.execute("SELECT key FROM nicknames")}
+    have = {r[0] for r in con.execute("SELECT key FROM aliases")}
     rows = [(k, WORDS_PREFIX + v, _SEED_TIME, "app", _SEED_TIME) for k, v in DEFAULT_WORDS.items() if k not in have]
     if rows:
-        con.executemany("INSERT INTO nicknames (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?)", rows)
+        con.executemany("INSERT INTO aliases (key, item, deleted, added, by, updated) VALUES (?,?,0,?,?,?)", rows)
         con.commit()
     return len(rows)
 
 
-def split_nicknames(nicks: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
-    """({phrase: item}, {phrase: words}): nicknames for items, and ones that stand for words
+def split_aliases(aliases: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """({phrase: item}, {phrase: words}): aliases for items, and ones that stand for words
     ("60%" = "intermediate", "att" = "attack") used to read any item's name."""
     items, words = {}, {}
-    for k, v in nicks.items():
+    for k, v in aliases.items():
         if v.startswith(WORDS_PREFIX):
-            words[k] = nick_key(v[len(WORDS_PREFIX):])
+            words[k] = alias_key(v[len(WORDS_PREFIX):])
         else:
             items[k] = v
     return items, words
 
 
 def apply_words(key: str, words: dict[str, str]) -> str:
-    """A phrase key with the word nicknames put in ("60% gloves att" -> "intermediate
+    """A phrase key with the word aliases put in ("60% gloves att" -> "intermediate
     gloves attack"); the longest match wins."""
     if not words:
         return key
@@ -7211,59 +7216,59 @@ def _by_words(key: str) -> str | None:
     return None if tie else best
 
 
-def _find_item(phrase: str, links: list[str], nicks: dict[str, str],
+def _find_item(phrase: str, links: list[str], aliases: dict[str, str],
                words: dict[str, str] | None = None) -> tuple[str | None, str]:
-    """(item, how) for a phrase: how = "link", "nickname", "name", "words", "ignored" or ""."""
-    key = nick_key(phrase)
+    """(item, how) for a phrase: how = "link", "alias", "name", "words", "ignored" or ""."""
+    key = alias_key(phrase)
     for link in links:
-        lk = nick_key(link)
+        lk = alias_key(link)
         if lk and (lk in key or key in lk or not key):
             idx = _item_index()
             item = idx.get(lk)
             if item is None and has_item_list():
                 sugg = suggest_items(link, 1)
                 item = sugg[0] if sugg and difflib.SequenceMatcher(
-                    None, fold(nick_key(sugg[0])), fold(lk)).ratio() >= 0.8 else None
+                    None, fold(alias_key(sugg[0])), fold(lk)).ratio() >= 0.8 else None
             return (item or link), "link"
     if not key:
         return None, ""
-    if key in nicks:
-        return (nicks[key] or None), ("nickname" if nicks[key] else "ignored")
+    if key in aliases:
+        return (aliases[key] or None), ("alias" if aliases[key] else "ignored")
     idx = _item_index()
-    # as written, then with the word nicknames put in
+    # as written, then with the word aliases put in
     keys = [key]
     swapped = apply_words(key, words or {})
     if swapped != key:
         keys.append(swapped)
     for k0 in keys:
         how = "name" if k0 == key else "words"
-        if k0 != key and k0 in nicks:
-            return (nicks[k0] or None), ("nickname" if nicks[k0] else "ignored")
+        if k0 != key and k0 in aliases:
+            return (aliases[k0] or None), ("alias" if aliases[k0] else "ignored")
         for k in (k0, " ".join(_plain(w) for w in k0.split())):
             if k in idx:
                 return idx[k], how                     # "mithril polearms" -> Mithril Polearm
         ws = k0.split()
-        # the longest run of words that is a nickname or an item's name
+        # the longest run of words that is an alias or an item's name
         for n in range(min(len(ws), 8), 0, -1):
             for i in range(len(ws) - n + 1):
                 sub = " ".join(ws[i:i + n])
-                if sub in nicks and nicks[sub] and (n > 1 or len(sub) >= 3):
-                    return nicks[sub], "nickname"
+                if sub in aliases and aliases[sub] and (n > 1 or len(sub) >= 3):
+                    return aliases[sub], "alias"
                 if sub in idx and (n > 1 or len(sub) >= 4):
                     return idx[sub], how
                 single = " ".join(_plain(w) for w in ws[i:i + n])
                 if single != sub and single in idx and (n > 1 or len(single) >= 4):
                     return idx[single], how
-    # every word of one item's name, in any order (after the word nicknames)
+    # every word of one item's name, in any order (after the word aliases)
     item = _by_words(keys[-1])
     if item:
         return item, "words"
     return None, ""
 
 
-def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[dict]:
+def parse_offers(message: str, kind: str | None, aliases: dict[str, str]) -> list[dict]:
     """The offers in a megaphone: [{side, phrase, key, item, how, price, note}]."""
-    nicks, words = split_nicknames(nicks)
+    aliases, words = split_aliases(aliases)
     links = re.findall(r"\[([^\[\]]{2,60})\]", message or "")
     text = re.sub(r"\[([^\[\]]{2,60})\]", r" \1 ", message or "")
     text = re.sub(r"\bc\s?/\s?o\b", "c_o", text, flags=re.I)        # don't split "c/o"
@@ -7303,8 +7308,8 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
                 if price is not None and offers and offers[-1]["side"] == side and offers[-1]["price"] is None:
                     offers[-1]["price"], offers[-1]["note"] = price, note   # "Item / 200k"
                 continue
-            item, how = _find_item(phrase, links, nicks, words)
-            offers.append({"side": side, "phrase": phrase, "key": nick_key(phrase), "item": item, "how": how,
+            item, how = _find_item(phrase, links, aliases, words)
+            offers.append({"side": side, "phrase": phrase, "key": alias_key(phrase), "item": item, "how": how,
                            "price": price, "note": note})
     # "[Korean Fan] S>Korean Fan 90k": the same item twice on one side is one offer
     merged: list[dict] = []
@@ -7318,13 +7323,13 @@ def parse_offers(message: str, kind: str | None, nicks: dict[str, str]) -> list[
 
 
 def update_offers(con, force: bool = False) -> int:
-    """Work out the offers of every stored megaphone whose message (or the nicknames)
+    """Work out the offers of every stored megaphone whose message (or the aliases)
     changed since; returns how many megaphones were (re)read.
 
     Reading runs with no lock on the database; only the short write at the end does,
     so the app and the other threads aren't kept waiting ("database is locked")."""
     with _OFFERS_LOCK:                 # one at a time: a second run would redo the same work
-        ver = nickname_version(con)
+        ver = alias_version(con)
         todo = []
         for mid, msg, kind, sig in con.execute("SELECT id, message, kind, offers_sig FROM megaphones").fetchall():
             want = hashlib_md5(f"{OFFERS_VERSION}|{ver}|{kind}|{msg}".encode())
@@ -7332,13 +7337,13 @@ def update_offers(con, force: bool = False) -> int:
                 todo.append((mid, msg, kind, want))
         if not todo:
             return 0
-        nicks = load_nicknames(con)
+        aliases = load_aliases(con)
         results = []
         for mid, msg, kind, want in todo:
             ui_pause()
             rows = []
             # (suggested items for Review are worked out only for the rows it shows)
-            for i, o in enumerate(parse_offers(msg, kind, nicks)):
+            for i, o in enumerate(parse_offers(msg, kind, aliases)):
                 rows.append((mid, i, o["side"], o["phrase"], o["key"], o["item"], o["how"], o["price"],
                              o["note"], None, 0.0))
             results.append((mid, msg, want, rows))
@@ -7359,7 +7364,7 @@ def update_offers(con, force: bool = False) -> int:
 
 
 _OFFERS_LOCK = threading.Lock()
-OFFERS_VERSION = 3          # bump when parse_offers changes: megaphones are read again
+OFFERS_VERSION = 4          # bump when parse_offers changes: megaphones are read again
 
 # While the window is redrawing a big table, background threads doing pure-Python work
 # pause: otherwise every one of the window's thousands of small Tk calls waits for its

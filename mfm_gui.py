@@ -136,7 +136,7 @@ HEAD = {"item": "Item", "each": "Price", "market": "Market",
         "points": "Data points", "sold24": "Sold 24h", "last3": "Avg last 3 sales", "tab": "Tab",
         "match": "Match / suggestion", "list_price": "List price", "message": "Message",
         "side": "Buying / Selling", "phrase": "Item", "mprice": "Price", "msell": "Megaphones: selling",
-        "mbuy": "Megaphones: buying", "nick": "Megaphone term", "nitem": "Nickname", "ntype": "Type",
+        "mbuy": "Megaphones: buying", "aterm": "Megaphone term", "avalue": "Alias", "atype": "Type",
         "suggest": "Suggested item", "score": "Alike", "count": "Listings", "raw": "What OCR read"}
 WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "shop": 140, "player": 100, "map": 265, "channel": 72,
@@ -146,7 +146,7 @@ WIDTH = {"item": 155, "each": 82, "market": 82, "diff": 52, "verdict": 62,
          "listed_n": 60, "sold_n": 45, "total": 100, "max_each": 110, "last_price": 100, "npc_buy": 85, "npc_sell": 85,
          "saved": 110, "notes": 170, "qty": 55, "range": 170, "points": 90, "sold24": 75,
          "last3": 130, "tab": 70, "match": 230, "list_price": 95, "message": 600,
-         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "nick": 240, "nitem": 300, "ntype": 90, "suggest": 260, "score": 60, "count": 65, "raw": 300}
+         "side": 120, "phrase": 220, "mprice": 95, "msell": 140, "mbuy": 135, "aterm": 240, "avalue": 300, "atype": 90, "suggest": 260, "score": 60, "count": 65, "raw": 300}
 NUMERIC = {"each", "market", "diff", "low", "high", "seen", "best", "listed_med",
            "sold_med", "listed_n", "sold_n", "total", "score", "count", "channel", "best_channel",
            "max_each", "last_price", "npc_buy", "npc_sell", "qty", "range", "points", "sold24", "last3", "list_price",
@@ -2006,8 +2006,8 @@ class App:
                         f" · purged: {(st.get('purged') or {}).get('prices', 0):,}\n"
                         f"Megaphones sent: {st.get('mega_sent', 0):,} · received: {st.get('mega_received', 0):,}"
                         f" · purged: {(st.get('purged') or {}).get('megaphones', 0):,}\n"
-                        f"Nicknames sent: {st.get('nick_sent', 0):,} · received: {st.get('nick_received', 0):,}"
-                        f" · purged: {(st.get('purged') or {}).get('nicknames', 0):,}\n"
+                        f"Aliases sent: {st.get('alias_sent', 0):,} · received: {st.get('alias_received', 0):,}"
+                        f" · purged: {(st.get('purged') or {}).get('aliases', 0):,}\n"
                         "(since the app started)")
             status.config(text=text)
             signed_in = bool(saved.get("token"))
@@ -2113,7 +2113,7 @@ class App:
         sp.bind("<FocusOut>", lambda e: self._mega_hours_changed())
         tip("Megaphones older than this are deleted.", sp)
         ttk.Label(top, text="hours. Newest first, read from the chat window while monitoring.").pack(side="left")
-        self._nickname_buttons(top).pack(side="left", padx=(12, 0))
+        self._alias_buttons(top).pack(side="left", padx=(12, 0))
         # filter: only megaphones whose message has every word typed here
         ttk.Label(top, text="Filter:").pack(side="left", padx=(16, 4))
         self.mega_filter = tk.StringVar()
@@ -2425,8 +2425,8 @@ class App:
     def _offer_phrases(self, tree) -> list[str]:
         return [tree.offer_of[k][2] for k in tree.selection() if tree.offer_of.get(k, (0, None, None))[2]]
 
-    def _nicknames_changed(self, note: str = ""):
-        """Nicknames were taught or changed: read every megaphone again (in the
+    def _aliases_changed(self, note: str = ""):
+        """Aliases were taught or changed: read every megaphone again (in the
         background), then show the result."""
         if note:
             self._set_status(note)
@@ -2449,15 +2449,15 @@ class App:
             return
         name = self._choose_item(self.root, f"Which item is \"{phrases[0]}\"?", phrases[0].title())
         if name:
-            mfm.set_nickname(self.con, phrases[0], name)
-            self._nicknames_changed(f"\"{phrases[0]}\" is now a nickname for {name}.")
+            mfm.set_alias(self.con, phrases[0], name)
+            self._aliases_changed(f"\"{phrases[0]}\" is now an alias for {name}.")
 
     def megaphone_not_item(self, tree):
         phrases = self._offer_phrases(tree)
         for ph in phrases:
-            mfm.set_nickname(self.con, ph, None)
+            mfm.set_alias(self.con, ph, None)
         if phrases:
-            self._nicknames_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
+            self._aliases_changed(f"{mfm.plural(len(phrases), 'phrase')} marked as not an item.")
 
     def _megaphone_history_of(self, tree):
         if any(k in getattr(tree, "matched", set()) for k in tree.selection()):
@@ -3557,10 +3557,10 @@ class App:
         self.review_nb.add(tab, text="  Megaphones  ")
         ttk.Label(tab, wraplength=1040, justify="left", text=(
             "Things megaphones sell or buy that aren't matched to an item yet. Matching one teaches the "
-            "app a nickname, used for every megaphone from then on (and shared through the Shared "
+            "app an alias, used for every megaphone from then on (and shared through the Shared "
             "Database). Enter = accept the suggestion · M = pick an item · Delete = not an item.")
                   ).pack(anchor="w", pady=(0, 6))
-        self._nickname_buttons(tab).pack(fill="x", pady=(0, 6))
+        self._alias_buttons(tab).pack(fill="x", pady=(0, 6))
         t = make_tree(tab, ("phrase", "side", "mprice", "suggest", "score", "count", "message"))
         t.heading("count", text="Seen")
         t.column("message", stretch=True)
@@ -3582,21 +3582,28 @@ class App:
         bottom.pack(fill="x", pady=(6, 0))
         ttk.Button(bottom, text="Accept suggestion", command=self.mreview_accept).pack(side="left")
         ttk.Button(bottom, text="Match manually", command=self.mreview_match).pack(side="left", padx=4)
+        # Item or Words: what Accept and Match manually teach, like the Type in Edit aliases
+        self.mreview_words = False
+        self.mreview_type_btn = ttk.Button(bottom, text="Type: Item", width=12, command=self._mreview_toggle_type)
+        self.mreview_type_btn.pack(side="left", padx=(0, 4))
+        tip("What Accept suggestion and Match manually teach. Item: the phrase is an item. Words: the "
+            "phrase stands for words, used in any item's name (\"att\" = Attack). Click to switch.",
+            self.mreview_type_btn)
         ttk.Button(bottom, text="Not an item", command=self.mreview_not_item).pack(side="left")
         b = ttk.Button(bottom, text="Delete megaphone", command=self.mreview_delete)
         b.pack(side="left", padx=4)
         tip("Delete the megaphones these rows came from (a misread line, spam). Nothing is "
-            "added to the nicknames.", b)
+            "added to the aliases.", b)
         self.mreview_more = ttk.Label(bottom, foreground="#666")
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
-        # common shorthand ("att" = attack, "ohs" = one handed sword) as word nicknames
+        # common shorthand ("att" = attack, "ohs" = one handed sword) as word aliases
         try:
             mfm.seed_default_words(self.con)
         except sqlite3.Error:
             pass
         # read items and prices from megaphones saved before (or by an older version)
-        self.root.after(800, self._nicknames_changed)
+        self.root.after(800, self._aliases_changed)
 
     def _fill_megaphone_review(self, rows, total):
         if not hasattr(self, "mreview"):
@@ -3620,15 +3627,20 @@ class App:
             self.mreview_more.config(text=f"Showing the {len(rows):,} most seen of {total:,}." if total > len(rows)
                                      else "")
 
+    def _mreview_toggle_type(self):
+        self.mreview_words = not self.mreview_words
+        self.mreview_type_btn.config(text="Type: Words" if self.mreview_words else "Type: Item")
+
     def mreview_accept(self):
         done = 0
         for key in self.mreview.selection():
             r = self.mreview_rows.get(key)
             if r and r["suggest"]:
-                mfm.set_nickname(self.con, r["phrase"], r["suggest"])
+                # Words: the suggested item's name as the words (like Item -> Words in Edit aliases)
+                mfm.set_alias(self.con, r["phrase"], (mfm.WORDS_PREFIX if self.mreview_words else "") + r["suggest"])
                 done += 1
         if done:
-            self._nicknames_changed(f"Learned {mfm.plural(done, 'nickname')}.")
+            self._aliases_changed(f"Learned {mfm.plural(done, 'alias')}.")
         else:
             self.root.bell()
 
@@ -3639,41 +3651,55 @@ class App:
         r = self.mreview_rows.get(sel[0])
         if not r:
             return
+        if self.mreview_words:
+            from tkinter import simpledialog
+            words = simpledialog.askstring(
+                "Words", f"What words does \"{r['phrase']}\" stand for?\n(e.g. \"att\" = Attack, "
+                "\"60%\" = Intermediate)", initialvalue=r["phrase"], parent=self.root)
+            words = " ".join((words or "").split())
+            if not words:
+                return
+            for key in sel:
+                rr = self.mreview_rows.get(key)
+                if rr:
+                    mfm.set_alias(self.con, rr["phrase"], mfm.WORDS_PREFIX + words)
+            self._aliases_changed(f"\"{r['phrase']}\" now stands for the words \"{words}\".")
+            return
         name = self._choose_item(self.root, f"Which item is \"{r['phrase']}\"?", r["suggest"] or r["phrase"].title())
         if name:
             for key in sel:                       # the same item for every selected phrase
                 rr = self.mreview_rows.get(key)
                 if rr:
-                    mfm.set_nickname(self.con, rr["phrase"], name)
-            self._nicknames_changed(f"\"{r['phrase']}\" is now a nickname for {name}.")
+                    mfm.set_alias(self.con, rr["phrase"], name)
+            self._aliases_changed(f"\"{r['phrase']}\" is now an alias for {name}.")
 
     def mreview_not_item(self):
         sel = list(self.mreview.selection())
         for key in sel:
             r = self.mreview_rows.get(key)
             if r:
-                mfm.set_nickname(self.con, r["phrase"], None)
+                mfm.set_alias(self.con, r["phrase"], None)
         if sel:
-            self._nicknames_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
+            self._aliases_changed(f"{mfm.plural(len(sel), 'phrase')} marked as not an item.")
 
-    def _nickname_buttons(self, parent):
+    def _alias_buttons(self, parent):
         bar = ttk.Frame(parent)
-        b = ttk.Button(bar, text="Edit nicknames", command=self.nicknames_window)
+        b = ttk.Button(bar, text="Edit aliases", command=self.aliases_window)
         b.pack(side="left")
-        tip("A sheet of every nickname: what megaphones call an item, and the item it is. "
+        tip("A sheet of every alias: what megaphones call an item, and the item it is. "
             "Add, change or remove them.", b)
-        b = ttk.Button(bar, text="Refresh", command=self.reapply_nicknames)
+        b = ttk.Button(bar, text="Refresh", command=self.reapply_aliases)
         b.pack(side="left", padx=(6, 0))
-        tip("Match every megaphone again with the current nicknames. Phrases that now match "
+        tip("Match every megaphone again with the current aliases. Phrases that now match "
             "leave Review.", b)
         return bar
 
-    def reapply_nicknames(self):
-        """Read every megaphone again with the current nicknames (in the background)."""
+    def reapply_aliases(self):
+        """Read every megaphone again with the current aliases (in the background)."""
         if getattr(self, "_reapplying", False):
             return
         self._reapplying = True
-        self._set_status("Matching megaphones with the nicknames…")
+        self._set_status("Matching megaphones with the aliases…")
         hours = max(1, float(self.cfg.get("megaphone_hours", 72) or 72))
 
         def work():
@@ -3703,7 +3729,7 @@ class App:
         text = " ".join((text or "").split())
         if not text:
             return None
-        hit = mfm._item_index().get(mfm.nick_key(text))   # the name as the item list spells it
+        hit = mfm._item_index().get(mfm.alias_key(text))   # the name as the item list spells it
         if hit:
             return hit
         if mfm.is_known_item(text):
@@ -3738,17 +3764,17 @@ class App:
             self.root.after(600, lambda: self.mreview.exists(nxt) and (self.mreview.selection_set(nxt),
                                                                        self.mreview.see(nxt)))
 
-    def nicknames_window(self):
-        """An editable sheet of nicknames: "Megaphone term" (what players write),
-        "Nickname" (what it means), and "Type": Item (the phrase is that item) or Words (the
+    def aliases_window(self):
+        """An editable sheet of aliases: "Megaphone term" (what players write),
+        "Alias" (what it means), and "Type": Item (the phrase is that item) or Words (the
         phrase stands for other words, used to read any item's name: "60%" =
         "Intermediate", "att" = "Attack"). Click a cell to type in it."""
-        if getattr(self, "_nick_win", None) and self._nick_win.winfo_exists():
-            self._nick_win.lift()
+        if getattr(self, "_alias_win", None) and self._alias_win.winfo_exists():
+            self._alias_win.lift()
             return
         win = tk.Toplevel(self.root)
-        self._nick_win = win
-        win.title("Nicknames")
+        self._alias_win = win
+        win.title("Aliases")
         win.geometry("860x560")
         win.transient(self.root)
         ttk.Label(win, padding=(10, 8), wraplength=820, justify="left", text=(
@@ -3759,20 +3785,20 @@ class App:
             "Type \"Words\": the phrase stands for other words, for any item (\"60%\" = Intermediate, "
             "\"att\" = Attack): \"60% gloves att\" then matches Gloves Attack Scroll: Intermediate. "
             "Click the Type cell to switch.")).pack(anchor="w")
-        t = make_tree(win, ("nick", "nitem", "ntype"))
-        t.column("nitem", stretch=True)
-        t.column("ntype", anchor="center")
+        t = make_tree(win, ("aterm", "avalue", "atype"))
+        t.column("avalue", stretch=True)
+        t.column("atype", anchor="center")
         t.tag_configure("new", foreground="#888")
         t.tag_configure("ignored", foreground="#888")
         t.tag_configure("words", foreground="#1f4e9a")
         t.frame.pack(fill="both", expand=True, padx=10)
         NEW = "__new__"
         WP = mfm.WORDS_PREFIX
-        pending = {}                     # rows with a nickname typed but nothing else yet
+        pending = {}                     # rows with an alias typed but nothing else yet
 
         def fill(select=None):
             t.delete(*t.get_children())
-            rows = sorted(mfm.load_nicknames(self.con).items(), key=lambda kv: (kv[1].startswith(WP), kv[0]))
+            rows = sorted(mfm.load_aliases(self.con).items(), key=lambda kv: (kv[1].startswith(WP), kv[0]))
             for key, val in rows:
                 if val.startswith(WP):
                     t.insert("", "end", iid="k:" + key, tags=("words",), values=(key, val[len(WP):], "Words"))
@@ -3781,7 +3807,7 @@ class App:
                              tags=() if val else ("ignored",), values=(key, val or self.NOT_ITEM, "Item"))
             for pid, p in pending.items():
                 t.insert("", "end", iid=pid, values=(p["phrase"], "", "Words" if p["words"] else "Item"))
-            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add a nickname)", "", ""))
+            t.insert("", "end", iid=NEW, tags=("new",), values=("(click to add an alias)", "", ""))
             if select and t.exists(select):
                 t.selection_set(select)
                 t.focus(select)
@@ -3789,7 +3815,7 @@ class App:
 
         def saved(key):
             fill("k:" + key)
-            self._nicknames_changed()
+            self._aliases_changed()
 
         def value_for(raw, words):
             """What to store for what was typed (None = cancelled)."""
@@ -3802,17 +3828,17 @@ class App:
         def on_done(tree, row, col, raw):
             raw = " ".join((raw or "").split())
             if row == NEW:
-                if col != "nick" or not mfm.nick_key(raw):
+                if col != "aterm" or not mfm.alias_key(raw):
                     return
                 pid = f"p:{len(pending) + 1}:{time.monotonic()}"
                 pending[pid] = {"phrase": raw, "words": False}
                 fill(pid)
-                win.after(50, lambda: start_edit(pid, "nitem"))   # straight on to its meaning
+                win.after(50, lambda: start_edit(pid, "avalue"))   # straight on to its meaning
                 return
             if row in pending:
                 p = pending[row]
-                if col == "nick":
-                    if mfm.nick_key(raw):
+                if col == "aterm":
+                    if mfm.alias_key(raw):
                         p["phrase"] = raw
                     fill(row)
                     return
@@ -3820,20 +3846,20 @@ class App:
                 if val is None:
                     return                      # cancelled the pick
                 pending.pop(row)
-                saved(mfm.set_nickname(self.con, p["phrase"], val or None))
+                saved(mfm.set_alias(self.con, p["phrase"], val or None))
                 return
             key = row[2:]
-            cur = mfm.load_nicknames(self.con).get(key, "")
-            if col == "nick":
-                new = mfm.nick_key(raw)
+            cur = mfm.load_aliases(self.con).get(key, "")
+            if col == "aterm":
+                new = mfm.alias_key(raw)
                 if not new or new == key:
                     return
-                mfm.delete_nickname(self.con, key)
-                saved(mfm.set_nickname(self.con, new, cur or None))
+                mfm.delete_alias(self.con, key)
+                saved(mfm.set_alias(self.con, new, cur or None))
             else:
                 val = value_for(raw, cur.startswith(WP))
                 if val is not None:
-                    saved(mfm.set_nickname(self.con, key, val or None))
+                    saved(mfm.set_alias(self.con, key, val or None))
 
         def toggle_type(row):
             if row in pending:
@@ -3843,34 +3869,34 @@ class App:
             if not row.startswith("k:"):
                 return
             key = row[2:]
-            cur = mfm.load_nicknames(self.con).get(key, "")
+            cur = mfm.load_aliases(self.con).get(key, "")
             if cur.startswith(WP):              # Words -> Item: the words should name an item
                 val = value_for(cur[len(WP):], False)
                 if val is None:
                     return
             else:                               # Item -> Words: the item's name as the words
                 val = WP + cur
-            saved(mfm.set_nickname(self.con, key, val or None))
+            saved(mfm.set_alias(self.con, key, val or None))
 
         def start_edit(row, col):
             if t.exists(row):
                 if row == NEW:
-                    t.set(NEW, "nick", "")
+                    t.set(NEW, "aterm", "")
                 t.see(row)
                 t.update_idletasks()
                 self._inline_edit(t, row, col, on_done)
 
         def on_double(e):
             row, col = t.identify_row(e.y), self._clicked_column(t, e)
-            if row and col and col != "ntype":
+            if row and col and col != "atype":
                 self._cancel_inline(t)
                 start_edit(row, col)
 
         def on_click(e):
             row, col = t.identify_row(e.y), self._clicked_column(t, e)
-            if row == NEW:               # one click on the last row starts a new nickname
-                win.after(10, lambda: start_edit(NEW, "nick"))
-            elif row and col == "ntype":
+            if row == NEW:               # one click on the last row starts a new alias
+                win.after(10, lambda: start_edit(NEW, "aterm"))
+            elif row and col == "atype":
                 win.after(10, lambda: toggle_type(row))
 
         def remove():
@@ -3878,10 +3904,10 @@ class App:
             for k in t.selection():
                 pending.pop(k, None)
             for k in keys:
-                mfm.delete_nickname(self.con, k[2:])
+                mfm.delete_alias(self.con, k[2:])
             fill()
             if keys:
-                self._nicknames_changed(f"Removed {mfm.plural(len(keys), 'nickname')}.")
+                self._aliases_changed(f"Removed {mfm.plural(len(keys), 'alias')}.")
 
         def edit_selected(col):
             sel = t.selection()
@@ -3892,29 +3918,29 @@ class App:
             sel = [k for k in t.selection() if k != NEW]
             if not sel:
                 return
-            cur = t.set(sel[0], "nitem")
-            name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'nick')}\"?",
+            cur = t.set(sel[0], "avalue")
+            name = self._choose_item(win, f"Which item is \"{t.set(sel[0], 'aterm')}\"?",
                                      "" if cur == self.NOT_ITEM else cur)
             if not name:
                 return
             row = sel[0]
-            if row in pending:                  # a picked item makes it an Item nickname
+            if row in pending:                  # a picked item makes it an Item alias
                 pending[row]["words"] = False
-                on_done(t, row, "nitem", name)
+                on_done(t, row, "avalue", name)
             elif row.startswith("k:"):
-                saved(mfm.set_nickname(self.con, row[2:], name))
+                saved(mfm.set_alias(self.con, row[2:], name))
 
-        self._inline_editing(t, ("nick", "nitem"), on_done)
+        self._inline_editing(t, ("aterm", "avalue"), on_done)
         t.on_done = on_done
         t.bind("<Double-1>", on_double)
         t.bind("<ButtonRelease-1>", on_click, add="+")
-        t.bind("<Return>", lambda e: edit_selected("nitem"))
-        t.bind("<F2>", lambda e: edit_selected("nick"))
+        t.bind("<Return>", lambda e: edit_selected("avalue"))
+        t.bind("<F2>", lambda e: edit_selected("aterm"))
         t.bind("<Delete>", lambda e: remove())
         t.bind("<BackSpace>", lambda e: remove())
         bar = ttk.Frame(win, padding=10)
         bar.pack(fill="x")
-        ttk.Button(bar, text="Add a nickname", command=lambda: start_edit(NEW, "nick")).pack(side="left")
+        ttk.Button(bar, text="Add an alias", command=lambda: start_edit(NEW, "aterm")).pack(side="left")
         ttk.Button(bar, text="Pick the item…", command=pick).pack(side="left", padx=6)
         ttk.Button(bar, text="Item / Words", command=lambda: [toggle_type(k) for k in t.selection()[:1]]
                    ).pack(side="left")

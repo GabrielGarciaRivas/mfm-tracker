@@ -34,19 +34,22 @@ j -H "Authorization: Bearer $T2" -X POST "$URL/api/v1/megaphones" \
 out=$(j -H "Authorization: Bearer $T1" "$URL/api/v1/megaphones?since=0&hours=2")
 echo "$out" | grep -q '"player": "Lock1024"' || fail "best read: $out"
 [ "$(echo "$out" | grep -o '"uid"' | wc -l)" = 1 ] || fail "megaphone stored twice: $out"
-# nicknames: one player teaches one, the other reads it; the newest change wins
-j -H "Authorization: Bearer $T1" -X POST "$URL/api/v1/nicknames" \
-  -d "{\"nicknames\":[{\"key\":\"kumbis\",\"item\":\"Kumbi Throwing-Stars\",\"updated\":\"$NOW\"}]}" >/dev/null
-j -H "Authorization: Bearer $T2" -X POST "$URL/api/v1/nicknames" \
-  -d '{"nicknames":[{"key":"kumbis","item":"Old Guess","updated":"2020-01-01T00:00:00Z"}]}' >/dev/null
-out=$(j -H "Authorization: Bearer $T2" "$URL/api/v1/nicknames?since=0")
-echo "$out" | grep -q '"item": "Kumbi Throwing-Stars"' || fail "nickname: $out"
+# aliases: one player teaches one, the other reads it; the newest change wins
+j -H "Authorization: Bearer $T1" -X POST "$URL/api/v1/aliases" \
+  -d "{\"aliases\":[{\"key\":\"kumbis\",\"item\":\"Kumbi Throwing-Stars\",\"updated\":\"$NOW\"}]}" >/dev/null
+j -H "Authorization: Bearer $T2" -X POST "$URL/api/v1/aliases" \
+  -d '{"aliases":[{"key":"kumbis","item":"Old Guess","updated":"2020-01-01T00:00:00Z"}]}' >/dev/null
+out=$(j -H "Authorization: Bearer $T2" "$URL/api/v1/aliases?since=0")
+echo "$out" | grep -q '"item": "Kumbi Throwing-Stars"' || fail "alias: $out"
 echo "$out" | grep -q "\"by\": \"$U1\"" || fail "who taught it: $out"
-# "not an item" is a nickname too
-j -H "Authorization: Bearer $T1" -X POST "$URL/api/v1/nicknames" \
-  -d "{\"nicknames\":[{\"key\":\"slime set\",\"item\":\"\",\"updated\":\"$NOW\"}]}" >/dev/null
-out=$(j -H "Authorization: Bearer $T2" "$URL/api/v1/nicknames?since=0")
+# "not an item" is an alias too
+j -H "Authorization: Bearer $T1" -X POST "$URL/api/v1/aliases" \
+  -d "{\"aliases\":[{\"key\":\"slime set\",\"item\":\"\",\"updated\":\"$NOW\"}]}" >/dev/null
+out=$(j -H "Authorization: Bearer $T2" "$URL/api/v1/aliases?since=0")
 echo "$out" | grep -q '"slime set"' || fail "not-an-item not stored: $out"
+# apps before 2610.19 call them nicknames: the old address still works
+out=$(j -H "Authorization: Bearer $T2" "$URL/api/v1/nicknames?since=0")
+echo "$out" | grep -q '"nicknames": \[' || fail "old nicknames address: $out"
 # what was purged is listed for the apps
 j -H "Authorization: Bearer $T2" "$URL/api/v1/purges?since=0" | grep -q '"purges"' || fail "purges"
 # signing out ends the token

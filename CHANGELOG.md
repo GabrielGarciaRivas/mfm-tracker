@@ -3,6 +3,10 @@
 ## 2610.19.001 — 2026-10-19
 
 ### Changed
+- **Nicknames are called aliases** now, everywhere in the app and its documentation.
+  Your aliases are kept; they sync with servers before 2.6.0 too.
+- **Review → Megaphones:** a **Type: Item / Words** button at the bottom, like the Type in
+  Edit aliases: Accept suggestion and Match manually then teach an item or words.
 - **The game window is read on its own** (Windows, macOS and Linux), so the app keeps
   reading while other windows cover the game (not while it's minimized). It's found by
   "MapleStory" in its title; **Settings → Window detection** can change that or turn it
@@ -21,10 +25,14 @@
   (spectacle on KDE, gnome-screenshot on GNOME), moves on to the next tool if one fails,
   and says which tool to install if none works.
 
+### Server 2.6.0
+- Nicknames are called aliases: `/api/v1/aliases` (the old `/api/v1/nicknames` still works
+  for older apps), and `mfm-server purge aliases`. The stored ones are kept.
+
 ## 2610.18.005 — 2026-10-18
 
 ### Changed
-- **Shared Database:** the window also counts nicknames sent and received.
+- **Shared Database:** the window also counts aliases sent and received.
 - **Megaphones:** a **Filter** box shows only megaphones whose message has every word
   typed in it.
 - **OCR training (Settings):** the app can keep pictures of the megaphone lines it reads.
@@ -58,9 +66,9 @@
 
 ### Changed
 - **Shared Database:** when the server's admin deletes data (`mfm-server purge`), the app
-  deletes the same prices, megaphones and nicknames from its own data on its next sync.
+  deletes the same prices, megaphones and aliases from its own data on its next sync.
   When the app and the server disagree, the server's copy wins. The Shared Database
-  window shows how many prices, megaphones and nicknames were purged this way.
+  window shows how many prices, megaphones and aliases were purged this way.
 - **Monitoring:** a green arrow left of the button while monitoring, a red square when
   stopped.
 - **Settings → Window detection:** the Shop, Map, Chat and Inventory area buttons moved
@@ -73,10 +81,10 @@
   file name. The app itself keeps its plain name.
 
 ### Server 2.4.0
-- New command `mfm-server purge` deletes prices, megaphones or nicknames: older than a time
+- New command `mfm-server purge` deletes prices, megaphones or aliases: older than a time
   (`--older-than 1d`), from the past while (`--last 1h`), or all (`--all`). Connected apps
   delete the same from their own data.
-- "Not an item" marks are stored with the nicknames again (2.3.0 left them out). Apps
+- "Not an item" marks are stored with the aliases again (2.3.0 left them out). Apps
   send theirs again once.
 
 ## 2610.18.002 — 2026-10-18
@@ -93,7 +101,7 @@
   is looked for as often as **Capture every (seconds)** (0.1 by default). Closing the
   window with **Esc** or **CANCEL** keeps the channel you had.
 - **Review → Megaphones:** a **Delete megaphone** button deletes the megaphones the
-  selected rows came from, without adding a nickname. Deleted megaphones aren't copied
+  selected rows came from, without adding an alias. Deleted megaphones aren't copied
   back from the Shared Database.
 
 ### Fixed
@@ -106,9 +114,9 @@
 - Bits of 1-2 letters ("CH") are no longer listed as megaphone items.
 - A shop item's stack count is no longer read as part of its name ("4 Meba").
 - Scrolls in megaphones match much more often: "att 60%" no longer loses its "60",
-  "60 %" and "60%atk" are read as "60%", and common shorthand comes as word nicknames
+  "60 %" and "60%atk" are read as "60%", and common shorthand comes as word aliases
   ("att", "atk", "matk", "acc", "avoid", "ohs", "2h", "bw", "xbow", "overall", "top",
-  "pants", "helm" and more). With your grade nicknames, "60% glove att" matches Gloves
+  "pants", "helm" and more). With your grade aliases, "60% glove att" matches Gloves
   Attack Scroll: Intermediate.
 
 - Shop names are read more accurately: Tesseract is given every word of the item names, so
@@ -118,7 +126,7 @@
 ### Changed
 - **Shared Database:** the window shows "Connected to (server name) (version) as (you)",
   and how many megaphones were sent and received as well as prices.
-- "Add manual nicknames" is now "Edit nicknames".
+- "Add manual aliases" is now "Edit aliases".
 
 ## 2610.18.001 — 2026-10-18
 
@@ -126,16 +134,16 @@
 - **Megaphone items and prices:** each item a megaphone sells or buys gets its own line in
   the Megaphones tab, with the item's icon, name, price and market price. The time is the
   first column; a megaphone's other items are the lines below it. Items are found
-  from item links, names and learned nicknames.
-- **Nicknames:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
+  from item links, names and learned aliases.
+- **Aliases:** teach the app what players call items ("kumbis" = Kumbi Throwing-Stars)
   in the new **Review → Megaphones** tab. Enter accepts the suggestion, M picks an item,
   Delete marks it as not an item. Older megaphones are updated right away.
-- **Edit nicknames:** a sheet of nicknames (Megaphone term, Nickname) to
+- **Edit aliases:** a sheet of aliases (Megaphone term, Alias) to
   type into, from the Megaphones tab or Review → Megaphones. **Refresh** next to it
-  matches every megaphone again with the current nicknames.
-- **Word nicknames:** a nickname can stand for words instead of an item ("60%" =
+  matches every megaphone again with the current aliases.
+- **Word aliases:** an alias can stand for words instead of an item ("60%" =
   Intermediate, "att" = Attack), so "60% gloves att" matches Gloves Attack Scroll:
-  Intermediate without a nickname for each scroll. Switch a nickname with its Type cell.
+  Intermediate without an alias for each scroll. Switch an alias with its Type cell.
   Megaphone items also match when every word of the item's name is there, in any order.
 - **Review** now has two tabs: **Shop listings** and **Megaphones**. The Megaphones tab has
   a Buying / Selling column. Shop listings shows the price, shop, player and channel in
@@ -144,7 +152,7 @@
   you match it in Review.
 - The Items tab shows the median megaphone selling and buying prices, and the price
   history window has a Megaphones tab.
-- **Shared Database:** nicknames are shared too, so new players don't have to teach them
+- **Shared Database:** aliases are shared too, so new players don't have to teach them
   again (needs server 2.2.0).
 
 ### Changed

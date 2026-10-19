@@ -17,7 +17,7 @@ records which account sent it and from which IP address.
   mfm-server log [N]                  the last N sign-ins, failed sign-ins and account changes
   mfm-server stats                    how much is stored, and from whom
   mfm-server purge WHAT WHEN [--dry-run] [--yes]
-                                      delete stored data. WHAT: prices, megaphones, nicknames, ocr
+                                      delete stored data. WHAT: prices, megaphones, aliases, ocr
                                       or all (or several: prices,megaphones). WHEN:
                                         --older-than 1d   data older than that (not seen since)
                                         --last 1h         data from the past hour
@@ -48,7 +48,7 @@ API (JSON over HTTP):
   Every other /api call needs "Authorization: Bearer <token>":
   POST /api/v1/logout                      ends this sign-in
   POST /api/v1/password  {"password", "new_password"}   change your password
-  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "nicknames", "seq",
+  GET  /api/v1/status                      {"name", "version", "sightings", "megaphones", "aliases", "seq",
                                            "purge_id", "you", "keep_days", "megaphone_hours"}
   POST /api/v1/sightings                   {"sightings": [ {uid, ts, item, price, qty, shop,
                                            seller, map, channel, sold, sold_ts, last_seen,
@@ -59,10 +59,11 @@ API (JSON over HTTP):
   POST /api/v1/megaphones                  {"megaphones": [ {uid, ts, player, channel, message, kind,
                                            color, conf}, ... ]}  -> {"seq", "same": {...}}
   GET  /api/v1/megaphones?since=SEQ&hours=H -> {"megaphones": [...], "seq", "more"}
-  POST /api/v1/nicknames                   {"nicknames": [ {key, item, deleted, updated}, ... ]}
+  POST /api/v1/aliases                   {"aliases": [ {key, item, deleted, updated}, ... ]}
                                            (item "" = "not an item"; the newest change wins)
                                            -> {"seq", "same": {}}
-  GET  /api/v1/nicknames?since=SEQ         -> {"nicknames": [...], "seq", "more"}
+  GET  /api/v1/aliases?since=SEQ         -> {"aliases": [...], "seq", "more"}
+  (/api/v1/nicknames, with "nicknames" for "aliases", still works for apps before 2610.19)
   POST /api/v1/ocr  {"lines": [{uid, png (base64), text, status, read}]}  (at most 100)
                                            chat line images for OCR training -> {"stored"}
   GET  /api/v1/purges?since=ID             -> {"purges": [{id, ts, what, field, start, end}], "last"}
@@ -90,7 +91,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_BATCH = 500
 MAX_BODY = 2_000_000
@@ -124,6 +125,12 @@ def log(msg: str) -> None:
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     con.execute("PRAGMA journal_mode=WAL")
+    # 2.6.0: "nicknames" are called aliases now
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "nicknames" in tables and "aliases" not in tables:
+        con.execute("ALTER TABLE nicknames RENAME TO aliases")
+        con.execute("UPDATE purges SET what = 'aliases' WHERE what = 'nicknames'") if "purges" in tables else None
+        con.commit()
     con.executescript("""
         CREATE TABLE IF NOT EXISTS sightings (
             uid TEXT PRIMARY KEY,
@@ -176,7 +183,7 @@ def db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_mega_seq ON megaphones(seq);
         CREATE INDEX IF NOT EXISTS idx_mega_ts ON megaphones(ts);
-        CREATE TABLE IF NOT EXISTS nicknames (      -- what players call items in megaphones
+        CREATE TABLE IF NOT EXISTS aliases (      -- what players call items in megaphones
             key TEXT PRIMARY KEY,
             seq INTEGER NOT NULL,
             item TEXT NOT NULL DEFAULT '',          -- '' = "not an item"
@@ -185,7 +192,7 @@ def db() -> sqlite3.Connection:
             added_by TEXT, added_by_id TEXT, added_ip TEXT, added TEXT,
             updated_by TEXT, updated_by_id TEXT, updated_ip TEXT, stored TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_nick_seq ON nicknames(seq);
+        CREATE INDEX IF NOT EXISTS idx_alias_seq ON aliases(seq);
         CREATE TABLE IF NOT EXISTS ocr_lines (      -- chat line images for training the OCR
             uid TEXT PRIMARY KEY,
             ts TEXT NOT NULL,                       -- when it was stored or last changed
@@ -198,7 +205,7 @@ def db() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS purges (         -- `mfm-server purge` runs; the apps apply them too
             id INTEGER PRIMARY KEY,
             ts TEXT NOT NULL,
-            what TEXT NOT NULL,                     -- prices, megaphones or nicknames
+            what TEXT NOT NULL,                     -- prices, megaphones or aliases
             field TEXT NOT NULL,                    -- seen: last seen / changed; first: first stored
             start TEXT,                             -- rows with field >= start (none: no lower bound)
             "end" TEXT NOT NULL                     -- ... and field < end
@@ -573,17 +580,17 @@ def prune_megaphones(con, hours: float) -> int:
     return n
 
 
-# --------------------------------------------------------------------------- nicknames
+# --------------------------------------------------------------------------- aliases
 # Players teach their app what a megaphone phrase means ("kumbis" = Kumbi
 # Throwing-Stars). Those are shared here so a new player starts with them.
 
 _KEY_RE = re.compile(r"^[a-z0-9% ]{1,80}$")
 
 
-def store_nicknames(con, nicknames: list[dict], by: dict) -> tuple[int, dict]:
+def store_aliases(con, aliases: list[dict], by: dict) -> tuple[int, dict]:
     now = utc_now()
     with _lock:
-        for raw in nicknames:
+        for raw in aliases:
             if not isinstance(raw, dict):
                 continue
             key = str(raw.get("key") or "").strip().lower()
@@ -594,15 +601,15 @@ def store_nicknames(con, nicknames: list[dict], by: dict) -> tuple[int, dict]:
             updated = str(raw.get("updated") or now)[:25]
             if updated > now:                       # a clock ahead of ours can't win forever
                 updated = now
-            row = con.execute("SELECT item, deleted, updated FROM nicknames WHERE key = ?", (key,)).fetchone()
+            row = con.execute("SELECT item, deleted, updated FROM aliases WHERE key = ?", (key,)).fetchone()
             if row is None:
-                con.execute("INSERT INTO nicknames (key, seq, item, deleted, updated, added_by, added_by_id, "
+                con.execute("INSERT INTO aliases (key, seq, item, deleted, updated, added_by, added_by_id, "
                             "added_ip, added, updated_by, updated_by_id, updated_ip, stored) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (key, next_seq(con), item, deleted, updated, by["name"], by["id"], by["ip"], now,
                              by["name"], by["id"], by["ip"], now))
             elif (row[0], row[1]) != (item, deleted) and updated >= (row[2] or ""):
-                con.execute("UPDATE nicknames SET seq=?, item=?, deleted=?, updated=?, updated_by=?, "
+                con.execute("UPDATE aliases SET seq=?, item=?, deleted=?, updated=?, updated_by=?, "
                             "updated_by_id=?, updated_ip=?, stored=? WHERE key=?",
                             (next_seq(con), item, deleted, updated, by["name"], by["id"], by["ip"], now, key))
         con.commit()
@@ -673,11 +680,11 @@ def export_ocr(con, path: str, status: str = "all", since: timedelta | None = No
     return n
 
 
-def nickname_changes(con, since: int, limit: int) -> tuple[list[dict], int, bool]:
+def alias_changes(con, since: int, limit: int) -> tuple[list[dict], int, bool]:
     cols = ("key", "seq", "item", "deleted", "updated", "updated_by")
     with _lock:
         newest = last_seq(con)
-        rows = con.execute(f"SELECT {', '.join(cols)} FROM nicknames WHERE seq > ? ORDER BY seq LIMIT ?",
+        rows = con.execute(f"SELECT {', '.join(cols)} FROM aliases WHERE seq > ? ORDER BY seq LIMIT ?",
                            (since, limit + 1)).fetchall()
     more = len(rows) > limit
     out = [dict(zip(cols, r)) for r in rows[:limit]]
@@ -743,9 +750,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/v1/status":
             n = self.con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
             m = self.con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
-            k = self.con.execute("SELECT COUNT(*) FROM nicknames WHERE deleted = 0").fetchone()[0]
+            k = self.con.execute("SELECT COUNT(*) FROM aliases WHERE deleted = 0").fetchone()[0]
             return self._send(200, {"name": os.environ.get("MFM_NAME", "Shared prices"), "version": VERSION,
-                                    "sightings": n, "megaphones": m, "nicknames": k, "megaphone_hours": MEGA_HOURS,
+                                    "sightings": n, "megaphones": m, "aliases": k, "nicknames": k,
+                                    "megaphone_hours": MEGA_HOURS,
                                     "keep_days": int(os.environ.get("MFM_KEEP_DAYS", "30")),
                                     "seq": last_seq(self.con), "purge_id": last_purge(self.con),
                                     "ocr_lines": self.con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0],
@@ -780,15 +788,15 @@ class Handler(BaseHTTPRequestHandler):
                                         "ORDER BY id LIMIT 1000", (since,)).fetchall()
             cols = ("id", "ts", "what", "field", "start", "end")
             return self._send(200, {"purges": [dict(zip(cols, r)) for r in rows], "last": last_purge(self.con)})
-        if url.path == "/api/v1/nicknames":
+        if url.path in ("/api/v1/aliases", "/api/v1/nicknames"):   # (apps before 2610.19 say nicknames)
             q = parse_qs(url.query)
             try:
                 since = int(q.get("since", ["0"])[0])
                 limit = max(1, min(5000, int(q.get("limit", ["5000"])[0])))
             except ValueError:
                 return self._send(400, {"error": "since and limit must be numbers"})
-            rows, seq, more = nickname_changes(self.con, since, limit)
-            return self._send(200, {"nicknames": rows, "seq": seq, "more": more})
+            rows, seq, more = alias_changes(self.con, since, limit)
+            return self._send(200, {url.path.rsplit("/", 1)[1]: rows, "seq": seq, "more": more})
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -841,7 +849,7 @@ class Handler(BaseHTTPRequestHandler):
                 log(f"store failed: {type(e).__name__}: {e}")
                 return self._send(500, {"error": "server error"})
             return self._send(200, {"stored": n})
-        if path not in ("/api/v1/sightings", "/api/v1/megaphones", "/api/v1/nicknames"):
+        if path not in ("/api/v1/sightings", "/api/v1/megaphones", "/api/v1/aliases", "/api/v1/nicknames"):
             return self._send(404, {"error": "not found"})
         what = path.rsplit("/", 1)[1]
         body = self._body()
@@ -849,7 +857,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(items, list) or len(items) > MAX_BATCH:
             return self._send(400, {"error": f'send {{"{what}": [...]}} with at most {MAX_BATCH}'})
         try:
-            fn = {"sightings": store, "megaphones": store_megaphones, "nicknames": store_nicknames}[what]
+            fn = {"sightings": store, "megaphones": store_megaphones, "aliases": store_aliases,
+                  "nicknames": store_aliases}[what]
             seq, same = fn(self.con, items, user)
         except Exception as e:
             log(f"store failed: {type(e).__name__}: {e}")
@@ -896,12 +905,12 @@ def serve() -> None:
     httpd.serve_forever()
 
 
-_PURGE_WHAT = ("prices", "megaphones", "nicknames", "ocr")
+_PURGE_WHAT = ("prices", "megaphones", "aliases", "ocr")
 # per kind: the table, when a row was last seen/changed (for --older-than), when it was
 # first stored (for --last)
 _PURGE_COLS = {"prices": ("sightings", "COALESCE(last_seen, ts)", "ts"),
                "megaphones": ("megaphones", "ts", "ts"),
-               "nicknames": ("nicknames", "COALESCE(updated, stored)", "COALESCE(added, stored)"),
+               "aliases": ("aliases", "COALESCE(updated, stored)", "COALESCE(added, stored)"),
                "ocr": ("ocr_lines", "ts", "ts")}
 
 
@@ -922,8 +931,8 @@ def parse_duration(text: str) -> timedelta:
 
 def purge(con, what: list[str], older_than: timedelta | None = None, last: timedelta | None = None,
           dry_run: bool = False) -> dict:
-    """Delete stored prices / megaphones / nicknames: older than `older_than`, from the
-    `last` while, or (neither given) all of them. Nicknames aren't removed outright but
+    """Delete stored prices / megaphones / aliases: older than `older_than`, from the
+    `last` while, or (neither given) all of them. Aliases aren't removed outright but
     marked deleted. Each purge is recorded (table purges), and the apps delete the same
     range from their own data on their next sync. Returns counts."""
     now = datetime.now(timezone.utc)
@@ -951,13 +960,13 @@ def purge(con, what: list[str], older_than: timedelta | None = None, last: timed
                 # "everything" and "the past hour" end now: newer data an app has isn't touched
                 con.execute('INSERT INTO purges (ts, what, field, start, "end") VALUES (?,?,?,?,?)',
                             (stamp, w, field, start, end if end != "9999" else stamp))
-            if w == "nicknames":
+            if w == "aliases":
                 where += " AND deleted = 0"
             n = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", args).fetchone()[0]
             if n and not dry_run:
-                if w == "nicknames":
-                    for (key,) in con.execute(f"SELECT key FROM nicknames WHERE {where}", args).fetchall():
-                        con.execute("UPDATE nicknames SET seq=?, deleted=1, updated=?, updated_by=?, "
+                if w == "aliases":
+                    for (key,) in con.execute(f"SELECT key FROM aliases WHERE {where}", args).fetchall():
+                        con.execute("UPDATE aliases SET seq=?, deleted=1, updated=?, updated_by=?, "
                                     "updated_by_id=NULL, updated_ip=NULL, stored=? WHERE key=?",
                                     (next_seq(con), stamp, "server admin", stamp, key))
                 else:
@@ -969,7 +978,7 @@ def purge(con, what: list[str], older_than: timedelta | None = None, last: timed
 
 
 def _purge_cmd(con, args: list[str]) -> int:
-    usage = ("Usage: mfm-server purge prices|megaphones|nicknames|ocr|all  --older-than 1d | --last 1h | --all"
+    usage = ("Usage: mfm-server purge prices|megaphones|aliases|ocr|all  --older-than 1d | --last 1h | --all"
              "  [--dry-run] [--yes]")
     what, older, last, everything, dry, yes = None, None, None, False, False, False
     i = 0
@@ -1004,10 +1013,11 @@ def _purge_cmd(con, args: list[str]) -> int:
         print(usage)
         return 2
     kinds = list(_PURGE_WHAT) if what == "all" else \
-        [{"price": "prices", "sightings": "prices", "nickname": "nicknames", "megaphone": "megaphones"}.get(w, w)
+        [{"price": "prices", "sightings": "prices", "alias": "aliases", "nickname": "aliases",
+          "nicknames": "aliases", "megaphone": "megaphones"}.get(w, w)
          for w in (what or "").split(",") if w]
     if not kinds or any(k not in _PURGE_WHAT for k in kinds):
-        print("Say what to delete: prices, megaphones, nicknames, ocr or all.")
+        print("Say what to delete: prices, megaphones, aliases, ocr or all.")
         print(usage)
         return 2
     if sum(x is not None and x is not False for x in (older, last, everything or None)) != 1:
@@ -1163,9 +1173,9 @@ def main(argv: list[str]) -> int:
         n = con.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         items = con.execute("SELECT COUNT(DISTINCT item) FROM sightings").fetchone()[0]
         m = con.execute("SELECT COUNT(*) FROM megaphones").fetchone()[0]
-        k = con.execute("SELECT COUNT(*) FROM nicknames WHERE deleted = 0").fetchone()[0]
+        k = con.execute("SELECT COUNT(*) FROM aliases WHERE deleted = 0").fetchone()[0]
         o = con.execute("SELECT COUNT(*) FROM ocr_lines").fetchone()[0]
-        print(f"{n} sightings of {items} items, {m} megaphones, {k} nicknames, {o} OCR line images; "
+        print(f"{n} sightings of {items} items, {m} megaphones, {k} aliases, {o} OCR line images; "
               f"{DB_PATH.stat().st_size / 1e6:.1f} MB")
         _table(con.execute("SELECT added_by, added_by_id, COUNT(*) FROM sightings GROUP BY added_by_id "
                            "ORDER BY 3 DESC").fetchall(), ("user", "id", "sightings"))
