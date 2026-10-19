@@ -11,7 +11,11 @@
   scroll, the frames waiting behind the one being read are read ahead at the same time
   (**Frames read at once** in Settings, 3 by default): a recorded sweep of 180 frames
   took 27 s instead of 44, with the same rows. `"tesseract_library": false` in the
-  settings file goes back to running the program.
+  settings file goes back to running the program. Engines are shared from a small pool
+  (one reader at a time each), not made per thread, and nothing is closed at exit: after
+  a fault inside the library, closing hung the process for hours after its window was
+  gone. A fault is logged with the thread, image size and settings, and the program
+  takes over.
 
 ### New
 - **Windows open on the screen the app is on.** An item's history, a shop photo,

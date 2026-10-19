@@ -732,15 +732,17 @@ class _TessLib:
 
 
 class _TessEngine:
-    """One initialised Tesseract (one model set) for one thread."""
-    _local = threading.local()
-    _all: list = []
-    _all_lock = threading.Lock()
+    """One initialised Tesseract (one model set). Engines live in a pool shared by
+    every thread (see _EnginePool): a read takes one, uses it, gives it back. One
+    engine is used by one thread at a time, which is what Tesseract asks for;
+    they were per thread before, and the megaphone reader makes a new thread for
+    every read, so engines were initialised once a second and never freed."""
+    _init_lock = threading.Lock()   # one initialisation at a time: they share model caches
 
     def __init__(self, lib, datapath: str | None, lang: str, words_file: str | None):
         import ctypes
 
-        self.lib, self.vars = lib, {}
+        self.lib, self.vars, self.dead = lib, {}, False
         self.handle = lib.TessBaseAPICreate()
         keys, vals = [], []
         if words_file:
@@ -748,27 +750,15 @@ class _TessEngine:
             vals.append(words_file.encode())
         karr = (ctypes.c_char_p * max(1, len(keys)))(*keys) if keys else None
         varr = (ctypes.c_char_p * max(1, len(vals)))(*vals) if vals else None
-        rc = lib.TessBaseAPIInit4(self.handle, datapath.encode() if datapath else None, lang.encode(), 3,
-                                  None, 0, karr, varr, len(keys), False)
+        with _TessEngine._init_lock:
+            rc = lib.TessBaseAPIInit4(self.handle, datapath.encode() if datapath else None, lang.encode(), 3,
+                                      None, 0, karr, varr, len(keys), False)
         if rc == 0:
             lib.TessBaseAPISetVariable(self.handle, b"debug_file", os.devnull.encode())   # its warnings: not on the console
         if rc != 0:
             lib.TessBaseAPIDelete(self.handle)
             self.handle = None
             raise OSError(f"Tesseract couldn't load '{lang}'" + (f" from {datapath}" if datapath else ""))
-        with _TessEngine._all_lock:
-            _TessEngine._all.append(self)
-
-    @classmethod
-    def get(cls, datapath, lang, words_file):
-        """This thread's engine for these models, made on first use."""
-        engines = getattr(cls._local, "engines", None)
-        if engines is None:
-            engines = cls._local.engines = {}
-        key = (datapath, lang, words_file)
-        if key not in engines:
-            engines[key] = cls(_TessLib.load(), datapath, lang, words_file)
-        return engines[key]
 
     def set_vars(self, wanted: dict):
         """Runtime variables (a character whitelist): set, and cleared again when a
@@ -782,6 +772,8 @@ class _TessEngine:
     def read(self, img: Image.Image, psm: int, tsv: bool) -> str:
         import ctypes
 
+        if img.width < 3 or img.height < 3:
+            return ""                  # nothing to read; the program says "Image too small" and reads nothing
         if img.mode not in ("L", "RGB"):
             img = img.convert("L")
         bpp = 1 if img.mode == "L" else 3
@@ -798,24 +790,43 @@ class _TessEngine:
             lib.TessBaseAPIClear(h)
 
     def close(self):
-        if self.handle:
+        """Free an engine the pool doesn't keep. Never at exit: after a fault in the
+        library, TessBaseAPIEnd never returned and the process outlived its window
+        by hours. The OS frees everything at exit."""
+        if self.handle and not self.dead:
             self.lib.TessBaseAPIEnd(self.handle)
             self.lib.TessBaseAPIDelete(self.handle)
             self.handle = None
 
+
+class _EnginePool:
+    """Initialised engines by model set, shared by every thread. A read takes one
+    (making it if none is free), gives it back after; a few are kept per model set,
+    enough for the frames read at once plus the megaphone and channel readers."""
+    free: dict = {}
+    lock = threading.Lock()
+    KEEP = 6
+
     @classmethod
-    def close_all(cls):
-        with cls._all_lock:
-            for e in cls._all:
-                try:
-                    e.close()
-                except Exception:
-                    pass
-            cls._all.clear()
+    def acquire(cls, key) -> "_TessEngine":
+        with cls.lock:
+            lst = cls.free.setdefault(key, [])
+            if lst:
+                return lst.pop()
+        return _TessEngine(_TessLib.load(), *key)
+
+    @classmethod
+    def release(cls, key, engine) -> None:
+        if engine.dead:
+            return
+        with cls.lock:
+            lst = cls.free.setdefault(key, [])
+            if len(lst) < cls.KEEP:
+                lst.append(engine)
+                return
+        engine.close()
 
 
-import atexit as _atexit
-_atexit.register(_TessEngine.close_all)
 
 
 def _parse_ocr_config(config: str) -> tuple[int, str | None, str, str | None, dict]:
@@ -841,14 +852,24 @@ def _ocr_in_process(img: Image.Image, config: str, tsv: bool) -> str | None:
     if not OCR_IN_PROCESS or _TessLib.load() is None:
         return None
     psm, datapath, lang, words, cvars = _parse_ocr_config(config)
+    key = (datapath, lang, words)
+    eng = None
     try:
-        eng = _TessEngine.get(datapath, lang, words)
+        eng = _EnginePool.acquire(key)
         eng.set_vars(cvars)
         return eng.read(img, psm, tsv)
     except OSError as e:
+        # an access violation inside the library (ctypes turns it into OSError on
+        # Windows): that engine is never used again, and the program takes over
+        if eng is not None:
+            eng.dead = True
         OCR_IN_PROCESS = False
-        app_log(f"tesseract library gave up, using the program: {e}")
+        app_log(f"tesseract library gave up, using the program: {e} | thread {threading.current_thread().name}, "
+                f"image {img.size} {img.mode}, config {config.strip()[:80]}")
         return None
+    finally:
+        if eng is not None:
+            _EnginePool.release(key, eng)
 
 
 def ocr_data(img: Image.Image, config: str) -> dict:
