@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.22.001"
+VERSION = "2610.22.002"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -173,6 +173,7 @@ DEFAULT_CONFIG = {
     "capture_window": True,    # read the game's window on its own (still read when it's covered)
     "game_window_title": "MapleStory",   # ... found by this in its title
     "area_modes": {},          # each drawn area: drawn on the game's "window" or the whole "screen"
+    "area_sizes": {},          # ... and the size of the picture it was drawn on
     "megaphone_hours": 72,     # megaphones are kept this long, then deleted
     "save_captures": False,    # keep a PNG of every capture for debugging
     "ocr_collect": False,      # keep chat line images (and what was read) for OCR training
@@ -469,14 +470,21 @@ CAPTURE_CFG: dict = {}             # the settings (capture_window, game_window_t
 GRAB_MODE = ["screen"]             # what the latest capture was: "window" (the game's) or "screen"
 
 
-def drawn_area(cfg: dict, key: str):
+def drawn_area(cfg: dict, key: str, size=None):
     """An area drawn in Settings → Reading → Window detection, if it was drawn on the same kind
     of capture as now (the game's window, or the whole screen): an area drawn on one
-    is in the wrong place on the other, so it's left out (found automatically)."""
+    is in the wrong place on the other, so it's left out (found automatically). With
+    `size` (the frame's), one drawn on a picture of the same size counts too: a game
+    in full screen gives the same picture either way."""
     r = (cfg or {}).get(key)
     if not r:
         return None
-    return r if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0] else None
+    if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0]:
+        return r
+    drawn_on = (cfg.get("area_sizes") or {}).get(key)
+    if size is not None and drawn_on and tuple(drawn_on) == tuple(size):
+        return r
+    return None
 
 
 def grab_full_screen() -> Image.Image:
@@ -3117,7 +3125,7 @@ class ChannelWatch:
         if self._off():
             self._reset()
             return False
-        area = drawn_area(self.cfg, "channel_region")
+        area = drawn_area(self.cfg, "channel_region", full.size)
         if area:
             try:
                 full = crop(full, area)        # only where you said the window shows
@@ -8223,27 +8231,52 @@ class MegaphoneWatch:
         self.no_time = False      # megaphones are on screen without "[hh:mm]": timestamps are off
         self._untimed = 0         # reads in a row that saw only megaphones without a time
 
+    STUCK = 30.0              # a read taking longer than this is logged, and reading goes on
+
     def due(self) -> bool:
+        if self.busy.is_set() and time.monotonic() - self.last >= self.STUCK:
+            # a read that never finished stopped every read after it: say where it
+            # is in app.log, and start reading again
+            self._log_stuck()
+            self.busy.clear()
         return not self.busy.is_set() and time.monotonic() - self.last >= self.every
+
+    def _log_stuck(self) -> None:
+        import sys as _sys
+        import traceback
+
+        th = getattr(self, "_thread", None)
+        frame = _sys._current_frames().get(th.ident) if th is not None and th.ident else None
+        where = "".join(traceback.format_stack(frame)[-8:]) if frame is not None else "(finished)"
+        app_log(f"megaphone read stuck for {self.STUCK:.0f} s, reading again. Where it was:\n{where}")
+        self.on_event("error", f"megaphone reading was stuck for {self.STUCK:.0f} s and was restarted "
+                               "(details in app.log)")
 
     def offer(self, full: Image.Image) -> None:
         import threading
 
         self.last = time.monotonic()
         self.busy.set()
-        threading.Thread(target=self._work, args=(full, self.channel()), daemon=True).start()
+        self._thread = threading.Thread(target=self._work, args=(full, self.channel()), daemon=True)
+        self._thread.start()
 
     def _work(self, full, channel):
         ui_pause()
         try:
-            region, unit = drawn_area(self.cfg, "chat_region"), None
+            region, unit = drawn_area(self.cfg, "chat_region", full.size), None
             if not region or is_auto(region, full.size):
                 region = find_chat(full)
                 unit = getattr(find_chat, "unit", None)
+                drawn = self.cfg.get("chat_region")
+                if region is None and drawn and not is_auto(drawn, full.size) \
+                        and drawn[0] + drawn[2] <= full.width and drawn[1] + drawn[3] <= full.height:
+                    # not found, but an area was drawn (on the other kind of capture):
+                    # better than nothing, and right when the game fills the screen
+                    region = drawn
             found = region is not None
             if found != self.found:
                 self.found = found
-                self.on_event("chat", {"found": found})
+                self.on_event("chat", {"found": found, "mode": GRAB_MODE[0], "size": full.size})
             if not region:
                 return
             img = crop(full, region)
@@ -8686,7 +8719,7 @@ class Monitor:
         """Shop and map areas for this frame: the calibrated ones, or found
         automatically (re-located only when the cached spot stops looking like
         a store, e.g. you closed it or moved the game window)."""
-        shop_r, map_r = drawn_area(self.cfg, "region"), drawn_area(self.cfg, "map_region")
+        shop_r, map_r = drawn_area(self.cfg, "region", full.size), drawn_area(self.cfg, "map_region", full.size)
         if is_auto(shop_r, full.size):
             if not (self.layout and is_store_window(crop(full, self.layout.store))):
                 found = locate_store(full)
@@ -8754,7 +8787,7 @@ class Monitor:
                 if full is None:
                     continue
                 try:
-                    area = drawn_area(self.cfg, "map_region")
+                    area = drawn_area(self.cfg, "map_region", full.size)
                     if is_auto(area, full.size):
                         # where the minimap is: looked for again when it can't be read there
                         if spot is None:

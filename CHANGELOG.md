@@ -1,5 +1,17 @@
 # Changelog
 
+## 2610.22.002 — 2026-10-22
+
+### Fixed
+- **Megaphones stopped being read.** A chat area drawn while the app was reading the whole
+  screen was ignored once it read the game's window (and the other way round), so the chat
+  wasn't found. An area drawn on a picture of the same size is used either way now, and
+  when the chat can't be found, the area you drew is used.
+- A megaphone read that never finished stopped every read after it. After 30 seconds it's
+  now written to app.log (with where it was stuck) and reading starts again.
+- The Megaphones tab says whether it looked in the game's window or the whole screen
+  when the chat isn't found, and app.log notes it too.
+
 ## 2610.22.001 — 2026-10-22
 
 ### New

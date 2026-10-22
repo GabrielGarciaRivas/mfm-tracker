@@ -2815,11 +2815,15 @@ class App:
             "Start monitoring to read megaphones." if not running else
             "Reading the chat area you drew." if manual and found else
             "Reading the chat window." if found else
-            "Chat window not found: open it in the game (or draw it in Settings → Reading → Window detection)." if found is False else
+            ("Chat window not found in " + ("the game's window" if mfm.GRAB_MODE[0] == "window" else "the screen")
+             + ": open it in the game (or draw it in Settings → Reading → Window detection).") if found is False else
             "Looking for the chat window…"))
 
     def on_chat(self, p):
         self._mega_status_text(p.get("found"))
+        if p.get("found") is False:
+            mfm.app_log(f"chat window not found (reading {'the game window' if p.get('mode') == 'window' else 'the whole screen'}, "
+                        f"{p.get('size')})")
 
     def on_megaphones(self, n):
         self.refresh_megaphones()
@@ -5592,6 +5596,7 @@ class App:
         def grab():
             try:
                 shot = mfm.grab_full_screen()
+                shot_mode = mfm.GRAB_MODE[0]   # (the monitor's next frame may change it)
             except SystemExit as e:  # missing Wayland screenshot tool
                 show()
                 messagebox.showerror("Can't capture screen", str(e))
@@ -5602,7 +5607,8 @@ class App:
                 if region:
                     self.cfg[key] = region  # monitor shares this dict, picks it up next frame
                     # drawn on the game's window or the whole screen: only used on the same
-                    self.cfg["area_modes"] = {**(self.cfg.get("area_modes") or {}), key: mfm.GRAB_MODE[0]}
+                    self.cfg["area_modes"] = {**(self.cfg.get("area_modes") or {}), key: shot_mode}
+                    self.cfg["area_sizes"] = {**(self.cfg.get("area_sizes") or {}), key: list(shot.size)}
                     mfm.save_config(self.cfg)
                     self._update_stats(None, None)
                     self._set_status(f"{AREA_NAMES.get(key, key)} set to {area_text(region)}.")
