@@ -135,8 +135,9 @@ your channel at start, channel changes aren't detected, in case you had the Chan
 window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.
 
-**F4** and **F3** set the app's channel to the next and previous one, and **F5** starts and
-stops monitoring, even while the game has focus (see Hotkeys under Settings).
+With hotkeys turned on (they're off at first; see Hotkeys under Settings), **F4** and **F3**
+set the app's channel to the next and previous one, and **F5** starts and stops
+monitoring, even while the game has focus.
 
 ## Widget
 
@@ -397,7 +398,7 @@ map lists). Rest the mouse on any setting for a short explanation.
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
 | Ask for the channel at launch and after a channel change | on | the channel prompt |
 | Channels in the channel picker | 40 | buttons in the channel picker |
-| Hotkeys | F5, F4, F3 | keys that work while the game has focus, see below |
+| Hotkeys | off (F5, F4, F3) | keys that work while the game has focus, see below |
 | Data retention | 30 days, archive | see below |
 
 Megaphones and shop names are read with the app's own OCR model (trained on the game's
@@ -430,7 +431,9 @@ model, put `"trained_ocr": false` in `settings/config.json`.
   them with `mfm-server export-ocr` for the next training run. Lines still to check
   aren't sent.
 
-**Hotkeys** do their action in whichever window has focus, the game's included: **F5**
+**Hotkeys** are off at first: tick **Keys that work while the game has focus** in
+**Settings → General → Hotkeys** to use them. They do their action in whichever window
+has focus, the game's included: **F5**
 starts and stops monitoring, **F4** and **F3** set the channel to the next and previous
 one (the same as the chevrons beside the Channel box), so the app's channel keeps up with
 the game without leaving it. Click a key to change it, then press the new one (with Ctrl,

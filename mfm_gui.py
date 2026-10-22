@@ -1045,7 +1045,7 @@ class Overlay(tk.Toplevel):
         if stopping:
             status, warn = f"Stopping: still reading {a.backlog} captured frames.", False
         elif not running:
-            key = hotkey_cfg(a.cfg)["monitor"] if a.cfg.get("hotkeys_on", True) and a._hotkeys else ""
+            key = hotkey_cfg(a.cfg)["monitor"] if a.cfg.get("hotkeys_on", False) and a._hotkeys else ""
             status, warn = (f"Press {key} to start monitoring." if key
                             else "Press Start monitoring in the app."), False
         elif a.backlog >= 10:
@@ -1454,7 +1454,7 @@ class App:
         game's included. Nothing on Wayland, where apps can't see other windows' keys,
         or without pynput. Called again when Settings changes them."""
         self._stop_hotkeys()
-        if not self.cfg.get("hotkeys_on", True) or (mfm.session_type() == "wayland"
+        if not self.cfg.get("hotkeys_on", False) or (mfm.session_type() == "wayland"
                                                     and not os.environ.get("DISPLAY")):
             return       # (Wayland with XWayland: keys pressed in X11 windows, like the game's)
         try:
@@ -5798,7 +5798,7 @@ class App:
         """Settings → General → Hotkeys: a key for each action, set by pressing it.
         Returns the frame and a function giving (on, {action: key})."""
         box = ttk.LabelFrame(parent, text=" Hotkeys ", padding=(10, 2, 10, 6))
-        on = tk.BooleanVar(value=bool(self.cfg.get("hotkeys_on", True)))
+        on = tk.BooleanVar(value=bool(self.cfg.get("hotkeys_on", False)))
         keys = hotkey_cfg(self.cfg)
         cb = ttk.Checkbutton(box, text="Keys that work while the game has focus", variable=on)
         cb.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))

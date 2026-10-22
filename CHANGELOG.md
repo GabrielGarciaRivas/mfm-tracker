@@ -3,11 +3,11 @@
 ## 2610.21.001 — 2026-10-21
 
 ### New
-- **Hotkeys** that work while the game has focus: **F5** starts / stops monitoring,
+- **Hotkeys** that work while the game has focus, off until you turn them on in
+  **Settings → General → Hotkeys**: **F5** starts / stops monitoring,
   **F4** and **F3** set the app's channel to the next / previous one (what the chevrons
   beside the Channel box do), so its channel keeps up with the game without leaving it.
-  Change the keys (Ctrl, Alt and Shift combinations too), or turn them off, in
-  **Settings → General → Hotkeys**. The game sees the keys too, so pick ones it doesn't
+  Change the keys there (Ctrl, Alt and Shift combinations too). The game sees the keys too, so pick ones it doesn't
   use. On Wayland they work while an X11 window has focus, like the game run through Wine
   or Proton. The packaged app includes pynput for this now; from source,
   `pip install pynput`.

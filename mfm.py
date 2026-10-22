@@ -162,7 +162,7 @@ DEFAULT_CONFIG = {
     "update_skip": "",         # a version you chose to skip
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
     "channel_count": 40,       # channels shown in the channel picker (1-100)
-    "hotkeys_on": True,        # the keys below work while the game has focus (the app)
+    "hotkeys_on": False,       # the keys below work while the game has focus (off until turned on)
     "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
     "overlay_on": True,        # the widget over the game: monitoring, frames waiting, channel
     "overlay_pos": None,       # where it was left [x, y]; None = top left of the screen
