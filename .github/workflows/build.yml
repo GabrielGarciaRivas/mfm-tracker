@@ -40,7 +40,7 @@ jobs:
           path: dist/Free Market Tracker.exe
 
   macos:
-    runs-on: macos-14            # Apple silicon
+    runs-on: macos-15            # Apple silicon
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,7 +82,13 @@ jobs:
             dist/free-market-tracker.png
 
   release:
-    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+    # published even when GitHub has no Mac free for a long time (the macOS job is
+    # cancelled): Windows and Linux go out, and running the build again with the same
+    # tag adds the Mac app to the release
+    if: >-
+      always() && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '')
+      && needs.windows.result == 'success' && needs.linux.result == 'success'
+      && needs.macos.result != 'failure'
     needs: [windows, macos, linux]
     runs-on: ubuntu-latest
     permissions:
@@ -99,7 +105,11 @@ jobs:
           cd out
           mkdir -p pkg
           (cd "Free Market Tracker (Windows)" && zip -q -9 "../pkg/Free-Market-Tracker-$VER-Windows.zip" "Free Market Tracker.exe")
-          cp "Free Market Tracker (macOS)/Free Market Tracker (macOS).zip" "pkg/Free-Market-Tracker-$VER-macOS.zip"
+          if [ -f "Free Market Tracker (macOS)/Free Market Tracker (macOS).zip" ]; then
+            cp "Free Market Tracker (macOS)/Free Market Tracker (macOS).zip" "pkg/Free-Market-Tracker-$VER-macOS.zip"
+          else
+            echo "::warning::No Mac app this time (GitHub had no Mac free): run the build again with this tag to add it."
+          fi
           chmod +x "Free Market Tracker (Linux)/Free Market Tracker"
           mv "Free Market Tracker (Linux)" "Free Market Tracker"     # a tar.gz keeps it executable
           tar -czf "pkg/Free-Market-Tracker-$VER-Linux.tar.gz" "Free Market Tracker"
