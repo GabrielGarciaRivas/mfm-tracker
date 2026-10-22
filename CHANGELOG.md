@@ -1,5 +1,40 @@
 # Changelog
 
+## 2610.21.001 — 2026-10-21
+
+### New
+- **Hotkeys** that work while the game has focus: **F5** starts / stops monitoring,
+  **F4** and **F3** set the app's channel to the next / previous one (what the chevrons
+  beside the Channel box do), so its channel keeps up with the game without leaving it.
+  Change the keys (Ctrl, Alt and Shift combinations too), or turn them off, in
+  **Settings → General → Hotkeys**. The game sees the keys too, so pick ones it doesn't
+  use. On Wayland they work while an X11 window has focus, like the game run through Wine
+  or Proton. The packaged app includes pynput for this now; from source,
+  `pip install pynput`.
+- **A widget that stays on top of the game**: how long you've been monitoring, Start /
+  Stop, Next shop, Settings, a hint line (or a warning: reading behind, no channel), and
+  rows for Monitoring, Frames waiting and Channel with ‹ › to change it. Drag it from
+  anywhere but its buttons; it opens where you left it, and on Windows clicking it never
+  takes the focus from the game. The **Widget** box in the toolbar, or its ✕, hides and
+  shows it.
+  (Thanks, GabrielGarciaRivas.)
+
+### Changed
+- **The channel picker shows 40 channels** by default (it was 20). If you had left it at
+  20, it's 40 now; change it in Settings → General.
+
+### Fixed
+- "Updating the tables failed: TypeError: '<' not supported between instances of 'str'
+  and 'NoneType'". Two otherwise identical listings, one with an empty shop or seller
+  and one with none, couldn't be put in order in Deals.
+- **"Frames waiting" climbed while shopping.** When the reading is a few seconds behind
+  (a cursor or tooltip over the rows makes every frame a full read; a moving pet or
+  avatar makes every frame different), only frames that changed a lot (a scroll,
+  another shop) are queued, and the queue has a ceiling. A fast scroll is still read
+  in full.
+- Saving pictures for OCR training no longer slows the reading down: the extra OCR runs
+  it needs happen on their own thread.
+
 ## 2610.19.006 — 2026-10-19
 
 ### New
@@ -29,6 +64,7 @@
   that version.
 - **Settings → General → Updates:** a **Check for updates** button, and a checkbox to turn
   the question at launch off.
+
 
 ## 2610.19.004 — 2026-10-19
 

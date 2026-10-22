@@ -135,6 +135,20 @@ your channel at start, channel changes aren't detected, in case you had the Chan
 window open to check. Turn this off, or set how many
 channels the picker shows, in **Settings**.
 
+**F4** and **F3** set the app's channel to the next and previous one, and **F5** starts and
+stops monitoring, even while the game has focus (see Hotkeys under Settings).
+
+## Widget
+
+A small card that stays on top of the game, so you can see the app without leaving it:
+how long you've been monitoring, Start / Stop (▶ / ■), Next shop (⟳), Settings (⚙), a
+hint line (what to do next, or a warning in yellow: the reading is behind, no channel
+set), and three rows: **Monitoring** (Running / Stopped), **Frames waiting** and
+**Channel**, with ‹ › to change it. Drag it from anywhere but its buttons; it opens
+where you left it, and on Windows clicking it never takes the focus from the game. The
+**Widget** box in the toolbar, or its ✕, hides and shows it. It shows over the game when
+the game runs in a window (or borderless), not in exclusive full screen.
+
 ## Tabs
 
 - **Megaphones:** see below.
@@ -382,7 +396,8 @@ map lists). Rest the mouse on any setting for a short explanation.
 | Flag DEAL / HIGH at ± % | 15 | how far from the market price a listing must be |
 | Outliers: ceiling / floor | 200% / 75% | how far above / below the usual price counts as an outlier |
 | Ask for the channel at launch and after a channel change | on | the channel prompt |
-| Channels in the channel picker | 20 | buttons in the channel picker |
+| Channels in the channel picker | 40 | buttons in the channel picker |
+| Hotkeys | F5, F4, F3 | keys that work while the game has focus, see below |
 | Data retention | 30 days, archive | see below |
 
 Megaphones and shop names are read with the app's own OCR model (trained on the game's
@@ -414,6 +429,14 @@ model, put `"trained_ocr": false` in `settings/config.json`.
   lines go to your server. Its admin exports
   them with `mfm-server export-ocr` for the next training run. Lines still to check
   aren't sent.
+
+**Hotkeys** do their action in whichever window has focus, the game's included: **F5**
+starts and stops monitoring, **F4** and **F3** set the channel to the next and previous
+one (the same as the chevrons beside the Channel box), so the app's channel keeps up with
+the game without leaving it. Click a key to change it, then press the new one (with Ctrl,
+Alt or Shift if you like); × leaves an action without a key. The game sees the keys too,
+so pick ones it doesn't use. On Wayland they work while an X11 window has focus, like the
+game run through Wine or Proton. From source, they need `pip install pynput`.
 
 **Data retention:** listings not seen for 30 days are copied to an archive file and then
 removed (or just deleted, or kept forever). This runs at start, every 6 hours, and when you
@@ -491,7 +514,7 @@ Also in the app: **Settings → About**.
 - [SQLite](https://www.sqlite.org/): the price database · public domain
 - [Inter typeface](https://github.com/rsms/inter): the app's font · SIL Open Font License 1.1
 - [PyInstaller 6.22 (with pyinstaller-hooks-contrib, altgraph)](https://github.com/pyinstaller/pyinstaller): packs everything into one app · GPL-2.0 with bootloader exception, Apache-2.0, MIT
-- [pynput](https://github.com/moses-palmer/pynput): global hotkey for the command-line `hotkey` mode (not in the packaged app) · LGPL-3.0
+- [pynput](https://github.com/moses-palmer/pynput): the hotkeys (keys that work while the game has focus) and the command-line `hotkey` mode · LGPL-3.0
 
 MapleStory is a trademark of NEXON. This is an unofficial fan tool, not affiliated with or endorsed by NEXON, NiaMeowDB or OSMS Data Explorer.
 

@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force -Path $Work | Out-Null
 & $Py @PyArgs -m venv (Join-Path $Work "venv")
 $VPy = Join-Path $Work "venv\Scripts\python.exe"
 & $VPy -m pip install --upgrade pip
-& $VPy -m pip install pyinstaller pillow pytesseract mss pyspellchecker certifi
+& $VPy -m pip install pyinstaller pillow pytesseract mss pyspellchecker certifi pynput
 
 # --- Tesseract: tesseract.exe, its DLLs and English data only
 $TessDir = $env:TESSERACT_DIR
@@ -49,7 +49,7 @@ if (Test-Path (Join-Path $TessDir "tessdata\configs")) {
   --hidden-import mfm --hidden-import mfm_gui --hidden-import mfm_shared `
   --hidden-import PIL._tkinter_finder --hidden-import PIL.ImageTk `
   --collect-data spellchecker --collect-data certifi --hidden-import certifi `
-  --exclude-module pynput `
+  --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 `
   --add-data "$Tess;tesseract" `
   --add-data "$(Join-Path $Root 'packaging\icon.png');." `
   --add-data "$(Join-Path $Root 'packaging\fonts');fonts" `

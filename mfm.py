@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.19.006"
+VERSION = "2610.21.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -161,7 +161,11 @@ DEFAULT_CONFIG = {
     "update_check": True,      # look for a new version at launch (and daily)
     "update_skip": "",         # a version you chose to skip
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
-    "channel_count": 20,       # channels shown in the channel picker (1-100)
+    "channel_count": 40,       # channels shown in the channel picker (1-100)
+    "hotkeys_on": True,        # the keys below work while the game has focus (the app)
+    "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
+    "overlay_on": True,        # the widget over the game: monitoring, frames waiting, channel
+    "overlay_pos": None,       # where it was left [x, y]; None = top left of the screen
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
     "channel_region": None,    # where the Change Channel window shows; None = look on the whole screen
@@ -189,9 +193,9 @@ DEFAULT_CONFIG = {
     "icon_rate": 10,             # icon downloads per second (slows down by itself if meowdb asks)
 }
 
-# Captured frames waiting for OCR are never thrown away: a frame may hold a row
-# that appears in no other, so the queue is unbounded. Frames where nothing moved
-# share one image, so a backlog only costs memory while you're actually scrolling.
+# Captured frames wait in a queue for OCR. While the reading is a few seconds behind,
+# only frames that changed a lot (a scroll, another shop) are added, and the queue has
+# a ceiling (Monitor.run's capture), so it can't grow for hours.
 
 
 def load_config() -> dict:
@@ -202,8 +206,8 @@ def load_config() -> dict:
             saved.pop("interval_seconds")  # old default was too slow for scrolling
         if saved.get("megaphone_hours") == 24:
             saved.pop("megaphone_hours")   # the previous default: use the new one (72)
-        if saved.get("channel_count") == 18:
-            saved.pop("channel_count")     # the previous default: use the new one
+        if saved.get("channel_count") in (18, 20):
+            saved.pop("channel_count")     # previous defaults: use the new one
         if saved.get("interval_seconds") in (0.75, 0.15):
             saved.pop("interval_seconds")  # previous defaults: use the new one
         if "outlier_min_n" in saved:       # renamed: it now applies to DEAL / HIGH too
@@ -6448,7 +6452,10 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
         scored.append((sold, pct if pct is not None else 999, item, qty, each, mkt, v,
                        (shop or "", seller or "", mp or "", channel or ""), ts, price, shop, seller,
                        notes))
-    scored.sort()
+    # best deal first; only the fields that can be ordered (a shop or seller saved as ""
+    # in one row and missing in another, or no market price, made plain sort() fail)
+    scored.sort(key=lambda r: (r[0], r[1], r[2].casefold(), r[3], r[4],
+                               -1 if r[5] is None else r[5], r[6] or "", r[7], r[8] or ""))
     best = cheapest(con, 24, cfg)
     items = []
     try:
@@ -7478,8 +7485,36 @@ class _OcrCollector:
         self.players = bool(cfg.get("ocr_collect_players"))
 
     def add(self, grp: str, img: Image.Image, read: str, kind: str = "chat") -> None:
+        """Hand a picture over to be saved, on a thread of its own: reading it again with
+        the other models takes two more OCR runs, which mustn't slow the reading down.
+        When it falls behind, pictures are dropped (there'll be others)."""
         if not self.wants(kind) or img is None or img.width < 20 or not read.strip():
             return
+        import queue as _q
+        if getattr(self, "_queue", None) is None:
+            with _OCR_COLLECT_LOCK:
+                if getattr(self, "_queue", None) is None:
+                    self._queue = _q.Queue(maxsize=100)
+                    threading.Thread(target=self._worker, daemon=True, name="mfm-ocr-collect").start()
+        try:
+            self._queue.put_nowait((grp, img, read, kind))
+        except _q.Full:
+            pass
+
+    def flush(self) -> None:
+        """Wait until every picture handed over is saved."""
+        if getattr(self, "_queue", None) is not None:
+            self._queue.join()
+
+    def _worker(self) -> None:
+        while True:
+            job = self._queue.get()
+            try:
+                self._save(*job)
+            finally:
+                self._queue.task_done()
+
+    def _save(self, grp: str, img: Image.Image, read: str, kind: str) -> None:
         try:
             con = getattr(self._local, "con", None)
             if con is None:
@@ -7522,6 +7557,7 @@ class _OcrCollector:
         return out
 
 
+_OCR_COLLECT_LOCK = threading.Lock()
 OCR_COLLECT = _OcrCollector()
 
 
@@ -7548,6 +7584,8 @@ def settle_ocr_lines(con, now_iso: str | None = None) -> dict:
     dropped, and the oldest beyond OCR_LINES_MAX. Returns counts by status."""
     from collections import Counter
 
+    if now_iso is not None:
+        OCR_COLLECT.flush()              # (tests: everything read so far, saved)
     cutoff = utc_ago(seconds=OCR_SETTLE_SECONDS) if now_iso is None else now_iso
     grps = [g for (g,) in con.execute("SELECT grp FROM ocr_lines WHERE status = 'new' GROUP BY grp "
                                       "HAVING MAX(ts) < ?", (cutoff,))]
@@ -8725,6 +8763,10 @@ class Monitor:
                     spot = None
         threading.Thread(target=map_watch, daemon=True, name="mfm-map").start()
 
+        BACKLOG_SOFT = max(20, int(3 / max(self.cfg["interval_seconds"], 0.02)))  # ~3 s of frames
+        BACKLOG_MAX = BACKLOG_SOFT * 4
+        BACKLOG_BIG_CHANGE = 40          # of the 576 bits of frame_hash: a scroll or another shop
+
         def capture() -> None:
             last_h, last_imgs, same = None, None, 0
             repeats = max(self.cfg["confirm_frames"], self.cfg["close_frames"]) + 2
@@ -8759,7 +8801,19 @@ class Monitor:
                         skip = same >= repeats and frames.qsize() + len(pending) > 0
                         same += not skip
                     else:
-                        last_h, last_imgs, same = h, imgs, 1
+                        # Reading behind by more than a few seconds (a cursor or tooltip
+                        # over the rows makes every frame a full read, animations make
+                        # frames differ): only frames that changed a lot (a scroll,
+                        # another shop) are queued, and none past BACKLOG_MAX. A burst
+                        # (a fast scroll) is still read in full; a slow screen just
+                        # isn't read 10 times a second.
+                        waiting = frames.qsize() + len(pending)
+                        if waiting >= BACKLOG_MAX or (
+                                waiting >= BACKLOG_SOFT and last_h is not None
+                                and bin(h ^ last_h).count("1") <= BACKLOG_BIG_CHANGE):
+                            skip = True
+                        else:
+                            last_h, last_imgs, same = h, imgs, 1
                     # stamped with the channel now, so a frame still queued when you
                     # change channel is logged under the one it was captured on
                     if not skip:
@@ -9206,6 +9260,16 @@ def selftest(cfg: dict) -> int:
     print(f"read:      {got!r}  ({'library ' + str(_TessLib.path) if _TessLib.load() else 'program'})")
     ok = "12,345" in got or "Market" in got
     print("OCR OK" if ok else "OCR FAILED")
+    # the hotkeys: pynput and its backend for this system, packed in the app
+    import importlib.util
+    backend = {"win32": "_win32", "darwin": "_darwin"}.get(sys.platform, "_xorg")
+    try:
+        hot = importlib.util.find_spec(f"pynput.keyboard.{backend}") is not None
+    except (ImportError, ValueError):
+        hot = False
+    print(f"hotkeys:   {'pynput ' + backend if hot else 'pynput missing'}")
+    if FROZEN and not hot and sys.platform in ("win32", "darwin"):   # (Linux: needs a display to load)
+        return 1
     return 0 if ok else 1
 
 
