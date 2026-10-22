@@ -89,7 +89,7 @@ def data_dir() -> Path:
 
 
 # Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.21.001"
+VERSION = "2610.22.001"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -161,6 +161,7 @@ DEFAULT_CONFIG = {
     "update_check": True,      # look for a new version at launch (and daily)
     "update_skip": "",         # a version you chose to skip
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
+    "review_on": True,         # the Review tab (names to match to items); off hides it
     "channel_count": 40,       # channels shown in the channel picker (1-100)
     "hotkeys_on": False,       # the keys below work while the game has focus (off until turned on)
     "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
@@ -6134,6 +6135,7 @@ def _dict() -> "_Dictionary":
 WATCH_PATH = SETTINGS_DIR / "watchlist.json"
 # [{"item", "max_each" (or null),
 #   "last_found": {"each", "shop", "player", "map", "channel", "time" (UTC)}}]
+# and watched words: {"item": the words, "type": "word"} (megaphones whose message has them)
 PING_PATH = CACHE_DIR / "ping.wav"
 
 
@@ -6145,10 +6147,28 @@ def save_watchlist(watch: list[dict]) -> None:
     WATCH_PATH.write_text(json.dumps(watch, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
+def watch_is_word(w: dict) -> bool:
+    """A watched word (type "word"): found in megaphone messages, for things that
+    can't be matched to an item. Otherwise a watched item."""
+    return w.get("type") == "word"
+
+
+def watched_words(watch: list[dict]) -> list[str]:
+    return [w["item"].lower() for w in watch if watch_is_word(w) and w.get("item")]
+
+
+def message_has_word(message: str, words: list[str]) -> bool:
+    """Does a megaphone's message have one of these watched words (any case)?"""
+    low = " ".join((message or "").lower().split())
+    return any(w in low for w in words)
+
+
 def watch_match(watch: list[dict], item: str, each: float) -> dict | None:
     """The watchlist entry this listing satisfies (item matches and, if a price cap
-    is set, the per-item price is at or under it)."""
+    is set, the per-item price is at or under it). Watched words don't count here."""
     for w in watch:
+        if watch_is_word(w):
+            continue
         if w.get("item") == item and (w.get("max_each") in (None, "") or each <= float(w["max_each"])):
             return w
     return None
@@ -6413,7 +6433,7 @@ def cheapest(con, hours: int = 24, cfg: dict | None = None) -> dict[str, tuple]:
 
 
 def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
-               show_kept: bool = False) -> dict:
+               show_kept: bool = False, review: bool = True) -> dict:
     """What the app's Deals, Items and Review tables show, as plain data.
 
     The app works this out on a background thread (with its own connection) and
@@ -6470,7 +6490,8 @@ def table_data(con, cfg: dict, hours: int = 24, show_sold: bool = False,
         st = price_stats(con, item, cfg, bounds.get(item, "auto"))
         items.append((item, mkt, src, st, best.get(item), info.get("npcBuy"), info.get("npcSell"),
                       mega.get(item) or {}))
-    return {"deals": scored, "items": items, "review": unmatched_items(con, include_kept=show_kept)}
+    return {"deals": scored, "items": items,
+            "review": unmatched_items(con, include_kept=show_kept) if review else []}
 
 
 DUPLICATE_HOURS = 24   # the same listing seen again within this long isn't logged again

@@ -1218,34 +1218,11 @@ class App:
         self.channel_box.bind("<Button-1>", self._channel_box_click)
         for key in ("<Down>", "<Alt-Down>", "<F4>"):
             self.channel_box.bind(key, lambda e: (self.open_channel_picker(), "break")[1])
-        # up / down chevrons beside the box: the next or previous channel, wrapping
-        # round at the ends (drawn, so they're as tall as the box and crisp)
-        bg = style.lookup("TFrame", "background") or self.root.cget("background")
-        chev = tk.Canvas(bar, width=18, height=1, highlightthickness=0, bd=0, background=bg,
-                         cursor="hand2", takefocus=0)   # height=1: stretched to the bar's, not the bar to it
-        chev.pack(side="left", fill="y", padx=(1, 0))
-        self.chevrons = chev
-
-        def draw(hover=None):
-            chev.delete("all")
-            h, w = chev.winfo_height(), chev.winfo_width()
-            mid, half = h / 2, 4
-            for sign, cy in ((+1, mid - 6), (-1, mid + 6)):   # ^ above, v below
-                col = "#000" if hover == sign else "#555"
-                chev.create_line(w / 2 - half, cy + sign * 2, w / 2, cy - sign * 2,
-                                 w / 2 + half, cy + sign * 2, width=2, fill=col,
-                                 capstyle="round", joinstyle="round")
-        which = lambda e: +1 if e.y < chev.winfo_height() / 2 else -1
-        chev.bind("<Configure>", lambda e: draw())
-        chev.bind("<Motion>", lambda e: draw(which(e)))
-        chev.bind("<Leave>", lambda e: draw())
-        chev.bind("<Button-1>", lambda e: self.step_channel(which(e)))
-        tip("Next / previous channel. The mouse wheel over the box and the Up key do the same.",
-            chev)
-        for w in (self.channel_box, chev):
-            w.bind("<MouseWheel>", lambda e: self.step_channel(1 if e.delta > 0 else -1))
-            w.bind("<Button-4>", lambda e: self.step_channel(+1))    # X11 wheel
-            w.bind("<Button-5>", lambda e: self.step_channel(-1))
+        # the mouse wheel over the box (and the Up key) steps the channel; the widget
+        # over the game has ‹ › for it too
+        self.channel_box.bind("<MouseWheel>", lambda e: self.step_channel(1 if e.delta > 0 else -1))
+        self.channel_box.bind("<Button-4>", lambda e: self.step_channel(+1))    # X11 wheel
+        self.channel_box.bind("<Button-5>", lambda e: self.step_channel(-1))
         self.channel_box.bind("<Up>", lambda e: (self.step_channel(+1), "break")[1])
         # the map you're on, read off the minimap while monitoring
         self.map_label = ttk.Label(bar, text="Map: —")
@@ -1299,9 +1276,14 @@ class App:
         ttk.Label(top, text="hours, best deals first.").pack(side="left")
         # "Include sold" and the hours change what's queried; the other three only
         # filter the rows already computed, so they apply at once
+        self.deals_watched_only = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(top, text="Watched items", variable=self.deals_watched_only,
+                             command=self.refill_tables)
+        cb.pack(side="right")
+        tip("Shows only watched items (at or under their max price) and watched listings.", cb)
         self.only_deals = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Deals only", variable=self.only_deals,
-                        command=self.refill_tables).pack(side="right")
+                        command=self.refill_tables).pack(side="right", padx=(0, 10))
         self.show_sold = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Include sold", variable=self.show_sold,
                         command=self.refresh_tables).pack(side="right", padx=10)
@@ -1352,6 +1334,8 @@ class App:
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._fill_stale(), add="+")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._mega_tab_shown(), add="+")
         self._build_review_tab()
+        if not self.cfg.get("review_on", True):
+            self.nb.hide(self.review_tab)     # Settings → General: Review tab off
         self._build_watched_tab()
         self._build_ignore_tab()
         self._build_inventory_tab()
@@ -1428,8 +1412,8 @@ class App:
         return ch if ch and ch.isdigit() else None
 
     def step_channel(self, delta: int):
-        """The next (+1) or previous (-1) channel from the chevrons beside the Channel
-        box, the mouse wheel over it, or Up: wraps round at 1 and the channel count."""
+        """The next (+1) or previous (-1) channel: the widget's ‹ ›, the hotkeys, the
+        mouse wheel over the Channel box or Up. Wraps round at 1 and the channel count."""
         count = max(1, min(100, int(self.cfg.get("channel_count", 40) or 40)))
         cur = self.channel()
         if cur is None:
@@ -1853,7 +1837,7 @@ class App:
             self.logged_today += 1
         # deals only make a sound for items on your alert list (a watched item under
         # its max price already pinged above)
-        if verdict == "DEAL" and not hit and not ign and any(w["item"] == s.item for w in self.watch):
+        if verdict == "DEAL" and not hit and not ign and any(w["item"] == s.item and not mfm.watch_is_word(w) for w in self.watch):
             self.root.bell()
 
     def _ping(self):
@@ -2199,7 +2183,8 @@ class App:
                 if con is None:
                     con = mfm.db()
                 data = mfm.table_data(con, want["cfg"], hours=want["hours"],
-                                      show_sold=want["show_sold"], show_kept=want["show_kept"])
+                                      show_sold=want["show_sold"], show_kept=want["show_kept"],
+                                      review=bool(want["cfg"].get("review_on", True)))
             except Exception as e:
                 self.events.put(("tables_error", f"{type(e).__name__}: {e}"))
                 continue
@@ -2273,6 +2258,11 @@ class App:
                 if (show_outliers or r[6] != "OUTLIER")
                 and not (only_deals and (r[6] != "DEAL" or r[0]))
                 and (show_ignored or r[2] not in self.ignored)]
+        if self.deals_watched_only.get():
+            # sold, pct, item, qty, each, mkt, v, where, ts, price, shop, seller, notes
+            rows = [r for r in rows if not r[0] and (
+                mfm.watch_match(self.watch, r[2], r[4])
+                or mfm.watched_listing_match(self.watched_listings, r[2], r[10] or "", r[11] or "", r[9]))]
         self.deals.delete(*self.deals.get_children())
         self.scopes = {k: v for k, v in self.scopes.items() if k[0] != str(self.deals)}
         tree_id = str(self.deals)
@@ -2460,27 +2450,44 @@ class App:
         head.pack(fill="x", pady=(0, 4))
         ttk.Label(head, text="Watched items", style="Bold.TLabel").pack(side="left")
         ttk.Label(head, foreground="#555", text="  Get an alert when one of these items is for sale. "
-                  "Leave the max price empty for any price.").pack(side="left")
+                  "Leave the max price empty for any price. Words: megaphones that say them are "
+                  "highlighted.").pack(side="left")
         add = ttk.Frame(top_half)
         add.pack(fill="x")
-        ttk.Label(add, text="Item:").pack(side="left")
+        # Item or Word, like the Type in Review → Megaphones: a word is for something that
+        # can't be matched to an item; megaphones whose message has it are highlighted
+        self.alert_words = False
+        self.alert_type_btn = ttk.Button(add, text="Type: Item", width=12, command=self._alert_toggle_type)
+        self.alert_type_btn.pack(side="left", padx=(0, 6))
+        tip("What Watch adds. Item: an item, found in shops and megaphones. Word: words found "
+            "in megaphone messages, for things that can't be matched to an item. Click to switch.",
+            self.alert_type_btn)
+        self.alert_item_lbl = ttk.Label(add, text="Item:")
+        self.alert_item_lbl.pack(side="left")
         self.alert_entry = ItemSearch(add, self, width=42, on_return=lambda: self.alert_max_entry.focus_set())
         self.alert_entry.pack(side="left", padx=4)
         self.alert_item = self.alert_entry.var
-        ttk.Label(add, text="Max price:").pack(side="left", padx=(10, 0))
+        self.alert_word = tk.StringVar()
+        self.alert_word_entry = ttk.Entry(add, textvariable=self.alert_word, width=44)
+        self.alert_word_entry.bind("<Return>", lambda e: self.add_alert_from_form())
+        self.alert_max_lbl = ttk.Label(add, text="Max price:")
+        self.alert_max_lbl.pack(side="left", padx=(10, 0))
         self.alert_max = tk.StringVar()
         self.alert_max_entry = ttk.Entry(add, textvariable=self.alert_max, width=12)
         self.alert_max_entry.pack(side="left", padx=4)
         self.alert_max_entry.bind("<Return>", lambda e: self.add_alert_from_form())
-        ttk.Button(add, text="Watch", command=self.add_alert_from_form).pack(side="left", padx=4)
+        self.alert_watch_btn = ttk.Button(add, text="Watch", command=self.add_alert_from_form)
+        self.alert_watch_btn.pack(side="left", padx=4)
         ttk.Button(add, text="Remove selected", command=self.remove_alert).pack(side="right")
 
         self.alerts = make_tree(top_half, ("item", "max_each", "last_price", "shop", "player", "map",
                                            "channel", "time"))
         self.alerts.frame.pack(fill="both", expand=True, pady=(6, 0))
-        self.alerts.bind("<Double-1>", lambda e: self.open_history(self.alerts))
+        # (a watched word has no item history)
+        item_row = lambda: all(k.startswith("i\x1f") for k in self.alerts.selection())
+        self.alerts.bind("<Double-1>", lambda e: item_row() and self.open_history(self.alerts))
         self._list_menu(self.alerts, [
-            ("Show history", self.open_history, True),
+            ("Show history", lambda t: item_row() and self.open_history(t), True),
             ("Change max price", lambda t: self.change_alert_max(), False),
             None,
             ("Remove item", lambda t: self.remove_alert(), False)])
@@ -2749,6 +2756,12 @@ class App:
             "(any order, upper or lower case). Empty shows them all.", fe)
         fe.bind("<Escape>", lambda e: self.mega_filter.set(""))
         ttk.Button(top, text="Clear", width=6, command=lambda: self.mega_filter.set("")).pack(side="left", padx=(4, 0))
+        self.mega_watched_only = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(top, text="Watched items", variable=self.mega_watched_only,
+                             command=self._refilter_megaphones)
+        cb.pack(side="left", padx=(12, 0))
+        tip("Shows only megaphones with a watched item (at or under its max price when selling) "
+            "or a watched word (Watched tab).", cb)
         self._mega_filter_job = None
 
         def filter_changed(*_):
@@ -2811,6 +2824,8 @@ class App:
     def on_megaphones(self, n):
         self.refresh_megaphones()
         self.refresh_megaphone_review()
+        if mfm.watched_words(self.watch):
+            self.refresh_alerts()             # a watched word's newest megaphone
 
     def on_chat_frame(self, p):
         from PIL import ImageDraw
@@ -2975,6 +2990,8 @@ class App:
         words = [w.lower() for w in (self.mega_filter.get() if hasattr(self, "mega_filter") else "").split()]
         if words:
             rows = [r for r in rows if all(w in (r[4] or "").lower() for w in words)]
+        words_watched = mfm.watched_words(self.watch)
+        watched_only = hasattr(self, "mega_watched_only") and self.mega_watched_only.get()
         for kind, t in self.mega_trees.items():
             restore = self._keep_selection(t, lambda tr, k: k)
             t.delete(*t.get_children())
@@ -2990,7 +3007,11 @@ class App:
                     lines[r[0]] = lines.get(r[0], 0) + 1
                     if r[9] and self._mega_watched(r[9], r[11], r[8]):
                         watched.add(r[0])
+                if words_watched and r[0] not in watched and mfm.message_has_word(r[4], words_watched):
+                    watched.add(r[0])                 # ... or one that says a watched word
             for mid, ts, player, ch, msg, k, color, idx, side, item, phrase, price, note in rows:
+                if watched_only and mid not in watched:
+                    continue
                 if idx is None:                       # no offers read from it: show it by its kind
                     if k not in (kind, "both"):
                         continue
@@ -4043,15 +4064,29 @@ class App:
     def refresh_alerts(self):
         if not hasattr(self, "alerts"):
             return
-        restore = self._keep_selection(self.alerts, lambda t, k: t.set(k, "item"))
+        restore = self._keep_selection(self.alerts, lambda t, k: k)
         self.alerts.delete(*self.alerts.get_children())
         for w in self.watch:
+            if mfm.watch_is_word(w):
+                # the newest megaphone that says it
+                last = None
+                try:
+                    last = self.con.execute(
+                        "SELECT ts, player, channel, message FROM megaphones WHERE LOWER(message) LIKE ? "
+                        "ORDER BY ts DESC LIMIT 1", (f"%{w['item'].lower()}%",)).fetchone()
+                except sqlite3.Error:
+                    pass
+                self.alerts.insert("", "end", iid="w\x1f" + w["item"], tags=("watch",) if last else (), values=(
+                    f"\u201c{w['item']}\u201d  (word)", "", "megaphone" if last else "not seen yet",
+                    (last[3] if last else ""), (last[1] or "") if last else "", "",
+                    (last[2] or "") if last else "", mfm.local_time(last[0]) if last else ""))
+                continue
             lf = w.get("last_found") or {}
             if lf and "where" in lf:        # saved by versions before 2610.5: "shop · map"
                 parts = lf["where"].split(" · ")
                 lf = {"each": lf.get("each"), "shop": parts[0] if parts else "",
                       "map": parts[1] if len(parts) > 1 else "", "channel": None, "time": lf.get("when")}
-            self.alerts.insert("", "end", image=self.icon_for(w["item"], found=bool(lf)), values=(
+            self.alerts.insert("", "end", iid="i\x1f" + w["item"], image=self.icon_for(w["item"], found=bool(lf)), values=(
                 w["item"], mfm.fmt(w["max_each"]) if w.get("max_each") not in (None, "") else "any",
                 mfm.fmt(lf["each"]) if lf else "not seen yet",
                 *((lf.get("shop") or "", lf.get("player") or "") if "player" in lf
@@ -4063,11 +4098,41 @@ class App:
         snd = self.cfg.get("alert_sound")
         self.sound_lbl.config(text=f"Sound: {Path(snd).name if snd else 'default ping'}")
 
-    def add_alert(self, item, max_each=None):
-        item = item.strip()
+    def _alert_toggle_type(self):
+        """Item ↔ Word for what Watch adds (the item search box, or a plain text box)."""
+        self.alert_words = not self.alert_words
+        self.alert_type_btn.config(text="Type: Word" if self.alert_words else "Type: Item")
+        self.alert_item_lbl.config(text="Words:" if self.alert_words else "Item:")
+        if self.alert_words:
+            self.alert_entry.pack_forget()
+            for w in (self.alert_max_lbl, self.alert_max_entry):
+                w.pack_forget()
+            self.alert_word_entry.pack(side="left", padx=4, before=self.alert_watch_btn)
+            self.alert_word_entry.focus_set()
+        else:
+            self.alert_word_entry.pack_forget()
+            self.alert_entry.pack(side="left", padx=4, before=self.alert_watch_btn)
+            self.alert_max_lbl.pack(side="left", padx=(10, 0), before=self.alert_watch_btn)
+            self.alert_max_entry.pack(side="left", padx=4, before=self.alert_watch_btn)
+
+    def _alert_keys(self, sel) -> list[tuple[str, str]]:
+        """The watched rows selected: ("i", item) or ("w", words)."""
+        return [tuple(k.split("\x1f", 1)) for k in sel if "\x1f" in k]
+
+    def add_alert(self, item, max_each=None, word=False):
+        item = " ".join(item.split()) if word else item.strip()
         if not item:
             return
-        self.watch = [w for w in self.watch if w["item"] != item]
+        if word:
+            self.watch = [w for w in self.watch
+                          if not (mfm.watch_is_word(w) and w["item"].lower() == item.lower())]
+            self.watch.append({"item": item, "type": "word", "max_each": None, "last_found": None})
+            mfm.save_watchlist(self.watch)
+            self.refresh_alerts()
+            self.refresh_megaphones()
+            self._set_status(f"Watching megaphones that say \u201c{item}\u201d.")
+            return
+        self.watch = [w for w in self.watch if mfm.watch_is_word(w) or w["item"] != item]
         self.watch.append({"item": item, "max_each": max_each, "last_found": None})
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
@@ -4076,6 +4141,10 @@ class App:
         self._set_status(f"Watching {item}" + (f" at {mfm.fmt(max_each)} or less" if max_each else "") + ".")
 
     def add_alert_from_form(self):
+        if self.alert_words:
+            self.add_alert(self.alert_word.get(), word=True)
+            self.alert_word.set("")
+            return
         raw = self.alert_max.get().strip()
         try:
             max_each = mfm.parse_price(raw) if raw else None
@@ -4120,12 +4189,12 @@ class App:
         bind_right_click(tree, popup)
 
     def change_alert_max(self):
-        items = [self.alerts.set(k, "item") for k in self.alerts.selection()]
+        items = [k for t, k in self._alert_keys(self.alerts.selection()) if t == "i"]
         if not items:
             return
         cur = ""
         if len(items) == 1:
-            w = next((w for w in self.watch if w["item"] == items[0]), None)
+            w = next((w for w in self.watch if not mfm.watch_is_word(w) and w["item"] == items[0]), None)
             cur = mfm.fmt(w["max_each"]) if w and w.get("max_each") not in (None, "") else ""
         raw = ask_value(self.root, "Max price",
                         (f"Alert when '{items[0]}' is for sale at or below:" if len(items) == 1 else
@@ -4136,7 +4205,7 @@ class App:
             return
         cap = mfm.parse_price(raw) if raw.strip() else None
         for w in self.watch:
-            if w["item"] in items:
+            if not mfm.watch_is_word(w) and w["item"] in items:
                 w["max_each"] = cap
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
@@ -4149,8 +4218,8 @@ class App:
         sel = self.alerts.selection()
         if not sel:
             return
-        gone = {self.alerts.set(k, "item") for k in sel}
-        self.watch = [w for w in self.watch if w["item"] not in gone]
+        gone = set(self._alert_keys(sel))
+        self.watch = [w for w in self.watch if ("w" if mfm.watch_is_word(w) else "i", w["item"]) not in gone]
         mfm.save_watchlist(self.watch)
         self.refresh_alerts()
         self.refresh_tables()
@@ -4220,6 +4289,10 @@ class App:
         b.pack(side="left", padx=4)
         tip("Delete the megaphones these rows came from (a misread line, spam). Nothing is "
             "added to the aliases.", b)
+        b = ttk.Button(bottom, text="Remove all megaphones", command=self.mreview_delete_all)
+        b.pack(side="left", padx=(12, 0))
+        tip("Deletes every megaphone with something in this list (all of them, not only the "
+            "ones shown). Nothing is added to the aliases.", b)
         self.mreview_more = ttk.Label(bottom, foreground="#666")
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
@@ -4389,6 +4462,26 @@ class App:
         if nxt and nxt not in keys:
             self.root.after(600, lambda: self.mreview.exists(nxt) and (self.mreview.selection_set(nxt),
                                                                        self.mreview.see(nxt)))
+
+    def mreview_delete_all(self):
+        """Delete every megaphone that has a phrase waiting in Review → Megaphones."""
+        hours = max(1, int(self.cfg.get("megaphone_hours", 72) or 72))
+        ids = [r[0] for r in self.con.execute(
+            "SELECT DISTINCT o.megaphone_id FROM megaphone_offers o JOIN megaphones m ON m.id = o.megaphone_id "
+            "WHERE o.item IS NULL AND COALESCE(o.how, '') != 'ignored' AND m.ts >= ?",
+            (mfm.utc_ago(hours=hours),))]
+        if not ids:
+            self.root.bell()
+            return
+        if not messagebox.askyesno("Remove all megaphones",
+                                   f"Delete all {mfm.plural(len(ids), 'megaphone')} with something not "
+                                   "matched to an item yet?\n\nNothing is added to the aliases.",
+                                   parent=self.root):
+            return
+        mfm.delete_megaphones(self.con, ids)
+        self._set_status(f"Deleted {mfm.plural(len(ids), 'megaphone')}.")
+        self.refresh_megaphones(delay=10)
+        self.refresh_megaphone_review()
 
     def aliases_window(self):
         """An editable sheet of aliases: "Megaphone term" (what players write),
@@ -4643,6 +4736,10 @@ class App:
         ttk.Button(bottom, text="Delete listings", command=self.review_delete).pack(side="left", padx=4)
         ttk.Button(bottom, text="Accept all 90%+ alike", command=self.review_accept_confident
                    ).pack(side="left", padx=(16, 0))
+        b = ttk.Button(bottom, text="Remove all listings", command=self.review_delete_all)
+        b.pack(side="left", padx=(16, 0))
+        tip("Deletes the listings of every name in this list (kept names only when Show kept "
+            "names is on).", b)
         self.review_remember = tk.BooleanVar(value=True)
         ttk.Checkbutton(bottom, text="Remember matches for future reads", variable=self.review_remember
                         ).pack(side="left", padx=(16, 0))
@@ -4762,6 +4859,24 @@ class App:
         self._set_status(f"Deleted {n_list} listings of {len(rows)} name{'s' if len(rows) != 1 else ''}.")
         if nxt:
             self._review_select(nxt)
+
+    def review_delete_all(self):
+        """Delete the listings of every name in Review → Shop listings."""
+        rows = [r for r in (self._tables_data or {}).get("review", [])
+                if self.review_show_kept.get() or not r["kept"]]
+        if not rows:
+            self.root.bell()
+            return
+        n_list = sum(r["count"] for r in rows)
+        if not messagebox.askyesno("Remove all listings",
+                                   f"Delete all {n_list:,} listings of the {len(rows):,} names in this "
+                                   "list?", parent=self.root):
+            return
+        for r in rows:
+            mfm.forget_item(self.con, r["item"])
+            self._forget_icon(r["item"])
+        self.refresh_tables()
+        self._set_status(f"Deleted {n_list:,} listings of {mfm.plural(len(rows), 'name')}.")
 
     # ------------------------------------------------------------------ ignore list
     def _build_ignore_tab(self):
@@ -6157,6 +6272,11 @@ class App:
         cb = ttk.Checkbutton(gen, text="Ignore outliers in market rates",
                              variable=outliers_on)
         cb.grid(row=len(fields) - 3, column=2, sticky="w", padx=(0, 12))
+        review_on = tk.BooleanVar(value=self.cfg.get("review_on", True))
+        cbr = ttk.Checkbutton(gen, text="Show the Review tab (names to match to items)", variable=review_on)
+        cbr.grid(row=len(fields) - 4, column=2, sticky="w", padx=(0, 12))
+        tip("Off hides the Review tab, and the app stops working out the names to review. "
+            "Names are still matched by the aliases you've taught.", cbr)
         tip("Leaves troll prices and misreads out of the market price. "
             "200% ceiling = more than 3x the usual price; 75% floor = less than 1/4 of it.", cb)
         # ---- hotkeys (under the numbers)
@@ -6220,6 +6340,11 @@ class App:
                 return
             self.cfg["hotkeys_on"], self.cfg["hotkeys"] = hot_on, hot
             self.cfg["update_check"] = update_check.get()
+            self.cfg["review_on"] = review_on.get()
+            if review_on.get():
+                self.nb.add(self.review_tab)  # (back where it was)
+            else:
+                self.nb.hide(self.review_tab)
             mfm.save_config(self.cfg)
             self._start_hotkeys()
             self.show_overlay(overlay_on.get(), save=True)

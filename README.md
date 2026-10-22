@@ -157,7 +157,7 @@ the game runs in a window (or borderless), not in exclusive full screen.
 - **Live:** the shop you're in, filling in as you scroll. Green = DEAL, red = HIGH,
   grey = no market price yet, faded = sold.
 - **Deals:** listings still for sale, best deals first. Tick **Include sold** to see sold
-  ones.
+  ones, or **Watched items** to see only watched items and listings.
 - **Items:** every item you've seen: the cheapest listing still for sale and where it is,
   listed and sold prices, market price, the median prices in selling and buying
   megaphones, and the NPC buy / sell prices. Filter by name,
@@ -165,11 +165,15 @@ the game runs in a window (or borderless), not in exclusive full screen.
 - **Review:** things that didn't match an item in the database, in two tabs:
   - **Shop listings:** names read from shops, with the price, shop, player and channel of
     the newest listing. Press **Enter** to accept the suggested item, **M** to pick one
-    yourself, **K** to keep the name, **Delete** to remove it.
+    yourself, **K** to keep the name, **Delete** to remove it. **Remove all listings**
+    deletes the listings of every name in the list.
   - **Megaphones:** what megaphones sell or buy that isn't matched to an item yet, with a
     **Buying / Selling** column. **Enter** accepts the suggested item, **M** picks one,
     **Delete** marks it as "not an item". **Delete megaphone** deletes the megaphones a
-    row came from (a misread line, spam) without adding an alias. See [Aliases](#aliases).
+    row came from (a misread line, spam) without adding an alias; **Remove all megaphones**
+    deletes every megaphone with something in the list. See [Aliases](#aliases).
+
+  Don't need it? Turn the Review tab off in **Settings → General**.
 - **Watched**, **Ignored** and **My Inventory:** see below.
 
 Double-click any item for its **price history**: a chart and every sighting, plus a
@@ -213,6 +217,7 @@ Megaphones are kept for 72 hours and then deleted; change this with the box at t
 the tab. Right-click a megaphone to match it to an item, mark it as "not an item", see the
 item's history, copy its message or player name, or delete it. **Filter** at the top shows
 only megaphones whose message has every word you type (any order, upper or lower case).
+**Watched items** shows only megaphones with a watched item or a watched word.
 If the chat window isn't
 found, draw it in **Settings → Reading → Window detection** (Chat).
 
@@ -271,6 +276,10 @@ no price given), or buying at any price. The **Watched** tab has two lists.
    **Watch this item**
 2. When it's for sale in a shop you open, you get an alert, and the price, shop, player,
    map, channel and time are shown.
+
+**Watched words**, for things that can't be matched to an item: click **Type: Item** so it
+says **Type: Word**, type the words and click **Watch**. Megaphones whose message has them
+are shown in bold red, and the newest one is shown in the list.
 
 **Watched listings** (bottom): one player's listing, e.g. a Korean Fan with +5 ATK.
 1. Right-click a listing in Live, Deals or an item's history → **Watch this listing**, and
@@ -436,7 +445,7 @@ model, put `"trained_ocr": false` in `settings/config.json`.
 **Settings → General → Hotkeys** to use them. They do their action in whichever window
 has focus, the game's included: **F5**
 starts and stops monitoring, **F4** and **F3** set the channel to the next and previous
-one (the same as the chevrons beside the Channel box), so the app's channel keeps up with
+one (the same as ‹ › on the widget), so the app's channel keeps up with
 the game without leaving it. Click a key to change it, then press the new one (with Ctrl,
 Alt or Shift if you like); × leaves an action without a key. The game sees the keys too,
 so pick ones it doesn't use. On Wayland they work while an X11 window has focus, like the

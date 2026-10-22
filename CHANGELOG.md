@@ -1,5 +1,22 @@
 # Changelog
 
+## 2610.22.001 — 2026-10-22
+
+### New
+- **Watched items** checkboxes in **Megaphones** and **Deals** show only watched items
+  (at or under their max price), watched listings and watched words.
+- **Watched words:** in the Watched tab, **Type: Item / Word** switches what Watch adds. A
+  word is for something that can't be matched to an item: megaphones whose message has it
+  are shown in bold red, and the newest one is shown in the list.
+- **Review → Shop listings → Remove all listings** and **Review → Megaphones → Remove all
+  megaphones** delete everything in that list at once.
+- **Settings → General → Show the Review tab:** turn it off to hide the tab (the app then
+  stops working out the names to review).
+
+### Changed
+- The up / down arrows beside the Channel box are gone: the widget over the game has ‹ ›
+  for the channel. The mouse wheel over the box and the Up key still step it.
+
 ## 2610.21.001 — 2026-10-21
 
 ### New
