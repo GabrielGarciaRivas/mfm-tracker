@@ -6162,6 +6162,15 @@ class App:
         # ---- hotkeys (under the numbers)
         hot_box, hotkeys = self._hotkeys_frame(gen)
         hot_box.grid(row=len(fields), column=0, columnspan=2, sticky="nwe", padx=12, pady=(8, 0))
+        # ---- the widget over the game (next to the hotkeys)
+        ov_box = ttk.LabelFrame(gen, text=" Widget ", padding=(10, 2, 10, 6))
+        ov_box.grid(row=len(fields), column=2, sticky="nwe", padx=(0, 12), pady=(8, 0))
+        overlay_on = tk.BooleanVar(value=bool(self.cfg.get("overlay_on", True)))
+        cb = ttk.Checkbutton(ov_box, text="Show the widget over the game", variable=overlay_on)
+        cb.pack(anchor="w")
+        tip("A small card that stays on top of the game: monitoring time and state, frames "
+            "waiting and the channel, with Start / Stop, Next shop and the channel arrows. "
+            "The Widget box in the toolbar and the widget's ✕ turn it on and off too.", cb)
 
         # ---- updates (under the channel picker)
         upd = ttk.LabelFrame(gen, text=" Updates ", padding=(10, 2, 10, 6))
@@ -6213,6 +6222,7 @@ class App:
             self.cfg["update_check"] = update_check.get()
             mfm.save_config(self.cfg)
             self._start_hotkeys()
+            self.show_overlay(overlay_on.get(), save=True)
             self.refresh_tables()
             win.destroy()
 

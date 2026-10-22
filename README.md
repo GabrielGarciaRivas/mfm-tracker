@@ -146,8 +146,9 @@ how long you've been monitoring, Start / Stop (▶ / ■), Next shop (⟳), Sett
 hint line (what to do next, or a warning in yellow: the reading is behind, no channel
 set), and three rows: **Monitoring** (Running / Stopped), **Frames waiting** and
 **Channel**, with ‹ › to change it. Drag it from anywhere but its buttons; it opens
-where you left it, and on Windows clicking it never takes the focus from the game. The
-**Widget** box in the toolbar, or its ✕, hides and shows it. It shows over the game when
+where you left it, and on Windows clicking it never takes the focus from the game. Turn it
+on or off in **Settings → General → Widget**, with the **Widget** box in the toolbar, or
+with its ✕. It shows over the game when
 the game runs in a window (or borderless), not in exclusive full screen.
 
 ## Tabs

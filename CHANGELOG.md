@@ -15,8 +15,8 @@
   Stop, Next shop, Settings, a hint line (or a warning: reading behind, no channel), and
   rows for Monitoring, Frames waiting and Channel with ‹ › to change it. Drag it from
   anywhere but its buttons; it opens where you left it, and on Windows clicking it never
-  takes the focus from the game. The **Widget** box in the toolbar, or its ✕, hides and
-  shows it.
+  takes the focus from the game. Turn it on or off in **Settings → General → Widget**,
+  with the **Widget** box in the toolbar, or with its ✕.
   (Thanks, GabrielGarciaRivas.)
 
 ### Changed
