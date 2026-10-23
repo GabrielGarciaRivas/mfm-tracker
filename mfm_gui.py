@@ -1276,6 +1276,11 @@ class App:
         ttk.Spinbox(top, from_=1, to=720, width=5, textvariable=self.hours_var,
                     command=self.refresh_tables).pack(side="left", padx=4)
         ttk.Label(top, text="hours, best deals first.").pack(side="left")
+        b = ttk.Button(top, text="Bought", command=lambda: self.bought_listing(self.deals))
+        b.pack(side="left", padx=(12, 0))
+        tip("You bought the selected listings (to use, or to sell on to an NPC): they're marked "
+            "sold, so they leave Deals and count as sales at that price. Include sold shows them "
+            "again. Also in the right-click menu.", b)
         # "Include sold" and the hours change what's queried; the other three only
         # filter the rows already computed, so they apply at once
         self.deals_watched_only = tk.BooleanVar(value=False)
@@ -5047,6 +5052,8 @@ class App:
             if tree is self.items:
                 menu.add_command(label=f"Delete all listings of {n_items}", command=self.forget_selected)
             else:
+                menu.add_command(label="Bought this listing" if one else f"Bought these {len(rows)} listings",
+                                 command=lambda: self.bought_listing(tree))
                 menu.add_command(label="Delete this listing (bad read)" if one
                                  else f"Delete {len(rows)} listings (bad reads)",
                                  command=lambda: self.delete_listing(tree))
@@ -5180,6 +5187,22 @@ class App:
         self.refresh_tables()
         self._set_status(f"Deleted {n} listing{'s' if n != 1 else ''}"
                          + (f" of '{rows[0][1]}'." if len(rows) == 1 else "."))
+
+    def bought_listing(self, tree):
+        """The selected listings were bought (to use, or to sell on): mark them sold,
+        so they leave Deals and count as sales at that price."""
+        rows = [(k, tree.set(k, "item"), self.scopes.get((str(tree), k))) for k in tree.selection()]
+        rows = [r for r in rows if r[2]]
+        if not rows:
+            self._set_status("Select the listing you bought first.")
+            return
+        n = 0
+        for k, item, scope in rows:
+            n += mfm.bought_listing(self.con, item, scope)
+        self.refresh_tables()
+        self._set_status(f"Marked {n} listing{'s' if n != 1 else ''} as bought"
+                         + (f": '{rows[0][1]}' at {mfm.fmt(rows[0][2]['price'])}." if len(rows) == 1 else ".")
+                         + " Include sold shows them.")
 
     def open_meowdb(self, tree):
         import webbrowser
