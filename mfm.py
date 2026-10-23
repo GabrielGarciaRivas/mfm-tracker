@@ -1894,9 +1894,14 @@ def check_price_digits(img: Image.Image | None, words: list[Word], num: str) -> 
                  if re.sub(r"[^\d,]", "", w.text.translate(_DIGIT_FIX).replace(".", ",")) == want), None)
     if word is None or word.width < 3 or word.height < 5:
         return num
-    g = ImageOps.grayscale(img).crop((max(0, word.left - 1), max(0, word.top - 1),
-                                      min(img.width, word.left + word.width + 1),
-                                      min(img.height, word.top + word.height + 1)))
+    # Tesseract's box can start a pixel or two inside the first digit (it's read at
+    # 3x and divided back), which cuts the left side of a 9's loop off and leaves a
+    # 3: so the crop takes a margin, and a run of ink touching its edge (a neighbour
+    # word's edge, "for" or "mesos" are 6+ pixels away) is dropped.
+    pad = 3
+    g = ImageOps.grayscale(img).crop((max(0, word.left - pad), max(0, word.top - 2),
+                                      min(img.width, word.left + word.width + pad),
+                                      min(img.height, word.top + word.height + 2)))
     w, h = g.size
     px = g.load()
     lo, hi = g.getextrema()
@@ -1905,6 +1910,10 @@ def check_price_digits(img: Image.Image | None, words: list[Word], num: str) -> 
     thr = (lo + hi) / 2                    # ink is darker than the panel, faded text too
     ink = [[px[x, y] < thr for y in range(h)] for x in range(w)]
     runs = _ink_runs([any(col) for col in ink])
+    while len(runs) > len(want) and runs and runs[0][0] == 0:
+        runs = runs[1:]
+    while len(runs) > len(want) and runs and runs[-1][1] == w:
+        runs = runs[:-1]
     if len(runs) != len(want):             # digits touching, or noise: not separable
         return num
     out = list(want)
