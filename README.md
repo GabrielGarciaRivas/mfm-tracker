@@ -275,7 +275,9 @@ no price given), or buying at any price. The **Watched** tab has two lists.
 1. Type the item, optionally a **max price**, and click **Watch**. Or right-click any item →
    **Watch this item**
 2. When it's for sale in a shop you open, you get an alert, and the price, shop, player,
-   map, channel and time are shown.
+   map, channel and time are shown. A shop someone else opened and shared through the
+   Shared Database alerts you too (if it was seen within the last hour), and the status
+   line says who shared it.
 
 **Watched words**, for things that can't be matched to an item: click **Type: Item** so it
 says **Type: Word**, type the words and click **Watch**. Megaphones whose message has them
@@ -284,8 +286,9 @@ are shown in bold red, and the newest one is shown in the list.
 **Watched listings** (bottom): one player's listing, e.g. a Korean Fan with +5 ATK.
 1. Right-click a listing in Live, Deals or an item's history → **Watch this listing**, and
    enter a note for it.
-2. When that listing is for sale again, you get an alert. Its latest price, place and time
-   are shown, and it's marked sold once it sells.
+2. When that listing is for sale again, you get an alert (also when someone else sees it
+   and shares it). Its latest price, place and time are shown, and it's marked sold once
+   it sells.
 
 Right-click a watched item or listing to see its history, change the max price or note, or
 remove it. Pick your own alert sound with **Choose sound**. Sound and "bring to front" can

@@ -3,6 +3,12 @@
 ## 2610.22.002 — 2026-10-22
 
 ### Fixed
+- **Listings shared by others didn't set off your alerts.** A watched item under its max
+  price, or a watched listing, posted to the Shared Database by someone else arrived in
+  the tables (in bold red) but without the sound or the window coming to the front. Now
+  they alert the same as a shop you open yourself, and the status line says who shared
+  it. Only listings seen in the last hour: catching up with the server after a while
+  offline (or on first connecting) doesn't ring for everything ever posted.
 - **Megaphones stopped being read.** A chat area drawn while the app was reading the whole
   screen was ignored once it read the game's window (and the other way round), so the chat
   wasn't found. An area drawn on a picture of the same size is used either way now, and
