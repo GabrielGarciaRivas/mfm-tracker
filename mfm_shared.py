@@ -226,9 +226,10 @@ class SharedSync:
     EVERY = 4.0
 
     def __init__(self, cfg: dict, url: str, token: str, on_status=lambda s: None, on_new_rows=lambda n: None,
-                 on_megaphones=lambda n: None):
+                 on_megaphones=lambda n: None, on_new_listings=lambda rows: None):
         self.cfg = cfg
         self.on_megaphones = on_megaphones
+        self.on_new_listings = on_new_listings    # hears each batch of listings others shared (dicts of FIELDS + ts, by)
         self.server = Server(url, token)
         self.on_status, self.on_new_rows = on_status, on_new_rows
         self.stop_event = threading.Event()
@@ -379,6 +380,7 @@ class SharedSync:
         oldest = mfm.utc_ago(days=keep_days) if keep_days else ""
         has_list = mfm.has_item_list()
         new = 0
+        fresh: list[dict] = []                # listings others shared that weren't here yet
         while True:
             res = self.server.changes(seq)
             for r in res.get("sightings", []):
@@ -409,6 +411,8 @@ class SharedSync:
                      r.get("channel"), f"shared by {r.get('by') or 'someone'}", "shared", r.get("sold") or 0,
                      r.get("last_seen") or r["ts"], r.get("sold_ts"), r.get("notes"), r["uid"], sig))
                 new += 1
+                if not r.get("sold"):
+                    fresh.append(dict(r))
             seq = res.get("seq", seq)
             con.execute("INSERT OR REPLACE INTO shared_state (server, seq) VALUES (?, ?)", (url, seq))
             con.commit()
@@ -417,6 +421,8 @@ class SharedSync:
         if new:
             self.received += new
             self.on_new_rows(new)
+        if fresh:
+            self.on_new_listings(fresh)       # the window checks them against your watched items
 
 
     # -- megaphones

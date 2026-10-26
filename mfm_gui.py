@@ -1854,10 +1854,11 @@ class App:
             except tk.TclError:
                 pass
 
-    def alert(self, s, w):
-        """A watched item is for sale here: alert, say where, remember it."""
+    def alert(self, s, w, via: str = ""):
+        """A watched item is for sale here: alert, say where, remember it. `via`: who
+        shared the listing, when it came from the Shared Database and not your screen."""
         where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
-        self._set_status(f"Alert: {s.item} for {mfm.fmt(s.each)} at {where}")
+        self._set_status(f"Alert: {s.item} for {mfm.fmt(s.each)} at {where}" + (f" (shared by {via})" if via else ""))
         title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
         w["last_found"] = {"each": s.each, "shop": title, "player": player, "map": s.map,
                            "channel": s.channel, "time": s.first_seen}
@@ -1865,9 +1866,10 @@ class App:
         self.refresh_alerts()
         self._ping()
 
-    def listing_seen(self, s, w):
+    def listing_seen(self, s, w, via: str = ""):
         """A watched listing was seen again: alert if it's still for sale, and keep
-        its latest price, place and time."""
+        its latest price, place and time. `via`: who shared it, if it came from the
+        Shared Database."""
         title, player = (s.title, s.seller) if (s.title or s.seller) else split_shop(s.shop)
         w["last"] = {"price": s.price, "shop": title, "seller": player, "map": s.map,
                      "channel": s.channel, "time": s.first_seen, "sold": bool(s.sold)}
@@ -1878,7 +1880,8 @@ class App:
             self._set_status(f"Watched listing sold: {name}")
             return
         where = " · ".join(x for x in (s.shop, s.map, mfm.channel_label(s.channel)) if x)
-        self._set_status(f"Alert: watched listing {name} for {mfm.fmt(s.price)} at {where}")
+        self._set_status(f"Alert: watched listing {name} for {mfm.fmt(s.price)} at {where}"
+                         + (f" (shared by {via})" if via else ""))
         self._ping()
 
     def on_closed(self, p):
@@ -2544,7 +2547,8 @@ class App:
             self.shared = mfm_shared.SharedSync(self.cfg, url, login["token"],
                                                 on_status=lambda st: self.events.put(("shared", st)),
                                                 on_new_rows=lambda n: self.events.put(("shared_rows", n)),
-                                                on_megaphones=lambda n: self.events.put(("megaphones", n)))
+                                                on_megaphones=lambda n: self.events.put(("megaphones", n)),
+                                                on_new_listings=lambda rows: self.events.put(("shared_listings", rows)))
         except mfm_shared.SharedError as e:
             self.on_shared({"ok": False, "text": str(e)})
             return
@@ -2569,6 +2573,30 @@ class App:
 
     def on_shared_rows(self, n):
         self.refresh_tables()
+
+    SHARED_ALERT_HOURS = 1   # a shared listing older than this is probably gone: no alert
+
+    def on_shared_listings(self, rows):
+        """Listings someone else shared: the same alerts as a shop you open yourself,
+        for watched items (under the max price) and watched listings. Only listings
+        seen recently, so catching up with the server after a while offline (or the
+        first time) doesn't ring for everything that was ever posted."""
+        recent = mfm.utc_ago(hours=self.SHARED_ALERT_HOURS)
+        for r in rows:
+            seen = r.get("last_seen") or r.get("ts") or ""
+            if seen < recent:
+                continue
+            title, seller = r.get("shop") or "", r.get("seller") or ""
+            s = mfm.SeenListing(r["item"], r["price"], r.get("qty") or 1, r["price"], None, "",
+                                None, seen, mfm.ShopFrame([], title, seller).shop, r.get("map") or "",
+                                False, "new", r.get("channel"), title, seller, None, r.get("notes") or "")
+            by = r.get("by") or "someone"
+            hit = mfm.watch_match(self.watch, s.item, s.each)
+            if hit:
+                self.alert(s, hit, via=by)
+            wl = mfm.watched_listing_match(self.watched_listings, s.item, s.title, s.seller, s.price)
+            if wl:
+                self.listing_seen(s, wl, via=by)
 
     def shared_dialog(self):
         import mfm_shared
